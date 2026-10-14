@@ -3,3 +3,4 @@ target/
 .helper/
 .idea/
 .superpowers/
+.claude/scheduled_tasks.lock
