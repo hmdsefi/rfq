@@ -17,6 +17,8 @@ sha2 = "0.10"
 proptest = "1"
 crc32fast = "1"
 tempfile = "3"
+anyhow = "1"
+tracing-subscriber = "0.3"
 
 # Unchecked overflow must never silently wrap money, even in optimised builds.
 [profile.release]

@@ -1,0 +1,6 @@
+# Build context for docker/rust.Dockerfile: only the workspace manifests and crates.
+**
+!Cargo.toml
+!Cargo.lock
+!crates
+**/target

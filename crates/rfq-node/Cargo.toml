@@ -1,0 +1,20 @@
+[package]
+name = "rfq-node"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+# Off by default so `cargo test --workspace` never builds rusteron. Without it the binary only
+# reports that it was built without Aeron and exits with status 2.
+aeron = ["rfq-infra/aeron"]
+
+[dependencies]
+rfq-app = { path = "../rfq-app" }
+rfq-infra = { path = "../rfq-infra" }
+# The demo genesis (`demo_config()` and the well-known accounts) comes from the testkit.
+rfq-testkit = { path = "../rfq-testkit" }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
