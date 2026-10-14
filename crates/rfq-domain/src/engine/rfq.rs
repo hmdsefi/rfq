@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use super::{Engine, Handled, Out, VALIDATED};
-use crate::command::{LegSpec, Pick};
+use crate::command::{LegSpec, Pick, ReservationPolicy, SelectionPolicy};
 use crate::event::{Emitted, Event, RejectReason};
 use crate::model::*;
 use crate::types::*;
@@ -133,7 +133,9 @@ impl Engine {
         // A quote is useless once the request can no longer be accepted, so neither the quote nor
         // its timer may outlive `response_deadline + accept_window`.
         let expires_at = expires_at.min(r.response_deadline.saturating_add(cfg.accept_window));
-        let need = seller_lock(l.qty, price).ok_or(RejectReason::Overflow)?;
+        let need = self
+            .quote_reservation(l.qty, price)
+            .ok_or(RejectReason::Overflow)?;
         let previous = l.quotes.iter().copied().find(|q| self.quotes[q].mm == actor);
         let refundable = previous
             .and_then(|q| self.quotes[&q].hold)
@@ -218,8 +220,38 @@ impl Engine {
         }
     }
 
-    /// Fired at `response_deadline`. Picks the best eligible quote per leg; all-or-nothing.
+    /// Seam 1 of 2 for D5 (quote lifetime): how much collateral a quote reserves in `submit_quote`.
+    /// `None` means the amount overflows. `Config::reservation` is genesis data, so the choice is in the
+    /// log and replay is deterministic. The match is exhaustive: a new policy is a compile error here.
+    ///
+    /// Contract for a future `SharedLimit` (docs/specs/quote-lifetime.md): quotes draw on an MM pool
+    /// instead of holding their own collateral, and **selection is the commit point**. The selected
+    /// quote converts to a hard hold at selection (`select_sealed`), skipping to the next-best quote if
+    /// the pool cannot cover it. Funds are never checked at `accept`, or one pool could win many
+    /// selections and fail all but one accept.
+    fn quote_reservation(&self, qty: Qty, price: Price) -> Option<Amount> {
+        match self.config().reservation {
+            ReservationPolicy::FullHold => seller_lock(qty, price),
+        }
+    }
+
+    /// Fired at `response_deadline`. Seam 2 of 2 for D5: `Config::selection` picks how quotes are
+    /// compared. The match is exhaustive: a new policy is a compile error here.
+    ///
+    /// Contract for a future `Continuous` (docs/specs/engine.md §6, quote-lifetime.md): run the same
+    /// selection step on each new best quote and allow `Accept` while the request is `Open`. It
+    /// re-enters `Presented`, so every timer armed for a re-entered state must carry the deadline it
+    /// expects and fire only on a match. `on_accept_by` checks only the state today, so it would need
+    /// that stamp (the dispute timer already has it: `on_dispute_window`).
     pub(super) fn on_request_deadline(&mut self, id: RequestId, deadline: Timestamp, out: &mut Out) {
+        match self.config().selection {
+            SelectionPolicy::SealedAtDeadline => self.select_sealed(id, deadline, out),
+        }
+    }
+
+    /// `SealedAtDeadline`: quotes stay sealed until `response_deadline`, then the best eligible quote
+    /// per leg is presented once; all-or-nothing.
+    fn select_sealed(&mut self, id: RequestId, deadline: Timestamp, out: &mut Out) {
         let Some(r) = self.requests.get(&id) else {
             return;
         };

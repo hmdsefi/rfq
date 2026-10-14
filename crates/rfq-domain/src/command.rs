@@ -2,6 +2,30 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::*;
 
+/// How much collateral a live quote reserves. The decision for days-long quotes (D5).
+///
+/// Data, not a generic: the choice is part of `Genesis`, so it is in the log and replay stays
+/// deterministic. The one place that matches on it is `Engine::quote_reservation`; a new variant is a
+/// compile error there.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReservationPolicy {
+    /// Each quote holds its full counterparty collateral `qty × (1 − p)` until it ends.
+    #[default]
+    FullHold,
+}
+
+/// When and how quotes are compared (D5).
+///
+/// Data, not a generic: the choice is part of `Genesis`, so it is in the log and replay stays
+/// deterministic. The one place that matches on it is `Engine::on_request_deadline`; a new variant is
+/// a compile error there.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SelectionPolicy {
+    /// Quotes are sealed until `response_deadline`; the best eligible one per leg is presented once.
+    #[default]
+    SealedAtDeadline,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Config {
     pub accept_window: Duration,
@@ -11,6 +35,8 @@ pub struct Config {
     pub dispute_bond: Amount,
     pub resume_grace: Duration,
     pub min_request_notional: Amount,
+    pub reservation: ReservationPolicy,
+    pub selection: SelectionPolicy,
 }
 
 impl Default for Config {
@@ -23,6 +49,8 @@ impl Default for Config {
             dispute_bond: 100 * ONE_DOLLAR,
             resume_grace: 600_000,
             min_request_notional: ONE_DOLLAR,
+            reservation: ReservationPolicy::default(),
+            selection: SelectionPolicy::default(),
         }
     }
 }
@@ -140,7 +168,35 @@ mod tests {
                 dispute_bond: 100_000_000,
                 resume_grace: 600_000,
                 min_request_notional: 1_000_000,
+                reservation: ReservationPolicy::FullHold,
+                selection: SelectionPolicy::SealedAtDeadline,
             }
         );
+    }
+
+    // The D5 seams are data in `Genesis` (so they are in the log): they must survive the codec.
+    #[test]
+    fn genesis_with_policies_round_trips_through_serde() {
+        let genesis = Genesis {
+            operator: AccountId(1),
+            arbiter: AccountId(2),
+            treasury: AccountId(3),
+            config: Config {
+                reservation: ReservationPolicy::FullHold,
+                selection: SelectionPolicy::SealedAtDeadline,
+                ..Config::default()
+            },
+        };
+        let bytes = bincode::serialize(&genesis).expect("genesis serializes");
+        let back: Genesis = bincode::deserialize(&bytes).expect("genesis deserializes");
+        assert_eq!(back, genesis);
+        assert_eq!(back.config.reservation, ReservationPolicy::FullHold);
+        assert_eq!(back.config.selection, SelectionPolicy::SealedAtDeadline);
+    }
+
+    #[test]
+    fn policy_defaults_are_full_hold_and_sealed_at_deadline() {
+        assert_eq!(ReservationPolicy::default(), ReservationPolicy::FullHold);
+        assert_eq!(SelectionPolicy::default(), SelectionPolicy::SealedAtDeadline);
     }
 }

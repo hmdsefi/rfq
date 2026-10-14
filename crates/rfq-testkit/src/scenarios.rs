@@ -16,6 +16,8 @@ pub fn demo_config() -> Config {
         dispute_bond: dollars(100),
         resume_grace: 2_000,
         min_request_notional: ONE_DOLLAR,
+        reservation: ReservationPolicy::FullHold,
+        selection: SelectionPolicy::SealedAtDeadline,
     }
 }
 
