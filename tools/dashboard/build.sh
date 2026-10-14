@@ -4,7 +4,11 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-if ! rustup target list --installed | grep -qx wasm32-unknown-unknown; then
+# A failed build or smoke run must not leave an older page behind that looks fresh.
+rm -f dist/rfq-dashboard.html
+
+# No `grep -q`: it exits at the first match and can SIGPIPE rustup under pipefail.
+if ! rustup target list --installed | grep -x wasm32-unknown-unknown >/dev/null; then
   rustup target add wasm32-unknown-unknown
 fi
 cargo build --release --target wasm32-unknown-unknown

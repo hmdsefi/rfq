@@ -11,7 +11,8 @@ async function createEngine(wasmBytes) {
     // Views are made after each export call: the call may have grown (and moved) memory.
     new Uint8Array(ex.memory.buffer, at, bytes.length).set(bytes);
     const n = ex.handle();
-    const out = new Uint8Array(ex.memory.buffer, ex.out_ptr(), n);
+    const outAt = ex.out_ptr();
+    const out = new Uint8Array(ex.memory.buffer, outAt, n);
     return JSON.parse(decoder.decode(out));
   }
   return { call };
