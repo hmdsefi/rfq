@@ -2,13 +2,15 @@
 
 > Part of the [implementation roadmap](../2026-10-13-rfq-engine-plan.md). Its **Global Constraints** and **Layered structure** table apply to this task and supersede crate names/paths written here.
 
+**Gate A ruling applied here** ([decisions](../../reviews/spec-review.md#decisions)): #4 a node that starts on a non-empty journal sequences `Command::Resume` as the first command of its first `poll`, stamped with that poll's wall clock, before any ingress command or `Tick`. Stamping it in `poll` (not in `start`) gives it the live time, so the engine's `resume_grace` counts from the restart; `start` itself still appends nothing on a restart. A fresh node (empty journal) never sends `Resume`.
+
 **Files:**
 - Create: `crates/rfq-node/Cargo.toml`, `src/lib.rs`, `src/sequencer.rs`, `src/journal.rs`, `src/transport.rs`, `src/node.rs`, `tests/node.rs`
 - Modify: `Cargo.toml` (add the member and workspace deps)
 
 **Interfaces:**
 - Consumes: `rfq_core::{Engine, Command, SequencedCommand, Genesis, codec::*}`.
-- Produces: `Sequencer::{resume(last_seq, last_time), stamp(wall_ms, Command) -> SequencedCommand}`; `trait Journal { append(&mut self, &SequencedCommand) -> anyhow::Result<u64>; wait_durable(&mut self, u64) -> anyhow::Result<()>; replay(&mut self, &mut dyn FnMut(SequencedCommand)) -> anyhow::Result<()> }`; `MemJournal`, `FileJournal::open(path)`; `trait Transport { poll_ingress(&mut self, max: usize, sink: &mut dyn FnMut(&[u8])); publish_egress(&mut self, &[u8]) -> anyhow::Result<()> }`; `MemTransport { ingress: VecDeque<Vec<u8>>, egress: Vec<Vec<u8>> }`; `Node::{start(J, T, Genesis) -> anyhow::Result<Node<J,T>>, poll(wall_ms) -> anyhow::Result<usize>, engine(), state_hash(), into_parts() -> (J, T)}`.
+- Produces: `Sequencer::{resume(last_seq, last_time), stamp(wall_ms, Command) -> SequencedCommand}`; `trait Journal { append(&mut self, &SequencedCommand) -> anyhow::Result<u64>; wait_durable(&mut self, u64) -> anyhow::Result<()>; replay(&mut self, &mut dyn FnMut(SequencedCommand)) -> anyhow::Result<()> }`; `MemJournal`, `FileJournal::open(path)`; `trait Transport { poll_ingress(&mut self, max: usize, sink: &mut dyn FnMut(&[u8])); publish_egress(&mut self, &[u8]) -> anyhow::Result<()> }`; `MemTransport { ingress: VecDeque<Vec<u8>>, egress: Vec<Vec<u8>> }`; `Node::{start(J, T, Genesis) -> anyhow::Result<Node<J,T>>, poll(wall_ms) -> anyhow::Result<usize>, engine(), state_hash(), into_parts() -> (J, T)}`. `poll` counts the `Resume` it sequences after a restart.
 
 - [ ] **Step 1: Create the crate**
 
@@ -99,6 +101,22 @@ fn restart_replays_to_same_state_without_republishing() {
 }
 
 #[test]
+fn restart_appends_resume() {
+    let mut t = MemTransport::default();
+    t.ingress.push_back(deposit(1));
+    let mut node = Node::start(MemJournal::default(), t, genesis(Config::default())).unwrap();
+    node.poll(5_000).unwrap();
+    let (journal, mut t) = node.into_parts();
+    assert!(!journal.entries().iter().any(|sc| sc.cmd == Command::Resume), "a fresh node does not resume");
+    t.ingress.push_back(deposit(2));
+    let mut node = Node::start(journal, t, genesis(Config::default())).unwrap();
+    assert_eq!(node.poll(9_000).unwrap(), 2, "Resume, then the deposit");
+    let (journal, _) = node.into_parts();
+    let tail: Vec<_> = journal.entries()[2..].iter().map(|sc| (sc.seq, sc.time, sc.cmd == Command::Resume)).collect();
+    assert_eq!(tail, vec![(3, 9_000, true), (4, 9_000, false)], "Resume first, stamped with the live clock");
+}
+
+#[test]
 fn ticks_only_when_a_timer_is_due() {
     let mut node = Node::start(MemJournal::default(), MemTransport::default(), genesis(Config::default())).unwrap();
     assert_eq!(node.poll(1_000).unwrap(), 0, "no timers armed: nothing logged");
@@ -128,6 +146,7 @@ fn malformed_ingress_is_dropped() {
 fn client_cannot_inject_system_commands() {
     let mut t = MemTransport::default();
     t.ingress.push_back(encode(&Command::Tick));
+    t.ingress.push_back(encode(&Command::Resume));
     t.ingress.push_back(encode(&Command::Genesis(genesis(Config::default()))));
     let mut node = Node::start(MemJournal::default(), t, genesis(Config::default())).unwrap();
     node.poll(5_000).unwrap();
@@ -343,6 +362,8 @@ pub struct Node<J, T> {
     journal: J,
     transport: T,
     sequencer: Sequencer,
+    /// Set when `start` replayed a non-empty journal: the first `poll` sequences `Resume`.
+    resume_pending: bool,
 }
 
 impl<J: Journal, T: Transport> Node<J, T> {
@@ -356,6 +377,7 @@ impl<J: Journal, T: Transport> Node<J, T> {
             engine.apply(&sc);
         })?;
         let mut sequencer = Sequencer::resume(last_seq, last_time);
+        let resume_pending = last_seq > 0;
         if last_seq == 0 {
             let sc = sequencer.stamp(0, Command::Genesis(genesis));
             let pos = journal.append(&sc)?;
@@ -363,7 +385,7 @@ impl<J: Journal, T: Transport> Node<J, T> {
             engine.apply(&sc);
         }
         tracing::info!(seq = engine.last_seq(), hash = %hex(&engine.state_hash()), "replayed");
-        Ok(Node { engine, journal, transport, sequencer })
+        Ok(Node { engine, journal, transport, sequencer, resume_pending })
     }
 
     /// One loop iteration: sequence → append → wait durable → apply → publish.
@@ -373,7 +395,13 @@ impl<J: Journal, T: Transport> Node<J, T> {
             Ok(c) => incoming.push(c),
             Err(e) => tracing::warn!(?e, "dropping undecodable ingress message"),
         });
-        let mut stamped: Vec<_> = incoming.into_iter().map(|c| self.sequencer.stamp(wall_ms, c.into_command())).collect();
+        let mut stamped = Vec::new();
+        if std::mem::take(&mut self.resume_pending) {
+            // First command after a restart, stamped with the live clock. The engine handles it
+            // before firing due timers, so downtime can't eat a dispute window (engine.md §6.3).
+            stamped.push(self.sequencer.stamp(wall_ms, Command::Resume));
+        }
+        stamped.extend(incoming.into_iter().map(|c| self.sequencer.stamp(wall_ms, c.into_command())));
         if stamped.is_empty() && self.engine.next_timer().is_some_and(|t| t <= wall_ms) {
             stamped.push(self.sequencer.stamp(wall_ms, Command::Tick));
         }
@@ -409,7 +437,7 @@ pub fn hex(bytes: &[u8]) -> String { bytes.iter().map(|b| format!("{b:02x}")).co
 - [ ] **Step 7: Run the tests to verify they pass**
 
 Run: `cargo test -p rfq-node`
-Expected: 7 passed.
+Expected: 8 passed.
 
 - [ ] **Step 8: Commit**
 

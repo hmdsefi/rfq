@@ -11,7 +11,7 @@
 
 Stream ids start at 1001 because Aeron Archive's local control channel already uses `aeron:ipc` stream 10.
 
-Encoding: `serde` + `bincode` (fixed-int, little-endian, 64 KiB size limit), with a `u8` version prefix. A message that fails to decode on ingress is dropped and counted; it never reaches the log. Ingress decodes to `ClientCommand`, which cannot express `Genesis` or `Tick`. Only the node itself creates those.
+Encoding: `serde` + `bincode` (fixed-int, little-endian, 64 KiB size limit), with a `u8` version prefix. A message that fails to decode on ingress is dropped and counted; it never reaches the log. Ingress decodes to `ClientCommand`, which cannot express `Genesis`, `Tick` or `Resume`. Only the node itself creates those.
 
 ## Sequencer
 
@@ -37,8 +37,9 @@ trait Journal {
 
 1. Connect to the media driver and the archive.
 2. If no recording exists, append `Genesis` as seq 1.
-3. Replay everything through `Engine::apply` with egress **suppressed**. Record `last_seq` and `last_time`.
+3. Replay everything through `Engine::apply` with egress **suppressed**. Record `last_seq` and `last_time`; the sequencer resumes from them, so time never goes backwards across a restart.
 4. Log `state_hash`, then enter the live loop at `last_seq + 1`.
+5. If the journal was non-empty (a restart, not a fresh start), the first live-loop iteration sequences `Resume`, stamped with the wall clock, before any ingress command or `Tick`. The engine handles it before firing due timers, so downtime can't eat an open dispute window ([engine.md §6.3](engine.md)).
 
 ## Live loop (batching)
 

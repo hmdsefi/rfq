@@ -99,7 +99,7 @@ pub fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, CodecError> {
     }
 }
 
-/// What a client may put on ingress. It cannot express `Genesis` or `Tick`.
+/// What a client may put on ingress. It cannot express `Genesis`, `Tick` or `Resume`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientCommand {
     pub actor: AccountId,

@@ -2,6 +2,8 @@
 
 > Part of the [implementation roadmap](../2026-10-13-rfq-engine-plan.md). Its **Global Constraints** and **Layered structure** table apply to this task and supersede crate names/paths written here.
 
+**Gate A rulings applied here** ([decisions](../../reviews/spec-review.md#decisions)): #1 the withdrawal scenario becomes `mm_cannot_withdraw_after_selection` (the cancel is rejected and the accept fills); #4/#12 `demo_config()` gains `resume_grace: 2_000` and `min_request_notional: ONE_DOLLAR`; the property test also injects `Command::Resume` at random points.
+
 **Files:**
 - Create: `crates/rfq-core/src/scenarios.rs`, `crates/rfq-core/tests/scenarios.rs`, `crates/rfq-core/tests/properties.rs`
 - Modify: `crates/rfq-core/src/lib.rs` (add `pub mod scenarios;`)
@@ -25,7 +27,15 @@ use crate::types::*;
 
 /// Short windows so the Aeron demo runs in seconds.
 pub fn demo_config() -> Config {
-    Config { accept_window: 2_000, min_response: 500, max_response: 60_000, max_qty: 1_000_000, dispute_bond: dollars(100) }
+    Config {
+        accept_window: 2_000,
+        min_response: 500,
+        max_response: 60_000,
+        max_qty: 1_000_000,
+        dispute_bond: dollars(100),
+        resume_grace: 2_000,
+        min_request_notional: ONE_DOLLAR,
+    }
 }
 
 pub struct Ctx {
@@ -133,11 +143,16 @@ pub fn all() -> Vec<Scenario> {
             expect: vec!["RequestOpened", "QuoteSubmitted", "QuoteSubmitted", "QuoteLost", "QuoteSelected", "RequestPresented", "QuoteFilled", "RequestFilled", "ContractClosed", "OutcomeProposed", "ContractFinalized", "PositionSettled"],
         }
     };
+    // The selected quote is firm (RFC P5): MM2's cancel inside the window is rejected and the accept fills.
     let withdraw = {
         let mut s = quoted();
         s.push(send(1_800, "cancel", MM2, |c| Action::CancelQuote { quote: c.quote("q2") }));
         s.push(accept(1_900));
-        Scenario { name: "mm_withdraws_after_selection", steps: s, expect: vec!["RequestPresented", "QuoteCancelled", "RequestRejected", "CommandRejected"] }
+        Scenario {
+            name: "mm_cannot_withdraw_after_selection",
+            steps: s,
+            expect: vec!["RequestPresented", "CommandRejected", "QuoteFilled", "RequestFilled"],
+        }
     };
     let no_quotes = {
         let mut s = setup();
@@ -229,11 +244,12 @@ fn happy_path() {
 }
 
 #[test]
-fn mm_withdraws_after_selection() {
-    let (h, _) = run("mm_withdraws_after_selection");
-    for a in [ALICE, MM1, MM2] {
-        assert_eq!(free(&h, a), dollars(1_000));
-    }
+fn mm_cannot_withdraw_after_selection() {
+    let (h, _) = run("mm_cannot_withdraw_after_selection");
+    assert_eq!(free(&h, ALICE), dollars(400));
+    assert_eq!(free(&h, MM1), dollars(1_000));
+    assert_eq!(free(&h, MM2), dollars(600));
+    assert_eq!(h.engine.balance(MM2).escrowed, dollars(400), "the selected quote stayed firm and filled");
 }
 
 #[test]
@@ -299,7 +315,7 @@ const ACTORS: [AccountId; 5] = [ALICE, MM1, MM2, CAROL, ORACLE];
 struct Op { actor: usize, kind: u8, a: u16, b: u16, dt: u32 }
 
 fn op() -> impl Strategy<Value = Op> {
-    (0..ACTORS.len(), 0u8..10, any::<u16>(), any::<u16>(), 0u32..20_000)
+    (0..ACTORS.len(), 0u8..11, any::<u16>(), any::<u16>(), 0u32..20_000)
         .prop_map(|(actor, kind, a, b, dt)| Op { actor, kind, a, b, dt })
 }
 
@@ -349,6 +365,10 @@ proptest! {
         for o in &ops {
             let t = h.now() + o.dt as u64;
             h.set_time(t);
+            if o.kind == 10 {
+                h.submit(Command::Resume); // a restart can happen between any two commands
+                continue;
+            }
             match action(&h, o, c) {
                 Some(a) => {
                     let amount = if let Action::Withdraw { amount } = a { Some(amount) } else { None };
@@ -365,7 +385,7 @@ proptest! {
     }
 }
 ```
-The trading close is placed at 2,000,000 ms, which is beyond the reach of the random times (≤ 200 × 20 s = 4,000,000 ms). Requests created after the close are rejected and that's fine. The final tick past every deadline proves the no-dead-ends property: nothing stays reserved or escrowed.
+The trading close is placed at 2,000,000 ms, which is beyond the reach of the random times (≤ 200 × 20 s = 4,000,000 ms). Requests created after the close are rejected and that's fine, as are dust requests below the $1 minimum notional. `Resume` can land anywhere, including inside a dispute window; its extensions are capped below the hard deadline. The final tick past every deadline proves the no-dead-ends property: nothing stays reserved or escrowed.
 
 - [ ] **Step 4: Run all tests**
 

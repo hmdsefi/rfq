@@ -48,6 +48,8 @@ harness = false
 `crates/rfq-core/benches/apply.rs`:
 ```rust
 //! Engine throughput: replay a ~120k-command log of full RFQ rounds; cost of state_hash.
+use std::collections::BTreeMap;
+
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughput};
 use rfq_core::testkit::{accounts::*, dollars, genesis, price};
 use rfq_core::*;
@@ -58,7 +60,7 @@ struct Builder {
     engine: Engine,
     log: Vec<SequencedCommand>,
     seq: u64,
-    nonce: u64,
+    nonces: BTreeMap<AccountId, u64>,
 }
 
 impl Builder {
@@ -69,15 +71,17 @@ impl Builder {
         self.log.push(sc);
     }
 
-    /// One global nonce counter is strictly increasing per actor too.
+    /// Nonces are strict per actor: exactly `last + 1` (engine.md §2).
     fn user(&mut self, time: Timestamp, actor: AccountId, action: Action) {
-        self.nonce += 1;
-        self.push(time, Command::User { actor, nonce: self.nonce, action });
+        let n = self.nonces.entry(actor).or_insert(0);
+        *n += 1;
+        let nonce = *n;
+        self.push(time, Command::User { actor, nonce, action });
     }
 }
 
 fn build_log() -> Vec<SequencedCommand> {
-    let mut b = Builder { engine: Engine::new(), log: Vec::new(), seq: 0, nonce: 0 };
+    let mut b = Builder { engine: Engine::new(), log: Vec::new(), seq: 0, nonces: BTreeMap::new() };
     b.push(0, Command::Genesis(genesis(Config::default())));
     for a in [ALICE, MM1, MM2] {
         b.user(0, OPERATOR, Action::Deposit { to: a, amount: dollars(1_000_000_000) });

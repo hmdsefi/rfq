@@ -10,12 +10,12 @@
 
 Run:
 ```bash
-# The Test column (5th '|' field) of the R1–R8 race table.
-grep -E '^\| R[0-9]' docs/specs/failure-modes.md | awk -F'|' '{print $5}' | grep -oE '[a-z_]+' | sort -u | while read t; do
+# The Test column (5th '|' field) of the race (R1–R8) and partial-failure (F1–F10) tables. "—" means none.
+grep -E '^\| [RF][0-9]' docs/specs/failure-modes.md | awk -F'|' '{print $5}' | grep -oE '[a-z_]+' | sort -u | while read t; do
   grep -rq "fn $t" crates || echo "missing test: $t"
 done
 ```
-Expected: no output. Rename the tests or update the doc until nothing is missing. The reviewers will compare this list against the code.
+Expected: no output. Rename the tests or update the doc until nothing is missing. The reviewers will compare this list against the code. Gate A renamed or added: `cancel_before_deadline_removes_quote`, `cancel_after_selection_rejected` (R1, Task 5; they replace the `race_*` tests), `nonce_gap_rejected_and_not_consumed` (R6, Task 3), `propose_too_late_rejected`, `resume_extends_open_dispute_window`, `resume_does_not_extend_accept_window` (F8/F9, Task 6), `restart_appends_resume` (F9, Task 9).
 
 - [ ] **Step 2: Write the README**
 

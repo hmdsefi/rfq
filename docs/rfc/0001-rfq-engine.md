@@ -1,6 +1,6 @@
 # RFC 0001 — RFQ Matching & Settlement Engine
 
-- **Status:** Accepted (pending spec review)
+- **Status:** Accepted; Gate A spec review applied 2026-10-14 ([decisions](../reviews/spec-review.md#decisions))
 - **Date:** 2026-10-13
 - **Stack:** Rust, Aeron + Aeron Archive (via `rusteron`), Docker Compose
 
@@ -29,11 +29,11 @@ UI, auth/KYC, real chain or money movement, pricing/risk logic, fees, Aeron Clus
 | P2 | Side | Requester **declares the side** they buy (`BuyYes` / `BuyNo`). | Simple; "sell YES" ≡ "buy NO" in a fully-backed binary. Info-leak trade-off noted. |
 | P3 | Fills | **One quote fills a whole leg.** No splitting. | One counterparty per leg keeps escrow simple. |
 | P4 | Requester funds | **Reserved at submission** at `qty × limit_price`. | Requests without funds can't tie up MM capital. |
-| P5 | MM cancel | MMs may cancel/replace **until acceptance**. Ordering decides races. | MMs aren't trapped with stale prices; races resolved by sequence. |
+| P5 | MM cancel | MMs may cancel/replace **until selection**; a selected quote is **firm** through `accept_by`. Ordering decides races. | Standard firm-quote RFQ: the MM knows `ACCEPT_WINDOW` and prices it in. A cancel inside the window would let one MM void every RFQ for free. |
 | P6 | Multi-leg | **Designed, not built.** Data model is `Vec<Leg>`; engine rejects `legs.len() != 1`. | Scope discipline; design proves atomicity (see specs/engine.md §8). |
 | P7 | Visibility | **Sealed** until the response deadline. | Prevents last-second undercutting and quote leakage. |
-| P8 | Expiry in window | Presented quote gone (expired/cancelled) ⇒ **request fails**, everything released. No silent fallback. | Requester only ever accepts a price they saw. |
-| P9 | Resolution | Outcomes `Yes`/`No`/`Invalid`. **Hard deadline ⇒ auto-`Invalid`** (refund). | Money can never be stuck forever. |
+| P8 | Expiry in window | A selected quote can't be cancelled and is eligible only if firm through `accept_by`, so the presented price stays fillable for the whole window. Defensively, if it were ever gone the **request fails**, everything released. No silent fallback. | Requester only ever accepts a price they saw. |
+| P9 | Resolution | Outcomes `Yes`/`No`/`Invalid`. **Hard deadline ⇒ final:** `Invalid` (refund) if the oracle never proposed; an unruled dispute keeps the proposal. A timeout never turns a proposal into `Invalid`. | Money can never be stuck forever, and running out the clock never pays the losing side. |
 | P10 | Contracts | Listed by an **operator**; trading is permissionless. | The resolver must know the exact question; stops requesters crafting ambiguous wording. |
 | P11 | Best quote | Lowest price for the requester; tie → earliest sequence number. | Deterministic and fair. |
 | P12 | Disputes | Anyone may dispute once per contract by posting a **bond**; a mocked **arbiter** rules. | Cheap honest path, costly spam. |

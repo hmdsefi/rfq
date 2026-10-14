@@ -64,7 +64,7 @@ flowchart TB
 ```rust
 pub struct SequencedCommand { pub seq: u64, pub time: Timestamp, pub cmd: Command }
 
-pub enum Command { Genesis(Genesis), Tick, User { actor: AccountId, nonce: u64, action: Action } }
+pub enum Command { Genesis(Genesis), Tick, Resume, User { actor: AccountId, nonce: u64, action: Action } }
 
 impl Engine {
     pub fn new() -> Self;                                         // empty; first command must be Genesis
@@ -171,7 +171,7 @@ flowchart LR
 This is the hybrid model Polymarket uses: matching off-chain, settlement on-chain against conditional-token collateral. Moving to it doesn't change the engine. Escrow amounts and payouts are already exact integers (`qty × p` / `qty × (1−p)`), so the contract can verify them directly.
 
 **Rules for the chain adapter:**
-- **Exactly-once deposits:** the on-chain deposit id becomes the `Deposit` nonce, so if the adapter re-sends a deposit after a crash, the engine rejects it as `Duplicate`.
+- **Exactly-once deposits:** nonces are strict (`nonce == last + 1`), so the adapter submits finalized deposits in chain order with consecutive operator nonces and durably records `deposit id → nonce` before sending. After a crash it re-sends from its record: `Duplicate` means already applied, and `NonceGap` means an earlier deposit is missing, so it can never double-credit or skip one.
 - **Wait for finality:** only deposits past the chain's finality depth are sent, so a chain reorg can't take back money the engine has already credited.
 - **Withdrawals go through an outbox:** a `Withdraw` debits the ledger and emits `Withdrawn` in the same command. The egress log is the outbox. A worker sends the transaction idempotently, keyed by `seq`. If the transaction ultimately fails, the worker submits a `WithdrawalFailed` command that re-credits the account, so the funds are never lost between ledger and chain. That command would be a new one, added only when the chain is real.
 

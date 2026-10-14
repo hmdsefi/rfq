@@ -25,7 +25,8 @@
 - Validate-then-apply: every handler finishes all checks before its first mutation. After that point, ledger calls use `.expect(VALIDATED)`.
 - IDs come from the sequence: `RequestId(seq)` and `QuoteId(seq)`. `PositionId` and `HoldId` come from engine counters.
 - `legs.len() != 1` is rejected with `Unsupported` (multi-leg is design only, RFC P6). The data model stays `Vec<Leg>`.
-- Default config: `accept_window = 30_000` ms, `min_response = 1_000`, `max_response = 604_800_000`, `max_qty = 1_000_000_000`, `dispute_bond = 100 × ONE_DOLLAR`.
+- Default config: `accept_window = 30_000` ms, `min_response = 1_000`, `max_response = 604_800_000`, `max_qty = 1_000_000_000`, `dispute_bond = 100 × ONE_DOLLAR`, `resume_grace = 600_000`, `min_request_notional = ONE_DOLLAR` (the last two from Gate A).
+- Nonces are strict per actor: only `last + 1` is accepted (`Duplicate` / `NonceGap` otherwise). Every client, test builder and demo keeps a per-actor counter.
 - Aeron streams are all `aeron:ipc`: ingress 1001, log 1002, egress 1003, replay 1004. Never use stream 10, which is Archive's local control.
 - Codec: a `u8` version prefix (`1`) followed by bincode (fixint, little-endian, 64 KiB limit).
 - Event names returned by `Event::name()` are exactly the variant names.
@@ -59,7 +60,7 @@ Ruling made at execution start, at the PO's request ("best structure, interfaces
 
 1. **Engine idle across several deadlines:** a command arrives long after `response_deadline + accept_window` with no `Tick` in between. Expect selection, then lapse, then the command, all in one `apply`, in deadline order. The test lives in Task 5 (`idle_engine_fires_deadline_then_lapse_in_one_command`).
 2. **Malformed or oversized ingress bytes:** expect the message to be dropped while the node keeps running and the journal stays unchanged. Tests are in Task 8 (`decode_rejects_oversized`) and Task 9 (`malformed_ingress_is_dropped`).
-3. **A client trying to inject `Tick`/`Genesis` bytes:** they must never reach the log. The test is in Task 9 (`client_cannot_inject_system_commands`).
+3. **A client trying to inject `Tick`/`Resume`/`Genesis` bytes:** they must never reach the log. The test is in Task 9 (`client_cannot_inject_system_commands`).
 4. **A torn last record in `FileJournal` after a crash:** expect replay to stop at the last good record, truncate the tail, and allow appends to continue. The test is in Task 9 (`file_journal_truncates_torn_tail`).
 5. **Overflowing deposit amounts:** expect `CommandRejected(Overflow)` and no state change. The test is in Task 3 (`deposit_overflow_rejected`).
 

@@ -2,13 +2,15 @@
 
 > Part of the [implementation roadmap](../2026-10-13-rfq-engine-plan.md). Its **Global Constraints** and **Layered structure** table apply to this task and supersede crate names/paths written here.
 
+**Gate A rulings applied here** ([decisions](../../reviews/spec-review.md#decisions)): #1 selected quotes are firm — `cancel_quote` stays `Active`-only (Task 4), there is no "cancel selected ⇒ `Rejected(QuoteWithdrawn)`" path, and `RejectCause::QuoteWithdrawn` is deleted; R1 is now "MM cancel vs response deadline". #2 selection is the only place the sealed limit is checked. #14 with the submit clamp, a selected quote expires exactly at `accept_by`, so its expiry timer is a no-op and `AcceptBy` lapses the request.
+
 **Files:**
-- Modify: `crates/rfq-core/src/engine/rfq.rs`, `crates/rfq-core/src/engine/mod.rs`
+- Modify: `crates/rfq-core/src/engine/rfq.rs`, `crates/rfq-core/src/engine/mod.rs`, `crates/rfq-core/src/model.rs` (delete `RejectCause::QuoteWithdrawn`)
 - Create: `crates/rfq-core/tests/selection_accept.rs`
 
 **Interfaces:**
-- Consumes: `close_request`, `end_quote` (Task 4).
-- Produces: handlers `on_request_deadline(RequestId, Timestamp, &mut Out)`, `on_accept_by`, `accept`, `reject`; `cancel_quote` and `on_quote_expiry` gain the `Selected` path. Positions are created with ids `PositionId(next_position)`.
+- Consumes: `close_request`, `end_quote`, `cancel_quote` (Task 4, unchanged here).
+- Produces: handlers `on_request_deadline(RequestId, Timestamp, &mut Out)` (replacing Task 4's expire-only placeholder), `on_accept_by`, `accept`, `reject`; `on_quote_expiry` gains a defensive `Selected` path. Positions are created with ids `PositionId(next_position)`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -150,6 +152,8 @@ fn reject_releases_everything() {
 
 #[test]
 fn accept_after_window_rejected_without_tick() {
+    // The quote's expiry is clamped to ACCEPT_BY, so its timer fires first at ACCEPT_BY as a no-op
+    // (the quote is Selected) and AcceptBy then lapses the request.
     let mut w = world(Side::BuyYes);
     let q = quote(&mut w, MM2, 6_000, 100_000);
     w.h.tick(DEADLINE);
@@ -173,40 +177,64 @@ fn idle_engine_fires_deadline_then_lapse_in_one_command() {
 }
 
 #[test]
-fn race_cancel_before_accept() {
+fn over_limit_quote_accepted_but_never_selected() {
+    // SubmitQuote doesn't check the sealed limit (no oracle for it); selection does.
     let mut w = world(Side::BuyYes);
-    let q = quote(&mut w, MM2, 6_000, 100_000);
-    w.h.tick(DEADLINE);
-    let out = w.h.user(MM2, Action::CancelQuote { quote: q });
-    assert_eq!(names(&out), vec!["QuoteCancelled", "RequestRejected"]);
-    let out = w.h.user(ALICE, Action::Accept { request: w.r, picks: picks(q, 6_000) });
-    assert_eq!(rejection(&out), Some(RejectReason::InvalidState));
-    assert_eq!(w.h.engine.request(w.r).unwrap().state, RequestState::Rejected(RejectCause::QuoteWithdrawn));
-    for a in [ALICE, MM2] {
+    let q = quote(&mut w, MM1, 7_001, 100_000); // above ALICE's 0.70 limit, yet accepted
+    assert_eq!(w.h.engine.quote(q).unwrap().state, QuoteState::Active);
+    let out = w.h.tick(DEADLINE);
+    // It is the only quote: without the eligibility check it would have been selected.
+    assert_eq!(names(&out), vec!["QuoteLost", "RequestExpired"]);
+    assert_eq!(w.h.engine.quote(q).unwrap().state, QuoteState::Lost);
+    for a in [ALICE, MM1] {
         assert_eq!(w.h.engine.balance(a).free, dollars(1_000));
     }
 }
 
 #[test]
-fn race_accept_before_cancel() {
+fn cancel_before_deadline_removes_quote() {
     let mut w = world(Side::BuyYes);
-    let q = quote(&mut w, MM2, 6_000, 100_000);
-    w.h.tick(DEADLINE);
-    assert_eq!(rejection(&w.h.user(ALICE, Action::Accept { request: w.r, picks: picks(q, 6_000) })), None);
-    let out = w.h.user(MM2, Action::CancelQuote { quote: q });
+    let q1 = quote(&mut w, MM1, 6_000, 100_000);
+    let q2 = quote(&mut w, MM2, 6_200, 100_000);
+    w.h.set_time(DEADLINE - 1);
+    let out = w.h.user(MM1, Action::CancelQuote { quote: q1 });
+    assert_eq!(names(&out), vec!["QuoteCancelled"]);
+    assert_eq!(w.h.engine.balance(MM1).free, dollars(1_000));
+    // A cancel stamped at the deadline is sequenced after selection: the quote is already Selected.
+    w.h.set_time(DEADLINE);
+    let out = w.h.user(MM2, Action::CancelQuote { quote: q2 });
+    assert_eq!(names(&out), vec!["QuoteSelected", "RequestPresented", "CommandRejected"]);
     assert_eq!(rejection(&out), Some(RejectReason::InvalidState));
+    assert_eq!(w.h.engine.quote(q2).unwrap().state, QuoteState::Selected);
+}
+
+#[test]
+fn cancel_after_selection_rejected() {
+    let mut w = world(Side::BuyYes);
+    let q1 = quote(&mut w, MM1, 6_200, 100_000);
+    let q2 = quote(&mut w, MM2, 6_000, 100_000);
+    w.h.tick(DEADLINE);
+    // Selected quotes are firm through accept_by (RFC P5); a lost quote is already released.
+    assert_eq!(rejection(&w.h.user(MM2, Action::CancelQuote { quote: q2 })), Some(RejectReason::InvalidState));
+    assert_eq!(rejection(&w.h.user(MM1, Action::CancelQuote { quote: q1 })), Some(RejectReason::InvalidState));
+    assert_eq!(w.h.engine.quote(q2).unwrap().state, QuoteState::Selected);
+    assert_eq!(w.h.engine.balance(MM2).reserved, dollars(400));
+    let out = w.h.user(ALICE, Action::Accept { request: w.r, picks: picks(q2, 6_000) });
+    assert_eq!(names(&out), vec!["QuoteFilled", "RequestFilled"]);
     assert_eq!(w.h.engine.balance(MM2).escrowed, dollars(400));
 }
 ```
 
+`over_limit_quote_accepted_but_never_selected` is the selection half of Gate A #2; Task 4's `quote_validation` covers the submit half.
+
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `cargo test -p rfq-core --test selection_accept`
-Expected: FAIL (no selection happens; Accept/Reject give `Unsupported`).
+Expected: FAIL (Task 4's placeholder expires every request at its deadline instead of selecting; Accept/Reject give `Unsupported`).
 
 - [ ] **Step 3: Implement selection, accept, reject and lapse**
 
-Append to the `impl Engine` block in `crates/rfq-core/src/engine/rfq.rs`:
+Delete Task 4's placeholder `on_request_deadline`, then append to the `impl Engine` block in `crates/rfq-core/src/engine/rfq.rs`:
 ```rust
     /// Fired at `response_deadline`. Picks the best eligible quote per leg; all-or-nothing.
     pub(super) fn on_request_deadline(&mut self, id: RequestId, deadline: Timestamp, out: &mut Out) {
@@ -215,7 +243,8 @@ Append to the `impl Engine` block in `crates/rfq-core/src/engine/rfq.rs`:
             return;
         }
         let accept_by = deadline.saturating_add(self.config().accept_window);
-        // Eligible = active, within limit, and firm through the whole acceptance window.
+        // Eligible = active, within limit, and firm through the whole acceptance window. This is the
+        // only check of the sealed limit (SubmitQuote doesn't do it, so it can't be probed).
         let picks: Option<Vec<Pick>> = r
             .legs
             .iter()
@@ -350,36 +379,34 @@ Append to the `impl Engine` block in `crates/rfq-core/src/engine/rfq.rs`:
 ```
 Add `use crate::command::Pick;` to the imports at the top of `rfq.rs`.
 
-Replace the existing `cancel_quote` match and `on_quote_expiry` body with versions that handle `Selected`:
-```rust
-        match q.state {
-            QuoteState::Active => {
-                self.end_quote(id, QuoteState::Cancelled, out);
-                Ok(())
-            }
-            QuoteState::Selected => {
-                let request = q.request;
-                self.end_quote(id, QuoteState::Cancelled, out);
-                self.close_request(request, RequestState::Rejected(RejectCause::QuoteWithdrawn), out);
-                Ok(())
-            }
-            _ => Err(RejectReason::InvalidState),
-        }
-```
+Leave `cancel_quote` exactly as Task 4 wrote it: only `Active` quotes can be cancelled, and a `Selected` one gets `InvalidState` (Gate A #1). Do **not** add a `Selected` arm.
+
+Replace the `on_quote_expiry` body with a version that knows about `Selected`:
 ```rust
     pub(super) fn on_quote_expiry(&mut self, id: QuoteId, out: &mut Out) {
         let Some(q) = self.quotes.get(&id) else { return };
         match q.state {
             QuoteState::Active => self.end_quote(id, QuoteState::Expired, out),
+            // A selected quote is firm through `accept_by`: eligibility needs `expires_at >= accept_by`
+            // and submit clamps it to at most that, so this timer fires together with (just before)
+            // the request's `AcceptBy`, which lapses the request. Defensive only: a selected quote
+            // that expired *before* `accept_by` would fail the request, never fall back (RFC P8).
             QuoteState::Selected => {
                 let request = q.request;
-                self.end_quote(id, QuoteState::Expired, out);
-                self.close_request(request, RequestState::Rejected(RejectCause::QuoteExpired), out);
+                let early = matches!(
+                    self.requests[&request].state,
+                    RequestState::Presented { accept_by } if q.expires_at < accept_by
+                );
+                if early {
+                    self.end_quote(id, QuoteState::Expired, out);
+                    self.close_request(request, RequestState::Rejected(RejectCause::QuoteExpired), out);
+                }
             }
             _ => {}
         }
     }
 ```
+In `crates/rfq-core/src/model.rs`, delete the `QuoteWithdrawn` variant from `RejectCause` (it becomes `Declined, Lapsed, QuoteExpired`). Nothing produces it any more; the compiler finds any leftover use.
 
 - [ ] **Step 4: Wire up dispatch and timers**
 
@@ -388,21 +415,20 @@ In `apply_user`, add these arms before `_ =>`:
             Action::Accept { request, picks } => self.accept(actor, *request, picks, out),
             Action::Reject { request } => self.reject(actor, *request, out),
 ```
-In `fire_due_timers`, add these arms before `_ => {}`:
+In `fire_due_timers`, add this arm before `_ => {}` (the `RequestDeadline` arm is already there from Task 4):
 ```rust
-                TimerKey::RequestDeadline(r) => self.on_request_deadline(r, at, out),
                 TimerKey::AcceptBy(r) => self.on_accept_by(r, out),
 ```
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `cargo test -p rfq-core`
-Expected: all pass, including 13 in `selection_accept`.
+Expected: all pass, including 14 in `selection_accept`.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add crates/rfq-core
-git commit -m "feat(core): sealed selection at deadline, atomic accept into escrow, lapse and withdrawal races"
+git commit -m "feat(core): sealed selection at deadline, firm selected quotes, atomic accept into escrow, lapse"
 ```
 
