@@ -23,7 +23,7 @@ Settled funds go to `free` and are immediately withdrawable.
    - ruling = proposal ⇒ bond forfeited to the treasury account (conservation holds: it moves account-to-account).
 6. **Hard stop** at `resolution_deadline`. A timeout never turns a proposal into `Invalid`:
    - `Closed` (the oracle never proposed) ⇒ `Final(Invalid)`.
-   - `Disputed` (the arbiter never ruled) ⇒ `Final(proposed)`, bond returned: the arbiter failed, not the disputer. No event announces the returned bond (spec gap, [engine.md §7](engine.md)).
+   - `Disputed` (the arbiter never ruled) ⇒ `Final(proposed)`, bond returned: the arbiter failed, not the disputer. `DisputeBondReturned{contract, disputer, amount}`, sent to the disputer only, announces it (it is not a `Ruled`: nobody ruled).
    - `Proposed` can't reach it: step 2 and the `Resume` cap keep `dispute_until < resolution_deadline`.
 
 ## Disputed
@@ -33,7 +33,8 @@ The proposal is frozen; no funds move until `Rule` or the hard deadline, which f
 ## Delayed
 
 - **Oracle silent.** Nothing happens until `resolution_deadline`, then `Final(Invalid)` refunds both sides. Money is never stuck: every unsettled position belongs to a contract with a pending hard-deadline timer (invariant I5). This is the liveness fallback for a trusted oracle; it does move expected value from winners to losers. Production: an oracle bond, and auto-escalation to the arbiter at a `proposal_deadline`.
-- **Node down during the dispute window.** Downtime must not eat the time holders have to dispute. After a restart the node sequences `Resume` before anything else; before any due timer fires, every `Proposed` contract whose window ends before `min(now + RESUME_GRACE, resolution_deadline − 1)` gets that as its new `dispute_until`, a re-armed timer, and a re-emitted `OutcomeProposed`. A window is never shortened, and the old timer becomes a no-op. If downtime outlasts `resolution_deadline − 1`, no dispute time can be given back and the proposal finalizes as proposed. Deadlines that only refund (lapse, expiry, hard deadline) fire normally.
+- **Node down or stalled during the dispute window.** Downtime must not eat the time holders have to dispute. After a restart, and after a poll gap longer than `STALL_GAP_MS` (1 s) while running (a paused process, a blocked step, a forward clock jump), the node sequences `Resume` before anything else; before any due timer fires, every `Proposed` contract whose window ends before `min(now + RESUME_GRACE, resolution_deadline − 1)` gets that as its new `dispute_until`, a re-armed timer, and a re-emitted `OutcomeProposed`. A window is never shortened, and the old timer becomes a no-op. If downtime outlasts `resolution_deadline − 1`, no dispute time can be given back and the proposal finalizes as proposed. Deadlines that only refund (lapse, expiry, hard deadline) fire normally.
+- **Node down before the oracle proposed (accepted residual).** `ProposeOutcome` needs `now + dispute_window < resolution_deadline`, so downtime that ends at or after `resolution_deadline − dispute_window` locks the oracle out and the contract ends `Invalid`, refunding everyone. No money is lost, but expected value moves from winners to losers, as with a silent oracle. The alternative, a late proposal with a window shortened to `resolution_deadline − 1`, would trade dispute time for liveness.
 
 ## Ambiguous wording
 

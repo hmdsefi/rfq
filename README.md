@@ -22,7 +22,7 @@ The toolchain is pinned to Rust 1.99.0 in `rust-toolchain.toml`, so `rustup` ins
 - unit and behaviour tests for the ledger and every command, including the race and partial-failure cases ([failure-modes.md](docs/specs/failure-modes.md) names the test for each one);
 - the six scripted scenarios of the demo, run in memory, and replay tests that rebuild the engine from its log and compare `state_hash`;
 - two property tests that run random command streams and check the invariants I1–I5 after every command;
-- node tests over the in-memory and file journals: startup replay, write-ahead order, restart, failure latch.
+- node tests over the in-memory and file journals: startup replay, write-ahead order, restart, `Resume` after a stall, failure latch.
 
 Engine benchmark:
 
@@ -90,7 +90,7 @@ Also: the product and technical decisions in [rfc/0001-rfq-engine.md](docs/rfc/0
 - **Deterministic, replayable.** One sequencer totally orders every command and stamps its time. The engine never reads a clock or randomness and iterates only `BTreeMap`/`BTreeSet`. State is the replay of the log, and `state_hash` proves it.
 - **Money only moves through the ledger,** and every handler validates before it mutates. Five invariants (conservation, holds, escrow, ownership, no dead ends) are checked after every command in the tests.
 - **Adversarial by default.** Sealed bids, firm quotes once selected, strict per-actor nonces, a bond for disputes, role separation for oracles, a hard deadline so no money is stuck forever. The remaining risks are listed with their production defences in [adversarial.md](docs/specs/adversarial.md).
-- **Write-ahead.** Nothing is applied or published until its command is durable in the journal (Aeron Archive, or a local file).
+- **Write-ahead.** Nothing is applied or published until its command is durable, meaning fsynced, in the journal: Aeron Archive with `aeron.archive.file.sync.level=2`, or a local file with `sync_data`. That costs an fsync on the write-ahead path, one wait per batch. Egress is a best-effort notification stream; anything that must happen exactly once reads the journal.
 
 ## Measured numbers
 

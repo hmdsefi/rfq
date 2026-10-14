@@ -26,7 +26,7 @@ Set in the `Genesis` entry (first log record).
 | Any account | `Withdraw` (own free funds), `SubmitRequest`, `CancelRequest`, `SubmitQuote`, `CancelQuote`, `Accept`, `Reject`, `Dispute` |
 | Contract oracle | `ProposeOutcome` for its contracts |
 | Arbiter | `Rule` on disputed contracts |
-| System (the node) | `Genesis` (seq 1), `Tick`, `Resume` (first command after a restart, §6.3) |
+| System (the node) | `Genesis` (seq 1), `Tick`, `Resume` (first command after a restart or a stall, §6.3) |
 
 Every user command carries `actor: AccountId` and `nonce: u64`. Nonces are **strict**: the engine accepts a command only if `nonce == last_nonce[actor] + 1`. `nonce ≤ last` ⇒ `Duplicate` (it was already sequenced); `nonce > last + 1` ⇒ `NonceGap` (a predecessor is missing). Neither consumes anything. A valid nonce is consumed even if the command is then rejected for business reasons, so `Duplicate` always means "already applied" and retries are idempotent. System commands carry no nonce.
 
@@ -89,7 +89,7 @@ Requester hold at submission = Σ legs `qty × limit_price × 100` (P4).
 | `Dispute{contract}` | state `Proposed`; `now < dispute_until`; free ≥ `DISPUTE_BOND` | hold bond; `Disputed` |
 | `Rule{contract, outcome}` | actor = arbiter; state `Disputed` | bond returned if `outcome ≠ proposed`, else forfeited to treasury; `Final(outcome)`; settle all positions |
 | `Tick` | system (node) | none beyond timer firing |
-| `Resume` | system (node): the first command after a restart on a non-empty journal | runs **before** due timers fire: every `Proposed` contract whose `dispute_until` is below `min(now + RESUME_GRACE, resolution_deadline − 1)` is extended to that value, with a timer re-armed there and `OutcomeProposed` re-emitted with the new deadline. A window is never shortened (§6.3). Then timers fire as usual |
+| `Resume` | system (node): the first command after a restart on a non-empty journal, or after a poll gap longer than `STALL_GAP_MS` (1 s) | runs **before** due timers fire: every `Proposed` contract whose `dispute_until` is below `min(now + RESUME_GRACE, resolution_deadline − 1)` is extended to that value, with a timer re-armed there and `OutcomeProposed` re-emitted with the new deadline. A window is never shortened (§6.3). Then timers fire as usual |
 
 ## 6. State machines (D1)
 
@@ -145,7 +145,7 @@ stateDiagram-v2
   [*] --> Trading: ListContract (operator)
   Trading --> Closed: trading_close (clock)
   Closed --> Proposed: ProposeOutcome (oracle) — window must end before resolution_deadline
-  Proposed --> Proposed: Resume (system) — open window extended after downtime
+  Proposed --> Proposed: Resume (system) — open window extended after downtime or a stall
   Proposed --> Final: dispute window ends (clock) — outcome = proposed
   Proposed --> Disputed: Dispute (anyone, bond)
   Disputed --> Final: Rule (arbiter)
@@ -155,7 +155,7 @@ stateDiagram-v2
 ```
 
 - **A timeout never turns a proposal into `Invalid`.** `ProposeOutcome` needs `now + dispute_window < resolution_deadline` and `Resume` caps extensions at `resolution_deadline − 1`, so an undisputed window always ends on its own timer first. An unruled dispute finalizes the proposal at the hard deadline with the bond returned: the arbiter failed, not the disputer. Only a contract the oracle never resolved becomes `Invalid`.
-- **Downtime can't eat a dispute window.** After a restart the node sequences `Resume` first. Before any due timer fires, every open window that ends earlier is extended to `min(now + RESUME_GRACE, resolution_deadline − 1)` and re-armed; a window is never shortened. If downtime outlasts `resolution_deadline − 1` this cannot give dispute time back: the extended window is already over when the timers fire, so the proposal finalizes as proposed. Only dispute windows are extended: accept-window lapse, quote expiry, request deadline and hard deadline are refund-safe (firing late costs nobody money), so they fire normally.
+- **Downtime can't eat a dispute window.** After a restart, and after a poll gap longer than `STALL_GAP_MS` (1 s) while running (a paused process, a blocked step, a forward clock jump), the node sequences `Resume` first. Before any due timer fires, every open window that ends earlier is extended to `min(now + RESUME_GRACE, resolution_deadline − 1)` and re-armed; a window is never shortened. If downtime outlasts `resolution_deadline − 1` this cannot give dispute time back: the extended window is already over when the timers fire, so the proposal finalizes as proposed. Only dispute windows are extended: accept-window lapse, quote expiry, request deadline and hard deadline are refund-safe (firing late costs nobody money), so they fire normally. One accepted residual: downtime that ends at or after `resolution_deadline − dispute_window` locks the oracle out of proposing, so the contract ends `Invalid` and refunds everyone ([resolution.md](resolution.md), Delayed).
 
 Details in [resolution.md](resolution.md).
 
@@ -165,11 +165,11 @@ Every event carries an `audience` (`Public` or `Account(id)`), and each `EventBa
 
 **Trust boundary.** Sealing relies on that filter: the egress stream, the Archive and the gateways are venue-operated, and participants only ever reach their own audience-filtered session. Production: encrypted or commit-reveal quotes.
 
-`Initialized`, `CommandRejected{reason}`, `Deposited`, `Withdrawn`, `ContractListed`, `ContractClosed`, `RequestOpened` (public: contract, side, qty, deadline; never the limit or the requester), `RequestCancelled`, `RequestExpired`, `RequestPresented` (requester only: picks, accept_by), `RequestRejected{cause}`, `RequestFilled{positions}` (requester only), `QuoteSubmitted`/`QuoteReplaced`/`QuoteCancelled`/`QuoteExpired`/`QuoteLost`/`QuoteSelected`/`QuoteReleased`/`QuoteFilled` (quote owner only), `OutcomeProposed` (re-emitted with the new `dispute_until` when `Resume` extends a window), `Disputed`, `Ruled`, `ContractFinalized{outcome}`, `PositionSettled{payouts}` (to both holders).
-
-**Known gap.** When the hard deadline finalizes a `Disputed` contract it returns the disputer's bond and finalizes the proposal, but emits no event for the bond (`Ruled{bond_returned}` is only emitted by `Rule`). The balance change is visible in the ledger but not in the event stream. Documented spec gap; not changed in this build.
+`Initialized`, `CommandRejected{reason}`, `Deposited`, `Withdrawn`, `ContractListed`, `ContractClosed`, `RequestOpened` (public: contract, side, qty, deadline; never the limit or the requester), `RequestCancelled`, `RequestExpired`, `RequestPresented` (requester only: picks, accept_by), `RequestRejected{cause}`, `RequestFilled{positions}` (requester only), `QuoteSubmitted`/`QuoteReplaced`/`QuoteCancelled`/`QuoteExpired`/`QuoteLost`/`QuoteSelected`/`QuoteReleased`/`QuoteFilled` (quote owner only), `OutcomeProposed` (re-emitted with the new `dispute_until` when `Resume` extends a window), `Disputed`, `Ruled`, `DisputeBondReturned{contract, disputer, amount}` (disputer only: the hard deadline returned an unruled dispute's bond; not a `Ruled`, since nobody ruled), `ContractFinalized{outcome}`, `PositionSettled{payouts}` (to both holders).
 
 On egress the node wraps each command's events in an `EventBatch{seq, origin: Option<(actor, nonce)>, events}`. `origin` lets a client match its command to the ids it created, since `RequestId`/`QuoteId` equal the `seq` of the command that created them.
+
+**`origin` is audience-scoped too.** It names the sender, so a gateway forwards it only to that actor, like an `Account(actor)` audience, and strips it for everyone else. Forwarded as is, it would tell every subscriber who sent each public event's command, for example the requester behind `RequestOpened`, or which MM quoted at a given `seq`. Egress is venue-internal: the same trust boundary as the audiences above.
 
 ## 8. Multi-leg design (not built — P6)
 
@@ -199,7 +199,7 @@ The model is already `Vec<Leg>`; enabling N > 1 means removing one validation. T
 | `MIN_RESPONSE` / `MAX_RESPONSE` | 1 s / 7 days |
 | `MAX_QTY` | 10^9 |
 | `DISPUTE_BOND` | $100 |
-| `RESUME_GRACE` | 10 min (dispute time guaranteed after a restart, if the hard deadline allows) |
+| `RESUME_GRACE` | 10 min (dispute time guaranteed after a restart or a stall, if the hard deadline allows) |
 | `MIN_REQUEST_NOTIONAL` | $1 per leg (`qty × limit`) |
 | `reservation` | `ReservationPolicy::FullHold`: each quote holds its full collateral ([quote-lifetime.md](quote-lifetime.md)) |
 | `selection` | `SelectionPolicy::SealedAtDeadline`: sealed until the response deadline, best eligible quote presented once |

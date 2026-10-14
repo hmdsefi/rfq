@@ -26,6 +26,11 @@ pub struct EventBatch {
     pub seq: u64,
     /// `(actor, nonce)` of the user command that produced these events; `None` for system commands
     /// (`Genesis`, `Tick`, `Resume`).
+    ///
+    /// It identifies the sender, so it has an audience of its own: a gateway forwards it only to
+    /// that actor, like an `Account(actor)` audience, and strips it for everyone else. Otherwise
+    /// every subscriber would learn, say, the requester behind a public `RequestOpened`. Egress is
+    /// venue-internal, the same trust boundary as event audiences (docs/specs/engine.md §7).
     pub origin: Option<(AccountId, u64)>,
     pub events: Vec<Emitted>,
 }

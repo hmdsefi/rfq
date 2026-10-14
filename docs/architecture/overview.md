@@ -58,7 +58,7 @@ flowchart TB
 |---|---|---|---|
 | **Engine** | `rfq-domain::Engine` | Pure state machine: ledger, requests, quotes, contracts, timers. No I/O, no clock. | nothing |
 | **Sequencer** | `rfq-app::Sequencer` | Stamps each command with a consecutive `seq` and a monotonic `time` (wall clock, clamped, resumed from the journal). Pure, no I/O. | engine types |
-| **Node runtime** | `rfq-app::Node` | Startup replay, then the live loop: poll → sequence → append → wait durable → apply → publish. Sequences `Resume` after a restart and `Tick` when idle with a due timer. Latches `NodeError::Halted` on any port failure. | the ports |
+| **Node runtime** | `rfq-app::Node` | Startup replay, then the live loop: poll → sequence → append → wait durable → apply → publish. Sequences `Resume` after a restart or a poll gap over `STALL_GAP_MS` (1 s), and `Tick` when idle with a due timer. Latches `NodeError::Halted` on any port failure. | the ports |
 | **Ports** | `rfq-app::{Journal, Transport}` | Traits over the durable log and over client ingress / event egress, carrying typed values. | engine types |
 | **Codec** | `rfq-infra::codec` | Versioned binary encoding of commands, events and journal records (`serde` + `bincode`). Size limit only at untrusted ingress. | engine and protocol types |
 | **Journal adapters** | `rfq-infra::journal`, `rfq-infra::aeron` | `ArchiveJournal` = Aeron Archive recordings of stream 1002; `FileJournal`; `MemJournal` | Aeron Archive client (`aeron` feature) |
@@ -112,13 +112,13 @@ sequenceDiagram
   G-->>C: events
 ```
 
-**Write-ahead rule:** nothing is applied or published before its command is durably recorded. A batch (up to `MAX_BATCH` client commands) shares one durability wait; the whole batch is applied before any of it is published. If the engine crashes:
+**Write-ahead rule:** nothing is applied or published before its command is durably recorded. Durable means fsynced: the Archive runs with `aeron.archive.file.sync.level=2` (and the same for its catalog), so the recording position `wait_durable` reads advances only after the segment file is forced, and `FileJournal` calls `sync_data`. That puts an fsync on the write-ahead path; a batch (up to `MAX_BATCH` client commands) shares one durability wait, and the whole batch is applied before any of it is published. If the engine crashes:
 
 | Crash point | Effect | Recovery |
 |---|---|---|
 | Before log publish | Command never happened. | Client retries with same nonce. |
 | After record, before apply | Command is in the log. | Replay applies it. |
-| After apply, before egress | Memory is lost; the journal is not. | Replay re-derives the state with egress **suppressed**, so a batch that was not published is not re-published. Its events are derivable from the journal, and consumers reconcile from state or the log (`EventBatch.origin` matches a client's own command). |
+| After apply, before egress | Memory is lost; the journal is not. | Replay re-derives the state with egress **suppressed**, so that batch is never published: egress is a best-effort notification stream. The command and its effects are in the journal, and anything that must happen exactly once reads them there (§7). A client whose batch was lost learns the outcome only from later events; a read port is future work. |
 
 ## 5. Deployment (Docker Compose)
 
@@ -132,8 +132,8 @@ flowchart LR
   AE --- VOL[(archive volume)]
 ```
 
-- `aeron`: `eclipse-temurin:21-jre` and the pinned `aeron-all` 1.53.3 jar; runs the media driver and the Archive; `ipc: shareable`, `shm_size: 512m`.
-- `engine`, `demo`: Rust images from `docker/rust.Dockerfile` (`--features aeron`, `--locked`); `ipc: "service:aeron"` so all share `/dev/shm/aeron`; `init: true`. All channels are `aeron:ipc`. The `demo` service sits in compose profile `demo` and runs on demand (`docker compose run --rm demo [scenario]`).
+- `aeron`: `eclipse-temurin:21-jre` and the `aeron-all` 1.53.3 jar, checked against its sha256; runs the media driver and the Archive with fsync on (`file.sync.level=2`); `ipc: shareable`, `shm_size: 512m`.
+- `engine`, `demo`: Rust images from `docker/rust.Dockerfile` (`--features aeron`, `--locked`); `ipc: "service:aeron"` so all share `/dev/shm/aeron`; `init: true`. Every container runs as the same non-root uid 10001, because the driver's files in `/dev/shm/aeron` are `0644` and owned by it. All channels are `aeron:ipc`. The `demo` service sits in compose profile `demo` and runs on demand (`docker compose run --rm demo [scenario]`).
 - Archive data is on the named volume `archive`, so it survives the engine being killed and restarted. `./scripts/demo.sh` does exactly that: it runs the six scenarios, `SIGKILL`s the engine, restarts it, and checks that the replayed state hash equals the last hash the engine logged before the kill (`RECOVERY OK`).
 
 ## 6. Production path (not built)
@@ -159,8 +159,9 @@ flowchart LR
   CH[(Chain / escrow contract)] -- deposit events --> CA[Chain adapter]
   CA -- "Deposit{to, amount}<br/>nonce = deposit id" --> ING[[Ingress]]
   ING --> ENG[RFQ engine]
-  ENG -- "Withdrawn / PositionSettled" --> EGR[[Egress = outbox]]
-  EGR --> WF[Effect workers<br/>e.g. Temporal]
+  ENG -- "every command, journaled before apply" --> JRN[(Journal = outbox<br/>Archive recordings)]
+  JRN -- "replay from own checkpoint:<br/>Withdrawn / PositionSettled" --> WF[Effect workers<br/>e.g. Temporal]
+  ENG -. "best-effort notifications" .-> EGR[[Egress]]
   WF -- "send tx, retry, confirm" --> CH
   WF -- "WithdrawalFailed → re-credit" --> ING
   OR[Oracle sources] --> WF
@@ -180,7 +181,7 @@ This is the hybrid model Polymarket uses: matching off-chain, settlement on-chai
 **Rules for the chain adapter:**
 - **Exactly-once deposits:** nonces are strict (`nonce == last + 1`), so the adapter submits finalized deposits in chain order with consecutive operator nonces and durably records `deposit id → nonce` before sending. After a crash it re-sends from its record: `Duplicate` means already applied, and `NonceGap` means an earlier deposit is missing, so it can never double-credit or skip one.
 - **Wait for finality:** only deposits past the chain's finality depth are sent, so a chain reorg can't take back money the engine has already credited.
-- **Withdrawals go through an outbox:** a `Withdraw` debits the ledger and emits `Withdrawn` in the same command. The egress log is the outbox. A worker sends the transaction idempotently, keyed by `seq`. If the transaction ultimately fails, the worker submits a `WithdrawalFailed` command that re-credits the account, so the funds are never lost between ledger and chain. That command would be a new one, added only when the chain is real.
+- **Withdrawals go through an outbox:** a `Withdraw` debits the ledger and emits `Withdrawn` in the same command. The journal is the outbox, not egress: egress is best-effort, and a batch lost to a crash is never re-published (D3 F5), while the journal holds every applied command. A worker replays the Archive from its own durable checkpoint through a read-only engine, picks up each `Withdrawn`, and sends the transaction idempotently, keyed by `seq`. If the transaction ultimately fails, the worker submits a `WithdrawalFailed` command that re-credits the account, so the funds are never lost between ledger and chain. That command would be a new one, added only when the chain is real.
 
 ### Temporal (or any durable workflow engine)
 
@@ -191,7 +192,7 @@ This is the hybrid model Polymarket uses: matching off-chain, settlement on-chai
 - oracle polling, then submitting `ProposeOutcome`
 - notifications to requesters and MMs
 
-Each worker reads egress events and writes commands back to ingress. It's just another client of the engine, so the engine's determinism and replay guarantees are untouched.
+Each worker reads the journal (Archive replay from its own checkpoint) for anything that must happen exactly once, uses egress only for best-effort notifications, and writes commands back to ingress. It's just another client of the engine, so the engine's determinism and replay guarantees are untouched.
 
 ## 8. Scaling
 
