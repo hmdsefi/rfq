@@ -227,3 +227,56 @@ Errors come back as `{"error": "..."}`, never as a trap.
 - Form errors appear inline under the field (`role="alert"`) and block sending.
 - Engine rejections show as a toast in the acting card and as a red row in the trace; they're never an error banner.
 - Ids are underlined buttons that select the object for the inspector and the D1 diagram.
+
+## 11. Live mode: the dashboard drives the real stack (v2, approved by the PO, 2026-10-15)
+
+**Decision (PO, 2026-10-15).** The dashboard is only the window; the product is what it shows. In live mode every command goes through the real stack and every number comes back from it:
+
+```
+dashboard → WebSocket → rfq-gateway → Aeron → rfq-node (Docker) → Aeron → rfq-gateway → WebSocket → dashboard
+```
+
+Nothing is replayed or recomputed in the page. The gateway is a product component, specified in [docs/specs/gateway.md](../../docs/specs/gateway.md).
+
+The in-browser (WASM) engine stays only as an **offline fallback**. It is labelled "Offline: engine in the browser" (Task L7, optional).
+
+### 11.1 What the presenter does
+
+1. Start the stack (`docker compose up -d aeron engine gateway`) and open `dist/rfq-dashboard.html`. The status bar shows "Connected to the gateway, engine up".
+2. Pick a scenario in the combo box (the 6 brief scenarios and 6 attacks) and press **Run**. The page then acts as every participant:
+   - the operator funds the accounts and lists the contract;
+   - Alice submits the request;
+   - MM1 and MM2 quote;
+   - Alice accepts (or doesn't);
+   - the oracle proposes, Carol disputes, the arbiter rules, as the script says.
+
+   Each step is a real command sent through the gateway. The page moves to the next step when the previous command's `result` arrives. A scripted wait (a deadline, an accept window) waits on the engine's clock, and the engine fires its own timers.
+3. Batches stream in. The page shows each request, quote and contract moving through its D1 states (Open → Presented → Filled, Active → Selected → Filled, Trading → … → Final), the events with their audiences, and money moving between free, reserved and escrowed. Money comes from the engine's `balances` in each batch.
+4. At the end: PASS or FAIL against the scenario's expected events (the same lists as the tests).
+5. **Timeline.** The whole run is recorded. A scrubber steps through it batch by batch, even if it took milliseconds. Every panel shows the state at the scrubbed position.
+6. **Perf.** Per-command latency (sent → result) as p50 / p95 / max, commands per second, **Run ×N**, **Run all**, and a concurrency setting for parallel runs. Runs are scoped like `rfq-demo` (per-run account ids = `t0 × 100 + id`, contract `t0`), so parallel and repeated runs never see each other's objects.
+7. **Failures**, from a terminal: a "Failure drills" panel lists the commands and what to watch for.
+
+   | Drill | Command | What to watch |
+   |---|---|---|
+   | Engine crash mid-run | `docker compose kill engine`, then `docker compose start engine` | status "engine down" → the run's next command is refused → "engine up" → a `Resume` batch → the trace continues; `docker compose logs engine` shows `replayed seq=… hash=…` |
+   | Stall | `docker compose pause engine; sleep 2; docker compose unpause engine` | a `Resume` batch right after unpause; open dispute windows extended |
+   | Driver crash | `docker compose kill aeron` | the engine and gateway halt; Docker restarts them (cap 3); the page reconnects |
+
+8. **View as** (Admin, Alice, Carol, MM1, MM2) re-sends `hello` with that view. From then on the page receives exactly what the gateway would send that participant. The sealing proof is now done by the product, not by the page.
+
+### 11.2 What changes in the page
+
+- **Data source.** The recorded stream of gateway frames replaces the WASM `snapshot`. Object states come from the events (each event is a transition). Balances come from `balances`. A requester's own limit comes from the command the page itself sent as that requester.
+- **The clock** is the engine's. The +100 ms / +1 s / Next timer buttons are gone in live mode.
+- **Kept:** lanes, contract card, trace, ledger, D1–D5 panels, view-as.
+- **New:** a connection and engine status bar, Run / Run ×N / Run all / concurrency, the timeline scrubber, the perf panel, the failure drills panel.
+- **Scenario scripts** are declarative JS, one per preset, with the same steps, timings and expect lists as `rfq_testkit::scenarios` and the D3 attack presets.
+
+### 11.3 Acceptance (live mode)
+
+1. With the stack up, all 12 scenarios PASS from the combo box, one by one and with **Run all**.
+2. **Run ×20** at concurrency 4 passes every run and shows latency percentiles.
+3. Each failure drill shows what the table says, and the page recovers without a reload.
+4. View as Alice / MM1 shows only what gateway.md §4 allows. Spot-checked in the DOM, as in D8.
+5. No page computation of money or timers: every amount on screen is a `balances` value or an event field.
