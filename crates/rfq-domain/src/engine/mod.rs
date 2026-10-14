@@ -82,6 +82,10 @@ impl Engine {
         self.last_seq = sc.seq;
         self.now = self.now.max(sc.time);
         if self.genesis.is_some() {
+            // Resume first, so downtime can't eat a dispute window (engine.md §6.3).
+            if matches!(sc.cmd, Command::Resume) {
+                self.on_resume(&mut out);
+            }
             self.fire_due_timers(&mut out);
         }
         match &sc.cmd {
@@ -153,7 +157,11 @@ impl Engine {
             Action::CancelQuote { quote } => self.cancel_quote(actor, *quote, out),
             Action::Accept { request, picks } => self.accept(actor, *request, picks, out),
             Action::Reject { request } => self.reject(actor, *request, out),
-            _ => Err(RejectReason::Unsupported),
+            Action::ProposeOutcome { contract, outcome } => {
+                self.propose_outcome(actor, *contract, *outcome, out)
+            }
+            Action::Dispute { contract } => self.dispute(actor, *contract, out),
+            Action::Rule { contract, outcome } => self.rule(actor, *contract, *outcome, out),
         };
         if let Err(reason) = result {
             reject(out, reason);
@@ -172,7 +180,8 @@ impl Engine {
                 TimerKey::RequestDeadline(r) => self.on_request_deadline(r, at, out),
                 TimerKey::AcceptBy(r) => self.on_accept_by(r, out),
                 TimerKey::ContractClose(c) => self.on_contract_close(c, out),
-                _ => {}
+                TimerKey::DisputeWindow(c) => self.on_dispute_window(c, at, out),
+                TimerKey::HardDeadline(c) => self.on_hard_deadline(c, out),
             }
         }
     }
@@ -563,7 +572,7 @@ mod tests {
     }
 
     #[test]
-    fn resume_behaves_like_tick_for_now() {
+    fn resume_without_open_dispute_windows_is_a_tick() {
         let mut base = engine();
         base.timers.insert((10, TimerKey::RequestDeadline(RequestId(7))));
         let mut ticked = base.clone();
@@ -580,5 +589,93 @@ mod tests {
         assert_eq!(resumed.last_seq(), 2);
         assert_eq!(resumed.now(), 10);
         assert_eq!(ticked.state_hash(), resumed.state_hash());
+    }
+
+    fn closed_contract(resolution_deadline: Timestamp) -> Contract {
+        Contract {
+            id: ContractId(1),
+            description: String::new(),
+            oracle: A,
+            trading_close: 10,
+            resolution_deadline,
+            dispute_window: 5,
+            state: ContractState::Closed,
+            dispute: None,
+            positions: Vec::new(),
+        }
+    }
+
+    // Unreachable through commands (`propose_outcome` and `on_resume` keep the window strictly before
+    // the hard deadline, so the dispute timer always fires first), so the state is built directly.
+    // Pins the defensive branch: even then, a timeout never turns a proposal into Invalid.
+    #[test]
+    fn hard_deadline_on_a_proposed_contract_keeps_the_proposal() {
+        let mut e = engine();
+        let mut c = closed_contract(20);
+        c.state = ContractState::Proposed {
+            outcome: Outcome::Yes,
+            dispute_until: 20,
+        };
+        e.contracts.insert(ContractId(1), c);
+        let mut out = Vec::new();
+        e.on_hard_deadline(ContractId(1), &mut out);
+        assert_eq!(
+            out,
+            vec![Emitted::public(Event::ContractFinalized {
+                contract: ContractId(1),
+                outcome: Outcome::Yes,
+            })]
+        );
+        assert_eq!(
+            e.contracts[&ContractId(1)].state,
+            ContractState::Final(Outcome::Yes)
+        );
+    }
+
+    #[test]
+    fn stale_dispute_timer_does_not_finalize_an_extended_window() {
+        let mut e = engine();
+        let mut c = closed_contract(100);
+        c.state = ContractState::Proposed {
+            outcome: Outcome::No,
+            dispute_until: 50,
+        };
+        e.contracts.insert(ContractId(1), c);
+        let mut out = Vec::new();
+        e.on_dispute_window(ContractId(1), 15, &mut out); // armed for the window that ended at 15
+        assert_eq!(out, Vec::new());
+        assert_eq!(
+            e.contracts[&ContractId(1)].state,
+            ContractState::Proposed {
+                outcome: Outcome::No,
+                dispute_until: 50
+            }
+        );
+        e.on_dispute_window(ContractId(1), 50, &mut out);
+        assert_eq!(names_of(&out), vec!["ContractFinalized"]);
+    }
+
+    // Through `apply` the window's own timer finalizes the contract before a dispute at its end is
+    // handled, so this guard is defence in depth; call the handler directly to pin the boundary.
+    #[test]
+    fn dispute_at_the_window_end_is_too_late() {
+        let mut e = engine();
+        let mut c = closed_contract(100);
+        c.state = ContractState::Proposed {
+            outcome: Outcome::No,
+            dispute_until: 50,
+        };
+        e.contracts.insert(ContractId(1), c);
+        e.now = 50;
+        let mut out = Vec::new();
+        assert_eq!(
+            e.dispute(B, ContractId(1), &mut out),
+            Err(RejectReason::InvalidState)
+        );
+        assert_eq!(out, Vec::new());
+    }
+
+    fn names_of(out: &[Emitted]) -> Vec<&'static str> {
+        out.iter().map(|e| e.event.name()).collect()
     }
 }
