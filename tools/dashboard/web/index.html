@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-theme="light" data-view="admin">
+<html lang="en" data-view="admin">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -253,6 +253,27 @@ a.idlink, button.idlink { color: var(--accent); text-decoration: underline; text
 @media (max-width: 1720px) { .arena { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } .arena .contract-col { grid-column: 1 / -1; order: -1; } .contract { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); align-items: start; } }
 @media (max-width: 1100px) { .app { grid-template-columns: 1fr; } .trace { position: static; height: auto; border-left: 0; border-top: 1px solid var(--line); } .log { max-height: 60vh; } }
 @media (max-width: 720px) { .arena { grid-template-columns: 1fr; } .form-row { grid-template-columns: 1fr 1fr; } .row-events { padding-left: 16px; } .health { margin-left: 0; } .steps3 { grid-template-columns: 1fr; } .ledger { overflow-x: auto; } }
+</style>
+<style>
+/* Theme: with no explicit choice (no data-theme) the page follows the OS; light without a preference.
+   The tokens are the verbatim block's :root[data-theme="dark"] values. */
+:root[data-theme="dark"] { color-scheme: dark; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --page: #0b1220; --surface: #121b2c; --inset: #0f1726;
+    --ink: #e5ecf6; --ink-2: #b4c1d4; --ink-3: #93a2b8;
+    --line: #24324a; --line-2: #354764;
+    --accent: #8fa0ff; --accent-ink: #0b1220; --accent-tint: #1d2752;
+    --free: #3a4a63; --free-ink: #c9d3e0;
+    --reserved: #f4b740; --reserved-ink: #f6c66a; --reserved-tint: #3a2a0c;
+    --escrow: #8fa0ff; --escrow-ink: #aab7ff; --escrow-tint: #1d2752;
+    --yes: #4cc38a; --yes-tint: #0f3324; --no: #f2877e; --no-tint: #3d1714;
+    --ok: #4cc38a; --ok-tint: #0f3324; --bad: #f2877e; --bad-tint: #3d1714;
+    --warn: #f6c66a; --warn-tint: #3a2a0c; --gone: #93a2b8; --gone-tint: #1a2436;
+    --new: #2c2a14; --focus: #8fa0ff;
+    color-scheme: dark;
+  }
+}
 </style>
 <style>
 /* Page additions the static mockup never needed: a disabled control must look disabled. */
@@ -654,7 +675,7 @@ function renderScenario() {
   const chips = p.expect.map((x, i) => `<span class="chip${seen[i] ? " seen" : ""}">${esc(x)}${seen[i] ? '<span class="sr-only"> (seen)</span>' : ""}</span>`).join("");
   el.innerHTML = `<div>
       <div class="scenario-title">${title}</div>
-      <p>${esc(p.summary)}</p>
+      ${isAdmin() ? `<p>${esc(p.summary)}</p>` : '<p class="muted">Script narration is shown in the Admin view.</p>'}
     </div>
     <div class="progress">${progress}</div>
     <div class="expect" role="group" aria-label="Expected events, in order">${chips}</div>`;
@@ -962,8 +983,8 @@ function quoteItem(a, q) {
   const facts = [`<span>Sell ${leg ? sideName(leg.side) : ""} at <b>${fmtPrice(q.price)}</b> × <b>${qty(q.size)}</b></span>`];
   const live = LIVE_QUOTE.includes(q.state);
   if (live) {
-    // The hold label is size × (1 − price) in micro-USD: display only, from the engine's integers.
-    facts.push(`<span>Holds <b>${fmtUsd(q.size * (10000 - q.price) * 100)}</b></span>`);
+    // What the quote's hold reserves, as the engine computed it (on the leg's qty, not the size).
+    if (q.reserved != null) facts.push(`<span>Holds <b>${fmtUsd(q.reserved)}</b></span>`);
     facts.push(`<span>${q.state === "Selected" ? "Firm until" : "Expires"} ${fmtT(q.expires_at)}</span>`);
   } else if (q.state === "Filled") {
     const p = s.positions.find((x) => x.request === q.request);
@@ -1037,8 +1058,10 @@ function contractCard(c) {
   if (st === "Final") meta.push(`<span>Outcome <b>${outcomeName(c.state.Final)}</b></span>`);
   const bond = disputeBond();
   const windowS = (c.dispute_window / 1000).toLocaleString("en-US", { maximumFractionDigits: 3 });
+  // The engine answers the oracle and arbiter only, so only admin sees what their buttons did.
+  const actorWhy = isAdmin() ? "" : "Switch to Admin to act as the oracle or arbiter";
   const outcomes = (action, actor) => [["Yes", "YES", "btn-yes"], ["No", "NO", "btn-no"], ["Invalid", "INVALID", ""]]
-    .map(([o, label, cls]) => `<button class="btn btn-sm ${cls}" type="button" data-action="${action}" data-actor="${actor}" data-contract="${c.id}" data-outcome="${o}" data-key="${action}-${c.id}-${o}">${label}</button>`).join("");
+    .map(([o, label, cls]) => `<button class="btn btn-sm ${cls}" type="button" data-action="${action}" data-actor="${actor}" data-contract="${c.id}" data-outcome="${o}" data-key="${action}-${c.id}-${o}"${actorWhy ? disabledIf(true, actorWhy) : ""}>${label}</button>`).join("");
   return `<article class="panel contract">
       <div class="contract-main">
         <div>
@@ -1046,7 +1069,7 @@ function contractCard(c) {
           <h2 class="contract-q" id="contract-q-${c.id}">${esc(c.description)}</h2>
         </div>
         ${timeline(c)}
-        <p class="muted" style="font-size:13px">After close the oracle proposes; anyone can dispute for ${windowS} s${bond != null ? ` with a ${fmtUsd(bond)} bond` : ""}. If nobody resolves it by the hard deadline, it ends INVALID and everyone is refunded.</p>
+        <p class="muted" style="font-size:13px">After close the oracle proposes; anyone can dispute for ${windowS} s${bond != null ? ` with a ${fmtUsd(bond)} bond` : ""}. If the oracle never proposes by the hard deadline, it ends INVALID and each side gets its lock back. An unruled dispute ends as proposed and the bond is returned.</p>
       </div>
       <div class="contract-side">
         <div class="roles">
@@ -1095,7 +1118,7 @@ function positionsTable(c) {
 
 // ---- Trace: the command log ------------------------------------------------------------------
 
-const MONEY_EVENTS = ["Deposited", "Withdrawn", "QuoteFilled", "PositionSettled", "DisputeBondReturned"];
+const MONEY_EVENTS = ["Deposited", "Withdrawn", "QuoteFilled", "PositionSettled", "Disputed", "Ruled", "DisputeBondReturned"];
 const FILTERS = [["all", "All"], ["rejections", "Rejections"], ["money", "Money"], ["clock", "Clock"]];
 const UNCONSUMED = ["Duplicate", "NonceGap"]; // rejections that consume no nonce
 
@@ -1623,7 +1646,7 @@ function multiLegPanel() {
     <div class="steps3">
       <div class="item"><div class="item-head"><span class="id">1. Before the deadline</span></div><p style="font-size:13px">Leg 1: MM-A's quote is Active and holds. Leg 2: no quote. Leg 3: MM-C's quote is Active and holds. The request is Open. Nothing provisional is escrowed.</p></div>
       <div class="item"><div class="item-head"><span class="id">2. The deadline fires</span></div><p style="font-size:13px">Leg 2 has no eligible quote, so the whole request is Expired. MM-A's, MM-C's and the requester's holds are all released in that one command.</p></div>
-      <div class="item"><div class="item-head"><span class="id">3. Alternative path</span></div><p style="font-size:13px">Every leg has a quote and the request is Presented. MM-B's cancel on leg 2 is rejected (InvalidState) because selected quotes are firm. Accept fills all three legs in one command; Reject or a lapse releases all of them.</p></div>
+      <div class="item"><div class="item-head"><span class="id">3. Alternative path</span></div><p style="font-size:13px">Every leg has an eligible quote and the request is Presented. MM-B's cancel on leg 2 is rejected (InvalidState) because selected quotes are firm. Accept fills all three legs in one command; Reject or a lapse releases all of them.</p></div>
     </div>
     <ol class="rules">
       <li>One hold per request covers all legs, and one hold per quote: no per-leg partial commitment.</li>
@@ -1642,7 +1665,8 @@ function runButton(presetName, where, related = false) {
   const p = presets.find((x) => x.name === presetName);
   if (!p) return null;
   const label = related ? "Related preset" : "Run";
-  const title = `${related ? "Related, not the race itself. " : ""}Reset to ${p.name}: ${p.summary}`;
+  // The summary narrates sealed prices and limits, so like the scenario strip it is admin-only.
+  const title = `${related ? "Related, not the race itself. " : ""}Reset to ${p.name}${isAdmin() ? `: ${p.summary}` : ""}`;
   return `<button class="btn btn-sm" type="button" data-action="run-preset" data-preset="${esc(p.name)}" data-key="run-${esc(where)}" title="${esc(title)}">${label}<span class="sr-only"> ${esc(p.name)}</span></button>`;
 }
 const runCell = (presetName, where, fallback, related) =>
@@ -1820,7 +1844,9 @@ function stopPlay() {
 }
 
 function toggleTheme() {
-  root.dataset.theme = root.dataset.theme === "dark" ? "light" : "dark";
+  // With no explicit choice the page shows the OS theme, so flip from what is showing.
+  const shown = root.dataset.theme ?? (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+  root.dataset.theme = shown === "dark" ? "light" : "dark";
   try { localStorage.setItem("rfq-dashboard-theme", root.dataset.theme); } catch { /* storage blocked */ }
 }
 

@@ -58,7 +58,7 @@ pub struct Snapshot {
     pub total: Option<Amount>,
     pub accounts: Vec<AccountView>,
     pub requests: Vec<RequestView>,
-    pub quotes: Vec<Quote>,
+    pub quotes: Vec<QuoteView>,
     /// Public, except each contract's `positions`: the engine announces fills only privately, so a
     /// non-admin viewer's list holds just the position ids they hold.
     pub contracts: Vec<Contract>,
@@ -78,6 +78,20 @@ pub struct PositionView {
     pub no_holder: Option<AccountId>,
     pub no_lock: Amount,
     pub settled: bool,
+}
+
+/// A quote as the engine holds it (the same JSON fields as `Quote`), plus the amount its hold
+/// reserves, so the page shows the engine's number instead of computing one.
+#[derive(Debug, Serialize)]
+pub struct QuoteView {
+    #[serde(flatten)]
+    pub quote: Quote,
+    /// What the quote's hold reserves while it holds one, else `None`.
+    ///
+    /// This mirrors the engine's `quote_reservation` under `ReservationPolicy::FullHold`, the only
+    /// policy: `seller_lock(leg.qty, price)`, on the leg's qty, not the quote's `size`. The engine
+    /// keeps that amount on hold, unchanged, until the quote ends.
+    pub reserved: Option<Amount>,
 }
 
 #[derive(Debug, Serialize)]
@@ -188,7 +202,11 @@ pub fn snapshot(s: &Session, viewer: Viewer) -> Snapshot {
             })
             .collect(),
         requests: e.requests().map(|r| request_view(e, r, viewer)).collect(),
-        quotes: e.quotes().filter(|q| viewer.owns(q.mm)).cloned().collect(),
+        quotes: e
+            .quotes()
+            .filter(|q| viewer.owns(q.mm))
+            .map(|q| quote_view(e, q))
+            .collect(),
         contracts,
         positions,
     }
@@ -253,6 +271,21 @@ fn position_view(p: &Position, viewer: Viewer) -> PositionView {
         no_holder: shown(p.no_holder),
         no_lock: p.no_lock,
         settled: p.settled,
+    }
+}
+
+fn quote_view(e: &Engine, q: &Quote) -> QuoteView {
+    // A new `ReservationPolicy` variant breaks this match at compile time: `reserved` must then
+    // follow the engine's new `quote_reservation`.
+    let reserved = match ReservationPolicy::FullHold {
+        ReservationPolicy::FullHold => q.hold.and_then(|_| {
+            let leg = e.request(q.request)?.legs.get(usize::try_from(q.leg).ok()?)?;
+            seller_lock(leg.qty, q.price)
+        }),
+    };
+    QuoteView {
+        quote: q.clone(),
+        reserved,
     }
 }
 

@@ -665,6 +665,48 @@ mod tests {
     }
 
     #[test]
+    fn a_quote_shows_the_hold_the_engine_took_on_the_leg_qty() {
+        let mut app = None;
+        let request = json!({"SubmitRequest": {"legs": [{"contract": 1000, "side": "BuyYes", "qty": 1000, "limit_price": 7000}], "response_deadline": 2500}});
+        let opened = call(&mut app, json!({"op": "act", "actor": 10, "action": request}));
+        assert_eq!(
+            event_names(&last_entry(&opened)),
+            vec!["RequestOpened"],
+            "{opened}"
+        );
+        let id = opened["snapshot"]["requests"][0]["id"].clone();
+        // Oversized: 2,000 offered on a 1,000 leg. The engine reserves on the leg's qty.
+        let quote = json!({"SubmitQuote": {"request": id, "leg": 0, "price": 6000, "size": 2000, "expires_at": 2400}});
+        let quoted = call(&mut app, json!({"op": "act", "actor": 20, "action": quote}));
+        assert_eq!(
+            event_names(&last_entry(&quoted)),
+            vec!["QuoteSubmitted"],
+            "{quoted}"
+        );
+
+        let mm1 = view_as(&mut app, json!({"account": 20}));
+        let q = &mm1["snapshot"]["quotes"][0];
+        assert_eq!(q["size"], 2000, "{q}");
+        // 1,000 × (1 − 0.60) = $400, not 2,000 × (1 − 0.60) = $800.
+        assert_eq!(q["reserved"], 400_000_000, "{q}");
+        assert_eq!(
+            q["reserved"], mm1["snapshot"]["accounts"][0]["balance"]["reserved"],
+            "{mm1}"
+        );
+
+        // Once the quote ends it holds nothing, and the page has nothing to show.
+        let cancel = json!({"CancelQuote": {"quote": q["id"]}});
+        let out = call(&mut app, json!({"op": "act", "actor": 20, "action": cancel}));
+        assert!(
+            event_names(&last_entry(&out)).contains(&"QuoteCancelled".to_string()),
+            "{out}"
+        );
+        let q = &out["snapshot"]["quotes"][0];
+        assert!(q.is_object() && q["reserved"].is_null(), "{q}");
+        assert_eq!(out["snapshot"]["accounts"][0]["balance"]["reserved"], 0);
+    }
+
+    #[test]
     fn replay_check_matches_after_manual_play() {
         let mut app = None;
         let request = json!({"SubmitRequest": {"legs": [{"contract": 1000, "side": "BuyYes", "qty": 1000, "limit_price": 7000}], "response_deadline": 2500}});
