@@ -15,8 +15,8 @@
 
 use std::time::{Duration, Instant};
 
-use rfq_app::{ClientCommand, EventBatch, Journal, Transport};
-use rfq_domain::{AccountId, Action, Command, ContractId, Emitted, Event, SequencedCommand};
+use rfq_app::{BatchKind, ClientCommand, EventBatch, Journal, Transport};
+use rfq_domain::{AccountId, Action, Balance, Command, ContractId, Emitted, Event, SequencedCommand};
 use rfq_infra::aeron::{self, AeronTransport, ArchiveJournal, EGRESS, INGRESS, frame_of};
 use rfq_infra::codec::{MAX_INGRESS, decode, encode};
 use rfq_infra::fragment::Reassembler;
@@ -117,8 +117,18 @@ fn transport_reassembles_ingress_and_splits_egress() {
         .collect();
     let batch = EventBatch {
         seq: 7,
+        time: 1_234,
+        kind: BatchKind::User,
         origin: Some((AccountId(10), 1)),
         events,
+        balances: vec![(
+            AccountId(10),
+            Balance {
+                free: 5,
+                reserved: 6,
+                escrowed: 7,
+            },
+        )],
     };
     assert!(encode(&batch).len() > 8 << 20, "the batch must need splitting");
     transport.publish(&batch).unwrap();
@@ -142,7 +152,15 @@ fn transport_reassembles_ingress_and_splits_egress() {
             .unwrap();
     }
     assert!(chunks.len() >= 2, "{} chunks", chunks.len());
-    assert!(chunks.iter().all(|c| c.seq == 7 && c.origin == batch.origin));
+    assert!(
+        chunks
+            .iter()
+            .all(|c| (c.seq, c.time, c.kind, c.origin) == (batch.seq, batch.time, batch.kind, batch.origin))
+    );
+    // The balances travel once, on the last chunk.
+    let (last, rest) = chunks.split_last().expect("chunks");
+    assert!(rest.iter().all(|c| c.balances.is_empty()));
+    assert_eq!(last.balances, batch.balances);
     let joined: Vec<Emitted> = chunks.into_iter().flat_map(|c| c.events).collect();
     assert_eq!(joined, batch.events);
 }

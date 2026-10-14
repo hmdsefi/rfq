@@ -89,7 +89,8 @@ pub fn decode_ingress(bytes: &[u8]) -> Option<ClientCommand> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rfq_domain::{AccountId, Action, Command, Config, ContractId, Genesis};
+    use rfq_app::{BatchKind, EventBatch};
+    use rfq_domain::{AccountId, Action, Balance, Command, Config, ContractId, Emitted, Event, Genesis};
 
     const ALICE: AccountId = AccountId(10);
 
@@ -101,6 +102,40 @@ mod tests {
             action: Action::Withdraw { amount: 5 },
         };
         assert_eq!(decode::<ClientCommand>(&encode(&c)).unwrap(), c);
+    }
+
+    #[test]
+    fn roundtrip_event_batch_with_balances() {
+        let balance = |free, reserved, escrowed| Balance {
+            free,
+            reserved,
+            escrowed,
+        };
+        for kind in [
+            BatchKind::Genesis,
+            BatchKind::Tick,
+            BatchKind::Resume,
+            BatchKind::User,
+        ] {
+            let b = EventBatch {
+                seq: 12,
+                time: 1_700_000_000_123,
+                kind,
+                origin: (kind == BatchKind::User).then_some((ALICE, 7)),
+                events: vec![Emitted::to(
+                    ALICE,
+                    Event::Deposited {
+                        account: ALICE,
+                        amount: 5,
+                    },
+                )],
+                balances: vec![
+                    (ALICE, balance(5, 0, 0)),
+                    (AccountId(21), balance(u64::MAX, 1, 2)),
+                ],
+            };
+            assert_eq!(decode::<EventBatch>(&encode(&b)).unwrap(), b);
+        }
     }
 
     #[test]

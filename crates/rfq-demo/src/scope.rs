@@ -152,6 +152,7 @@ pub fn remap(action: Action, mut f: impl FnMut(AccountId) -> AccountId) -> Actio
 mod tests {
     use std::collections::BTreeMap;
 
+    use rfq_app::BatchKind;
     use rfq_domain::{Command, Outcome, RequestId};
     use rfq_testkit::accounts::{ALICE, ORACLE};
     use rfq_testkit::scenarios::{Ctx, StepKind, all, contains_in_order, demo_config, run_in_memory};
@@ -211,21 +212,17 @@ mod tests {
         let mut scope = Scope::new(1_000);
         let alice = scope.account(ALICE);
         scope.sent((alice, 1));
-        let ours = EventBatch {
-            seq: 7,
-            origin: Some((alice, 1)),
+        let batch = |seq, kind, origin| EventBatch {
+            seq,
+            time: 0,
+            kind,
+            origin,
             events: vec![],
+            balances: vec![],
         };
-        let tick = EventBatch {
-            seq: 8,
-            origin: None,
-            events: vec![],
-        };
-        let theirs = EventBatch {
-            seq: 9,
-            origin: Some((AccountId(42), 1)),
-            events: vec![],
-        };
+        let ours = batch(7, BatchKind::User, Some((alice, 1)));
+        let tick = batch(8, BatchKind::Tick, None);
+        let theirs = batch(9, BatchKind::User, Some((AccountId(42), 1)));
         let public = |event| Emitted::public(event);
         let rejected = public(Event::CommandRejected {
             reason: rfq_domain::RejectReason::InvalidState,
@@ -323,8 +320,11 @@ mod tests {
                     runs,
                     EventBatch {
                         seq,
+                        time: h.now(),
+                        kind: BatchKind::Tick,
                         origin: None,
                         events,
+                        balances: h.engine.take_touched_balances(),
                     },
                 );
             }
@@ -350,8 +350,11 @@ mod tests {
                 &mut runs,
                 EventBatch {
                     seq,
+                    time: h.now(),
+                    kind: BatchKind::User,
                     origin: Some((actor, nonce)),
                     events,
+                    balances: h.engine.take_touched_balances(),
                 },
             );
             runs[i].ctx.record_label(label, seq);

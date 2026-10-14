@@ -4,7 +4,7 @@ use rfq_domain::{Command, Engine, Genesis, SequencedCommand, Timestamp};
 
 use crate::error::{NodeError, SequenceError};
 use crate::ports::{Journal, Transport};
-use crate::protocol::{ClientCommand, EventBatch};
+use crate::protocol::{BatchKind, ClientCommand, EventBatch};
 use crate::sequencer::Sequencer;
 
 /// Most ingress commands taken per `poll`. Bounds the batch that shares one durability wait.
@@ -100,7 +100,7 @@ impl<J: Journal, T: Transport> Node<J, T> {
     /// 3. If there was nothing to sequence and the engine's earliest timer is due, sequences one
     ///    `Tick` (any command fires due timers, so idle periods add nothing to the log).
     /// 4. Appends the batch, waits once for it to be durable, applies it, then publishes one
-    ///    `EventBatch` per command that has an origin or events.
+    ///    `EventBatch` per command that has an origin or events, and one for every `Resume`.
     ///
     /// Any `Err` is fatal for this node: every later call returns [`NodeError::Halted`] without
     /// touching a port. Drop the node and [`start`](Node::start) again from the journal.
@@ -150,14 +150,21 @@ impl<J: Journal, T: Transport> Node<J, T> {
             .iter()
             .filter_map(|sc| {
                 let events = self.engine.apply(sc);
-                let origin = match &sc.cmd {
-                    Command::User { actor, nonce, .. } => Some((*actor, *nonce)),
-                    _ => None,
+                let balances = self.engine.take_touched_balances();
+                let (kind, origin) = match &sc.cmd {
+                    Command::User { actor, nonce, .. } => (BatchKind::User, Some((*actor, *nonce))),
+                    Command::Tick => (BatchKind::Tick, None),
+                    Command::Resume => (BatchKind::Resume, None),
+                    Command::Genesis(_) => (BatchKind::Genesis, None),
                 };
-                (origin.is_some() || !events.is_empty()).then_some(EventBatch {
+                // Every Resume is published, so clients see each restart and stall (gateway.md §2.3).
+                (origin.is_some() || !events.is_empty() || kind == BatchKind::Resume).then_some(EventBatch {
                     seq: sc.seq,
+                    time: sc.time,
+                    kind,
                     origin,
                     events,
+                    balances,
                 })
             })
             .collect();
