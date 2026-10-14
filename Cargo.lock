@@ -865,6 +865,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rfq-gateway"
+version = "0.1.0"
+dependencies = [
+ "rfq-app",
+ "rfq-domain",
+ "rfq-testkit",
+ "serde",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
 name = "rfq-infra"
 version = "0.1.0"
 dependencies = [
