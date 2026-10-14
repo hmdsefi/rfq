@@ -17,7 +17,7 @@ Encoding: `serde` + `bincode` (fixed-int, little-endian, 64 KiB size limit), wit
 
 - Polls ingress. For each command it sets `seq = last_seq + 1` and `time = max(last_time, wall_clock_ms)`, so time never goes backwards.
 - When there's no client traffic and the engine's earliest timer (`Engine::next_timer()`) is due, it emits a `Tick`. Idle periods add nothing to the log.
-- Publishes the `SequencedCommand` to stream 20, retrying on back pressure. On `NOT_CONNECTED`/`CLOSED` it is fatal and the node exits; restarting resumes cleanly.
+- Publishes the `SequencedCommand` to stream 1002, retrying on back pressure. On `NOT_CONNECTED`/`CLOSED` it is fatal and the node exits; restarting resumes cleanly.
 
 ## Journal (the `Journal` trait)
 
