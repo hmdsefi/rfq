@@ -265,9 +265,13 @@ impl Engine {
             if p.settled {
                 continue;
             }
+            let pot = p
+                .yes_lock
+                .checked_add(p.no_lock)
+                .expect("locks sum to qty × $1 (I3)");
             let (yes_payout, no_payout) = match outcome {
-                Outcome::Yes => (p.yes_lock + p.no_lock, 0),
-                Outcome::No => (0, p.yes_lock + p.no_lock),
+                Outcome::Yes => (pot, 0),
+                Outcome::No => (0, pot),
                 Outcome::Invalid => (p.yes_lock, p.no_lock),
             };
             let (yes_to, no_to) = match outcome {
