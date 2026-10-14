@@ -22,11 +22,17 @@ Encoding: `serde` + `bincode` (fixed-int, little-endian, trailing bytes rejected
 ## Journal (the `Journal` trait)
 
 ```rust
-trait Journal {
-    fn append(&mut self, sc: &SequencedCommand) -> Result<LogPosition>;
-    fn wait_durable(&mut self, pos: LogPosition) -> Result<()>;     // write-ahead gate
-    fn replay(&mut self, from_seq: u64, f: &mut dyn FnMut(SequencedCommand)) -> Result<u64>;
+// crates/rfq-app/src/ports.rs — typed ports; adapters live in rfq-infra
+pub trait Journal {
+    fn append(&mut self, sc: &SequencedCommand) -> Result<u64, BoxError>;   // position; NOT yet durable
+    fn wait_durable(&mut self, pos: u64) -> Result<(), BoxError>;          // write-ahead gate
+    fn replay(&mut self, f: &mut dyn FnMut(SequencedCommand)) -> Result<(), BoxError>;
 }
+pub trait Transport {
+    fn poll(&mut self, max: usize, sink: &mut dyn FnMut(ClientCommand)) -> Result<(), BoxError>;
+    fn publish(&mut self, batch: &EventBatch) -> Result<(), BoxError>;
+}
+// Any Err is fatal: the Node latches it (NodeError::Halted) and FileJournal poisons itself.
 ```
 
 - **`ArchiveJournal`:** each node start calls `start_recording(aeron:ipc, 1002, LOCAL)`, which creates a new recording. Together, all the recordings of stream 1002 in recording-id order make up the log. `wait_durable` polls `get_recording_position(current)` until it reaches the publication position returned by `offer`. `replay` lists every recording for stream 1002 and replays each one in order onto stream 1004.
