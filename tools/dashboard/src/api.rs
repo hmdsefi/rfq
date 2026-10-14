@@ -111,11 +111,13 @@ fn dispatch(slot: &mut Option<App>, req: Request) -> Result<Value, String> {
     if let Request::Presets = req {
         return Ok(json!({ "presets": catalogue() }));
     }
+    // The chosen view stays in place across a reset (admin when there was no session yet).
+    let viewer = slot.as_ref().map_or(Viewer::Admin, |app| app.viewer);
     if let Request::Reset { mode } = &req {
-        *slot = Some(App::start(mode)?);
+        *slot = Some(App::start(mode, viewer)?);
     }
     if slot.is_none() {
-        *slot = Some(App::start("sandbox")?);
+        *slot = Some(App::start("sandbox", viewer)?);
     }
     let app = slot.as_mut().ok_or_else(|| "no session".to_string())?;
     let before = app.applied.len();
@@ -139,14 +141,15 @@ fn dispatch(slot: &mut Option<App>, req: Request) -> Result<Value, String> {
             let a = app.session.raw(actor, nonce, action);
             app.applied.push(a);
         }
+        // Only a manual op that took effect takes the script over: a refused one changed nothing.
         Request::Advance { ms } => {
-            app.manual();
             let a = app.session.advance(ms).map_err(|e| e.to_string())?;
+            app.manual();
             app.applied.push(a);
         }
         Request::NextTimer => {
-            app.manual();
             let a = app.session.tick_next_timer().map_err(|e| e.to_string())?;
+            app.manual();
             app.applied.push(a);
         }
         Request::View { viewer } => app.viewer = viewer,
@@ -163,8 +166,9 @@ fn dispatch(slot: &mut Option<App>, req: Request) -> Result<Value, String> {
 }
 
 impl App {
-    /// A fresh session in `mode`: `"sandbox"` (set up at once) or a preset (loaded, not run).
-    pub fn start(mode: &str) -> Result<App, String> {
+    /// A fresh session in `mode`: `"sandbox"` (set up at once) or a preset (loaded, not run),
+    /// shown to `viewer`.
+    pub fn start(mode: &str, viewer: Viewer) -> Result<App, String> {
         let (session, genesis) = Session::new(demo_config());
         let mut app = App {
             mode: mode.to_string(),
@@ -172,7 +176,7 @@ impl App {
             applied: vec![genesis],
             runner: None,
             taken_over: false,
-            viewer: Viewer::Admin,
+            viewer,
         };
         if mode == "sandbox" {
             let mut ctx = Ctx::new(T0);
@@ -299,6 +303,27 @@ mod tests {
         json!({"SubmitQuote": {"request": 6, "leg": 0, "price": price, "size": 1000, "expires_at": 11000}})
     }
 
+    /// Runs `n` scripted steps of the loaded preset.
+    fn steps(app: &mut Option<App>, n: usize) -> Value {
+        let mut out = Value::Null;
+        for _ in 0..n {
+            out = call(app, json!({"op": "step"}));
+            assert!(out["error"].is_null(), "{out}");
+        }
+        out
+    }
+
+    fn view_as(app: &mut Option<App>, viewer: Value) -> Value {
+        let out = call(app, json!({"op": "view", "viewer": viewer}));
+        assert!(out["error"].is_null(), "{out}");
+        out
+    }
+
+    fn array<'a>(v: &'a Value, what: &str) -> &'a Vec<Value> {
+        v.as_array()
+            .unwrap_or_else(|| panic!("{what} is not an array: {v}"))
+    }
+
     #[test]
     fn unknown_op_is_an_error() {
         assert!(call(&mut None, json!({"op": "fly"}))["error"].is_string());
@@ -327,6 +352,8 @@ mod tests {
         );
         assert!(out["preset"].is_null());
         assert_eq!(out["snapshot"]["invariants"]["ok"], true);
+        // The listed contract's close is pending, and admin is allowed to see it.
+        assert!(out["snapshot"]["next_timer"].is_u64(), "{out}");
     }
 
     #[test]
@@ -415,6 +442,9 @@ mod tests {
         assert_eq!(out["snapshot"]["accounts"], json!([]));
         assert_eq!(out["snapshot"]["quotes"], json!([]));
         assert!(out["snapshot"]["total"].is_null());
+        assert!(out["snapshot"]["next_timer"].is_null());
+        assert_eq!(out["snapshot"]["positions"], json!([]));
+        assert_eq!(out["snapshot"]["contracts"][0]["positions"], json!([]));
     }
 
     #[test]
@@ -454,6 +484,184 @@ mod tests {
 
         let admin = call(&mut app, json!({"op": "view", "viewer": "admin"}));
         assert!(admin["snapshot"]["total"].is_u64());
+
+        // (a) Nobody else's command is shown: not its body, its actor, nor its nonce. Admin says
+        // whose each command was, so this can't pass by there being nothing to hide.
+        let by_seq: std::collections::BTreeMap<u64, &Value> = array(&admin["trace"], "trace")
+            .iter()
+            .map(|e| (e["seq"].as_u64().expect("seq"), e))
+            .collect();
+        for (viewer, view) in [(20u64, &mm1), (10, &alice)] {
+            let mut hidden = 0;
+            for entry in array(&view["trace"], "trace") {
+                let real = by_seq[&entry["seq"].as_u64().expect("seq")];
+                if ["genesis", "tick", "resume"].contains(&real["kind"].as_str().expect("kind")) {
+                    continue;
+                }
+                if real["actor"] == viewer {
+                    assert_eq!(entry["actor"], viewer);
+                    assert!(entry["command"].is_object() && entry["nonce"].is_u64(), "{entry}");
+                } else {
+                    hidden += 1;
+                    assert_eq!(entry["kind"], "hidden", "viewer {viewer}: {entry}");
+                    for field in ["command", "actor", "nonce"] {
+                        assert!(entry[field].is_null(), "viewer {viewer} saw {field}: {entry}");
+                    }
+                }
+            }
+            assert!(hidden > 0, "viewer {viewer} had nothing hidden from it");
+        }
+
+        // (c) MM1 lost, so no position is MM1's and the contract's list shows none; Alice sees only
+        // hers; admin sees the whole list.
+        assert_eq!(mm1["snapshot"]["positions"], json!([]));
+        assert_eq!(mm1["snapshot"]["contracts"][0]["positions"], json!([]));
+        let hers: Vec<&Value> = array(&alice["snapshot"]["positions"], "positions")
+            .iter()
+            .map(|p| &p["id"])
+            .collect();
+        assert_eq!(hers.len(), 1);
+        let listed: Vec<&Value> = array(&alice["snapshot"]["contracts"][0]["positions"], "list")
+            .iter()
+            .collect();
+        assert_eq!(listed, hers);
+        assert!(!array(&admin["snapshot"]["contracts"][0]["positions"], "list").is_empty());
+    }
+
+    #[test]
+    fn an_open_request_hides_competing_quotes_and_timers() {
+        let mut app = None;
+        call(&mut app, json!({"op": "reset", "mode": "happy_path"}));
+        // Funds, listing, request, both quotes; the deadline tick has not run.
+        let out = steps(&mut app, 8);
+        assert_eq!(out["preset"]["next"], "tick");
+
+        let admin = view_as(&mut app, json!("admin"));
+        assert!(admin["snapshot"]["next_timer"].is_u64(), "{admin}");
+        assert_eq!(array(&admin["snapshot"]["quotes"], "quotes").len(), 2);
+        assert_eq!(
+            array(&admin["snapshot"]["requests"][0]["legs"][0]["quotes"], "ids").len(),
+            2
+        );
+
+        let mm1 = view_as(&mut app, json!({"account": 20}));
+        let quotes = array(&mm1["snapshot"]["quotes"], "quotes");
+        assert_eq!(quotes.len(), 1, "{mm1}");
+        assert!(quotes.iter().all(|q| q["mm"] == 20));
+        let leg = &mm1["snapshot"]["requests"][0]["legs"][0];
+        assert_eq!(leg["quotes"], json!([quotes[0]["id"]]));
+        assert!(mm1["snapshot"]["next_timer"].is_null(), "{mm1}");
+
+        let alice = view_as(&mut app, json!({"account": 10}));
+        assert_eq!(alice["snapshot"]["quotes"], json!([]));
+        assert_eq!(alice["snapshot"]["requests"][0]["legs"][0]["quotes"], json!([]));
+        assert_eq!(alice["snapshot"]["requests"][0]["legs"][0]["limit_price"], 7000);
+        assert!(alice["snapshot"]["next_timer"].is_null(), "{alice}");
+    }
+
+    #[test]
+    fn a_counterparty_stays_hidden_until_the_position_settles() {
+        let mut app = None;
+        call(&mut app, json!({"op": "reset", "mode": "happy_path"}));
+        // Through Alice's accept: the position exists but is not settled.
+        steps(&mut app, 10);
+
+        let admin = view_as(&mut app, json!("admin"));
+        let position = &admin["snapshot"]["positions"][0];
+        assert_eq!(
+            (&position["yes_holder"], &position["no_holder"]),
+            (&json!(10), &json!(21))
+        );
+        assert_eq!(position["settled"], false);
+        let id = position["id"].clone();
+        assert_eq!(admin["snapshot"]["contracts"][0]["positions"], json!([id]));
+
+        // Alice (YES) and MM2 (NO) each see only themselves; the other side is null.
+        let alice = view_as(&mut app, json!({"account": 10}));
+        let p = &alice["snapshot"]["positions"][0];
+        assert_eq!(
+            (&p["id"], &p["yes_holder"], &p["no_holder"]),
+            (&id, &json!(10), &Value::Null)
+        );
+        assert_eq!(p["settled"], false);
+        assert!(
+            p["yes_lock"].is_u64() && p["no_lock"].is_u64() && p["qty"].is_u64(),
+            "{p}"
+        );
+        assert_eq!(alice["snapshot"]["contracts"][0]["positions"], json!([id]));
+        let mm2 = view_as(&mut app, json!({"account": 21}));
+        let p = &mm2["snapshot"]["positions"][0];
+        assert_eq!(
+            (&p["id"], &p["yes_holder"], &p["no_holder"]),
+            (&id, &Value::Null, &json!(21))
+        );
+        assert_eq!(mm2["snapshot"]["contracts"][0]["positions"], json!([id]));
+
+        // Everyone else learns nothing about the fill: no position, and no id on the contract.
+        for account in [20, 30, 999] {
+            let other = view_as(&mut app, json!({"account": account}));
+            assert_eq!(other["snapshot"]["positions"], json!([]), "account {account}");
+            assert_eq!(
+                other["snapshot"]["contracts"][0]["positions"],
+                json!([]),
+                "account {account}"
+            );
+        }
+
+        // Once it settles, the engine names both holders to both.
+        steps(&mut app, 3);
+        for account in [10, 21] {
+            let v = view_as(&mut app, json!({"account": account}));
+            let p = &v["snapshot"]["positions"][0];
+            assert_eq!(
+                (&p["yes_holder"], &p["no_holder"]),
+                (&json!(10), &json!(21)),
+                "{p}"
+            );
+            assert_eq!(p["settled"], true);
+        }
+    }
+
+    #[test]
+    fn a_failed_manual_op_does_not_take_over_the_preset() {
+        let mut app = None;
+        call(&mut app, json!({"op": "reset", "mode": "happy_path"}));
+        steps(&mut app, 1);
+        // Nothing is listed yet, so no timer is pending; and the clock can't overflow.
+        let none = call(&mut app, json!({"op": "next_timer"}));
+        assert_eq!(none["error"], "no timer is pending");
+        let huge = call(&mut app, json!({"op": "advance", "ms": u64::MAX}));
+        assert_eq!(huge["error"], "number too large");
+        let out = call(&mut app, json!({"op": "step"}));
+        assert!(out["error"].is_null(), "{out}");
+        assert_eq!(out["preset"]["taken_over"], false);
+        assert_eq!(out["preset"]["step"], 2);
+    }
+
+    #[test]
+    fn reset_keeps_the_viewer() {
+        let mut app = None;
+        assert_eq!(
+            call(&mut app, json!({"op": "reset", "mode": "happy_path"}))["viewer"],
+            "admin"
+        );
+        view_as(&mut app, json!({"account": 10}));
+        let out = call(&mut app, json!({"op": "reset", "mode": "no_quotes_expire"}));
+        assert_eq!(out["viewer"], json!({"account": 10}));
+        assert_eq!(out["mode"], "no_quotes_expire");
+        assert_eq!(out["snapshot"]["accounts"].as_array().expect("accounts").len(), 1);
+        // A refused reset leaves the session, and so the viewer, as it was.
+        let bad = call(&mut app, json!({"op": "reset", "mode": "nope"}));
+        assert_eq!(bad["error"], "unknown preset: nope");
+        assert_eq!(
+            call(&mut app, json!({"op": "state"}))["viewer"],
+            json!({"account": 10})
+        );
+        view_as(&mut app, json!("admin"));
+        assert_eq!(
+            call(&mut app, json!({"op": "reset", "mode": "sandbox"}))["viewer"],
+            "admin"
+        );
     }
 
     #[test]

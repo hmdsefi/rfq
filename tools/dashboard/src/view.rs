@@ -51,14 +51,33 @@ pub struct Snapshot {
     pub seq: u64,
     pub state_hash: String,
     pub invariants: Health,
+    /// Admin only: it can be a sealed quote's expiry (`QuoteExpiry` timers), so it is `None` for
+    /// everyone else.
     pub next_timer: Option<Timestamp>,
     /// Σ (free + reserved + escrowed) over the demo's accounts, for admin only (I1).
     pub total: Option<Amount>,
     pub accounts: Vec<AccountView>,
     pub requests: Vec<RequestView>,
     pub quotes: Vec<Quote>,
+    /// Public, except each contract's `positions`: the engine announces fills only privately, so a
+    /// non-admin viewer's list holds just the position ids they hold.
     pub contracts: Vec<Contract>,
-    pub positions: Vec<Position>,
+    pub positions: Vec<PositionView>,
+}
+
+/// A position as the viewer may see it. The engine names both holders only in `PositionSettled`,
+/// so until `settled` a non-admin viewer learns only their own side; the counterparty is `None`.
+#[derive(Debug, Serialize)]
+pub struct PositionView {
+    pub id: PositionId,
+    pub contract: ContractId,
+    pub request: RequestId,
+    pub qty: Qty,
+    pub yes_holder: Option<AccountId>,
+    pub yes_lock: Amount,
+    pub no_holder: Option<AccountId>,
+    pub no_lock: Amount,
+    pub settled: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -131,15 +150,28 @@ pub fn snapshot(s: &Session, viewer: Viewer) -> Snapshot {
         .contracts()
         .flat_map(|c| c.positions.iter())
         .filter_map(|id| e.position(*id))
-        .filter(|p| viewer.owns(p.yes_holder) || viewer.owns(p.no_holder))
-        .cloned()
+        .filter(|p| holds(viewer, p))
+        .map(|p| position_view(p, viewer))
+        .collect();
+    let contracts = e
+        .contracts()
+        .map(|c| {
+            let mut c = c.clone();
+            c.positions
+                .retain(|id| e.position(*id).is_some_and(|p| holds(viewer, p)));
+            c
+        })
         .collect();
     Snapshot {
         now: s.now(),
         seq: s.next_seq().saturating_sub(1),
         state_hash: hex(&e.state_hash()),
         invariants,
-        next_timer: e.next_timer(),
+        next_timer: if viewer == Viewer::Admin {
+            e.next_timer()
+        } else {
+            None
+        },
         total: if viewer == Viewer::Admin {
             ledger_total(e)
         } else {
@@ -157,7 +189,7 @@ pub fn snapshot(s: &Session, viewer: Viewer) -> Snapshot {
             .collect(),
         requests: e.requests().map(|r| request_view(e, r, viewer)).collect(),
         quotes: e.quotes().filter(|q| viewer.owns(q.mm)).cloned().collect(),
-        contracts: e.contracts().cloned().collect(),
+        contracts,
         positions,
     }
 }
@@ -201,6 +233,27 @@ pub fn trace(applied: &[Applied], viewer: Viewer) -> Vec<TraceEntry> {
             })
         })
         .collect()
+}
+
+/// Whether the viewer holds either side of the position (admin holds them all).
+fn holds(viewer: Viewer, p: &Position) -> bool {
+    viewer.owns(p.yes_holder) || viewer.owns(p.no_holder)
+}
+
+fn position_view(p: &Position, viewer: Viewer) -> PositionView {
+    // Admin owns every holder, so only a non-admin's counterparty is hidden, and only until settled.
+    let shown = |holder: AccountId| (p.settled || viewer.owns(holder)).then_some(holder);
+    PositionView {
+        id: p.id,
+        contract: p.contract,
+        request: p.request,
+        qty: p.qty,
+        yes_holder: shown(p.yes_holder),
+        yes_lock: p.yes_lock,
+        no_holder: shown(p.no_holder),
+        no_lock: p.no_lock,
+        settled: p.settled,
+    }
 }
 
 pub fn hex(bytes: &[u8]) -> String {
