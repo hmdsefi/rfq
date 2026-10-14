@@ -53,4 +53,11 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /out/app /usr/local/bin/app
 RUN ln -s app "/usr/local/bin/$BIN"
+# Not root, and the same uid 10001 as the Aeron driver (docker/aeron/Dockerfile): the driver's files
+# in the shared /dev/shm/aeron are 0644 and owned by it, and a client maps them read-write.
+# /data is writable for `RFQ_JOURNAL=file:/data/...`.
+RUN groupadd --system --gid 10001 rfq \
+    && useradd --system --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin rfq \
+    && mkdir -p /data && chown 10001:10001 /data
+USER 10001:10001
 ENTRYPOINT ["/usr/local/bin/app"]
