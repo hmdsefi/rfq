@@ -137,6 +137,9 @@ impl Engine {
             .quote_reservation(l.qty, price)
             .ok_or(RejectReason::Overflow)?;
         let previous = l.quotes.iter().copied().find(|q| self.quotes[q].mm == actor);
+        // D5 tripwire: a new `ReservationPolicy` must rework the funds check and `refundable` below
+        // (`SharedLimit` checks pool headroom, not the MM's free balance, and refunds nothing).
+        let ReservationPolicy::FullHold = cfg.reservation;
         let refundable = previous
             .and_then(|q| self.quotes[&q].hold)
             .and_then(|h| self.ledger.hold_amount(h))
@@ -150,6 +153,9 @@ impl Engine {
             self.end_quote(old, QuoteState::Replaced, out);
             out.push(Emitted::to(actor, Event::QuoteReplaced { old, new: id }));
         }
+        // D5 tripwire: a new `ReservationPolicy` must decide whether the quote takes a hold here
+        // (`SharedLimit` takes none at submission: `hold: None` below, and `end_quote` already copes).
+        let ReservationPolicy::FullHold = cfg.reservation;
         let hold = self.ledger.hold(actor, need).expect(VALIDATED);
         self.quotes.insert(
             id,
@@ -168,6 +174,10 @@ impl Engine {
         self.requests.get_mut(&request).expect(VALIDATED).legs[leg as usize]
             .quotes
             .insert(id);
+        // D5 tripwire: a new `SelectionPolicy` must decide what a new quote does to the request here
+        // (`Continuous` re-selects when this quote is the new best, emitting `QuoteSelected` and
+        // `RequestPresented` with a deadline-stamped timer).
+        let SelectionPolicy::SealedAtDeadline = cfg.selection;
         self.arm(expires_at, TimerKey::QuoteExpiry(id));
         out.push(Emitted::to(
             actor,
@@ -222,13 +232,23 @@ impl Engine {
 
     /// Seam 1 of 2 for D5 (quote lifetime): how much collateral a quote reserves in `submit_quote`.
     /// `None` means the amount overflows. `Config::reservation` is genesis data, so the choice is in the
-    /// log and replay is deterministic. The match is exhaustive: a new policy is a compile error here.
+    /// log and replay is deterministic.
     ///
     /// Contract for a future `SharedLimit` (docs/specs/quote-lifetime.md): quotes draw on an MM pool
     /// instead of holding their own collateral, and **selection is the commit point**. The selected
     /// quote converts to a hard hold at selection (`select_sealed`), skipping to the next-best quote if
     /// the pool cannot cover it. Funds are never checked at `accept`, or one pool could win many
     /// selections and fail all but one accept.
+    ///
+    /// A new `ReservationPolicy` variant must change every site below. Each one matches the policy
+    /// exhaustively (this fn) or destructures it with an irrefutable `let` (a tripwire), so the
+    /// compiler forces a decision at each listed site:
+    /// - `engine/rfq.rs::quote_reservation` (this match): the amount a quote needs
+    /// - `engine/rfq.rs::submit_quote`: the funds check and `refundable`
+    /// - `engine/rfq.rs::submit_quote`: hold creation (`hold: Some(..)`)
+    /// - `engine/rfq.rs::select_sealed`: the commit point (convert to a hard hold, skip to next-best)
+    /// - `engine/rfq.rs::accept`: `mm_lock = hold_amount(..)` (no funds check at accept)
+    /// - `engine/mod.rs::check_invariants`: I4 "live without a hold"
     fn quote_reservation(&self, qty: Qty, price: Price) -> Option<Amount> {
         match self.config().reservation {
             ReservationPolicy::FullHold => seller_lock(qty, price),
@@ -236,13 +256,22 @@ impl Engine {
     }
 
     /// Fired at `response_deadline`. Seam 2 of 2 for D5: `Config::selection` picks how quotes are
-    /// compared. The match is exhaustive: a new policy is a compile error here.
+    /// compared.
     ///
     /// Contract for a future `Continuous` (docs/specs/engine.md §6, quote-lifetime.md): run the same
     /// selection step on each new best quote and allow `Accept` while the request is `Open`. It
     /// re-enters `Presented`, so every timer armed for a re-entered state must carry the deadline it
     /// expects and fire only on a match. `on_accept_by` checks only the state today, so it would need
     /// that stamp (the dispute timer already has it: `on_dispute_window`).
+    ///
+    /// A new `SelectionPolicy` variant must change every site below. Each one matches the policy
+    /// exhaustively (this fn) or destructures it with an irrefutable `let` (a tripwire), so the
+    /// compiler forces a decision at each listed site:
+    /// - `engine/rfq.rs::on_request_deadline` (this match): what happens at the response deadline
+    /// - `engine/rfq.rs::submit_quote`: a new best quote may trigger selection
+    /// - `engine/rfq.rs::accept`: the `Presented` gate (`Continuous` also allows `Accept` while `Open`)
+    /// - `engine/rfq.rs::reject`: the `Presented` gate
+    /// - `engine/rfq.rs::on_accept_by`: the deadline-stamped timer requirement
     pub(super) fn on_request_deadline(&mut self, id: RequestId, deadline: Timestamp, out: &mut Out) {
         match self.config().selection {
             SelectionPolicy::SealedAtDeadline => self.select_sealed(id, deadline, out),
@@ -261,6 +290,9 @@ impl Engine {
         let accept_by = deadline.saturating_add(self.config().accept_window);
         // Eligible = active, within limit, and firm through the whole acceptance window. This is the
         // only check of the sealed limit (SubmitQuote doesn't do it, so it can't be probed).
+        // D5 tripwire: a new `ReservationPolicy` must commit here. `SharedLimit` converts the chosen
+        // quote to a hard hold at selection and skips to the next-best quote if the pool can't cover it.
+        let ReservationPolicy::FullHold = self.config().reservation;
         let picks: Option<Vec<Pick>> = r
             .legs
             .iter()
@@ -315,6 +347,9 @@ impl Engine {
     }
 
     pub(super) fn on_accept_by(&mut self, id: RequestId, out: &mut Out) {
+        // D5 tripwire: a new `SelectionPolicy` must stamp this timer. `Continuous` re-enters `Presented`
+        // with a new `accept_by`, so a stale timer must fire only if its deadline matches the state's.
+        let SelectionPolicy::SealedAtDeadline = self.config().selection;
         let Some(r) = self.requests.get(&id) else {
             return;
         };
@@ -328,6 +363,9 @@ impl Engine {
         if r.requester != actor {
             return Err(RejectReason::Unauthorized);
         }
+        // D5 tripwire: a new `SelectionPolicy` must decide when `Reject` is allowed (`Continuous`
+        // presents a best quote while the request is still `Open`).
+        let SelectionPolicy::SealedAtDeadline = self.config().selection;
         if !matches!(r.state, RequestState::Presented { .. }) {
             return Err(RejectReason::InvalidState);
         }
@@ -347,6 +385,9 @@ impl Engine {
         if r.requester != actor {
             return Err(RejectReason::Unauthorized);
         }
+        // D5 tripwire: a new `SelectionPolicy` must decide when `Accept` is allowed (`Continuous`
+        // allows it while the request is still `Open`).
+        let SelectionPolicy::SealedAtDeadline = self.config().selection;
         if !matches!(r.state, RequestState::Presented { .. }) {
             return Err(RejectReason::InvalidState);
         }
@@ -379,6 +420,10 @@ impl Engine {
         let mut positions = Vec::with_capacity(legs.len());
         for l in &legs {
             let qid = l.selected.expect(VALIDATED);
+            // D5 tripwire: a new `ReservationPolicy` must decide where the MM's lock comes from.
+            // `SharedLimit` committed a hard hold at selection, so accept only escrows it and never
+            // checks funds (a pool that won many selections would otherwise fail all but one accept).
+            let ReservationPolicy::FullHold = self.config().reservation;
             let q = self.quotes.get_mut(&qid).expect(VALIDATED);
             let mm_hold = q.hold.take().expect("selected quote has a hold");
             let mm_lock = self.ledger.hold_amount(mm_hold).expect(VALIDATED);

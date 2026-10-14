@@ -5,8 +5,8 @@ use crate::types::*;
 /// How much collateral a live quote reserves. The decision for days-long quotes (D5).
 ///
 /// Data, not a generic: the choice is part of `Genesis`, so it is in the log and replay stays
-/// deterministic. The one place that matches on it is `Engine::quote_reservation`; a new variant is a
-/// compile error there.
+/// deterministic. A new variant must change several engine sites. `Engine::quote_reservation` lists
+/// them, and each is a compile-time tripwire, so the compiler forces a decision at each listed site.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReservationPolicy {
     /// Each quote holds its full counterparty collateral `qty × (1 − p)` until it ends.
@@ -17,8 +17,8 @@ pub enum ReservationPolicy {
 /// When and how quotes are compared (D5).
 ///
 /// Data, not a generic: the choice is part of `Genesis`, so it is in the log and replay stays
-/// deterministic. The one place that matches on it is `Engine::on_request_deadline`; a new variant is
-/// a compile error there.
+/// deterministic. A new variant must change several engine sites. `Engine::on_request_deadline` lists
+/// them, and each is a compile-time tripwire, so the compiler forces a decision at each listed site.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SelectionPolicy {
     /// Quotes are sealed until `response_deadline`; the best eligible one per leg is presented once.

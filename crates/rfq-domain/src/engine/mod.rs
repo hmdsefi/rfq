@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::command::{Action, Command, Config, Genesis, SequencedCommand};
+use crate::command::{Action, Command, Config, Genesis, ReservationPolicy, SequencedCommand};
 use crate::event::{Emitted, Event, RejectReason};
 use crate::ledger::{Balance, Ledger};
 use crate::model::*;
@@ -230,6 +230,12 @@ impl Engine {
         }
 
         // I4 ownership: every live hold has exactly one live owner, and terminal objects own none.
+        // D5 tripwire: a new `ReservationPolicy` must relax "live without a hold" below (`SharedLimit`
+        // quotes are live and hold nothing until selection commits them). This runs before genesis
+        // too, so it reads the policy from `genesis` instead of `config()`, which would panic.
+        match self.genesis.as_ref().map(|g| g.config.reservation) {
+            None | Some(ReservationPolicy::FullHold) => {}
+        }
         let mut owned: BTreeSet<HoldId> = BTreeSet::new();
         let mut own = |h: Option<HoldId>, live: bool, what: String| -> Result<(), String> {
             match (h, live) {
