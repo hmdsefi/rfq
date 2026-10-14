@@ -89,7 +89,8 @@ pub struct Step {
 pub struct Scenario {
     pub name: &'static str,
     pub steps: Vec<Step>,
-    /// Event names that must appear in this order (other events may be interleaved).
+    /// Event names that must appear in this order (other events may be interleaved). A rejection
+    /// can pin its reason: `"CommandRejected(InvalidState)"` (see [`contains_in_order`]).
     pub expect: Vec<&'static str>,
 }
 
@@ -226,7 +227,7 @@ pub fn all() -> Vec<Scenario> {
             steps: s,
             expect: vec![
                 "RequestPresented",
-                "CommandRejected",
+                "CommandRejected(InvalidState)",
                 "QuoteFilled",
                 "RequestFilled",
             ],
@@ -324,12 +325,49 @@ pub fn run_in_memory(s: &Scenario, t0: Timestamp) -> (Harness, Vec<Emitted>) {
     (h, events)
 }
 
+/// Whether `events` contains the `expect`ed events in this order (other events may be interleaved).
+/// An expectation is an event name, or `CommandRejected(<RejectReason>)` to pin a rejection's reason.
 pub fn contains_in_order(events: &[Emitted], expect: &[&str]) -> Result<(), String> {
-    let mut it = events.iter().map(|e| e.event.name());
+    let mut it = events.iter();
     for want in expect {
-        if !it.any(|got| got == *want) {
+        if !it.any(|got| matches(&got.event, want)) {
             return Err(format!("expected event {want} (in order {expect:?})"));
         }
     }
     Ok(())
+}
+
+fn matches(event: &Event, want: &str) -> bool {
+    match event {
+        Event::CommandRejected { reason } => {
+            want == event.name() || want == format!("{}({reason:?})", event.name())
+        }
+        other => want == other.name(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rejected(reason: RejectReason) -> Emitted {
+        Emitted::public(Event::CommandRejected { reason })
+    }
+
+    #[test]
+    fn an_expectation_can_pin_the_rejection_reason() {
+        let events = [rejected(RejectReason::InvalidState)];
+        assert_eq!(contains_in_order(&events, &["CommandRejected"]), Ok(()));
+        assert_eq!(
+            contains_in_order(&events, &["CommandRejected(InvalidState)"]),
+            Ok(())
+        );
+        assert!(
+            contains_in_order(
+                &[rejected(RejectReason::Unauthorized)],
+                &["CommandRejected(InvalidState)"]
+            )
+            .is_err()
+        );
+    }
 }

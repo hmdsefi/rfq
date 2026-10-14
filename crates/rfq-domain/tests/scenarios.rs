@@ -39,7 +39,12 @@ fn happy_path() {
 
 #[test]
 fn mm_cannot_withdraw_after_selection() {
-    let (h, _) = run("mm_cannot_withdraw_after_selection");
+    let (h, events) = run("mm_cannot_withdraw_after_selection");
+    assert_eq!(
+        rejection(&events),
+        Some(RejectReason::InvalidState),
+        "MM2's cancel of its selected (firm) quote"
+    );
     assert_eq!(free(&h, ALICE), dollars(400));
     assert_eq!(free(&h, MM1), dollars(1_000));
     assert_eq!(free(&h, MM2), dollars(600));
