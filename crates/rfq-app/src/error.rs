@@ -19,6 +19,21 @@ pub enum NodeError {
     Halted,
 }
 
+/// A journal replayed a record whose `seq` is not the previous one plus one (the first must be 1).
+///
+/// The engine skips a command whose `seq` it has already applied, so a duplicate in the log would
+/// silently replay to a different state than the one the node had built live; a gap would mean
+/// commands are missing. Either way the journal cannot be trusted, and the node refuses to start.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "journal replay: expected seq {expected}, found {found} ({})",
+    if found < expected { "duplicate or out-of-order record" } else { "gap" }
+)]
+pub struct SequenceError {
+    pub expected: u64,
+    pub found: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use std::error::Error;

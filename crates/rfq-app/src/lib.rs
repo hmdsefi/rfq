@@ -17,7 +17,7 @@ pub mod ports;
 pub mod protocol;
 pub mod sequencer;
 
-pub use error::{BoxError, NodeError};
+pub use error::{BoxError, NodeError, SequenceError};
 pub use node::Node;
 pub use ports::{Journal, Transport};
 pub use protocol::*;

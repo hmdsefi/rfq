@@ -2,7 +2,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use rfq_app::{BoxError, ClientCommand, EventBatch, Journal, Node, NodeError, Transport};
+use rfq_app::{BoxError, ClientCommand, EventBatch, Journal, Node, NodeError, SequenceError, Transport};
 use rfq_domain::*;
 use rfq_infra::journal::{FileJournal, MemJournal};
 use rfq_infra::transport::MemTransport;
@@ -328,4 +328,81 @@ fn poll_after_failure_is_refused() {
         "journal unchanged since the failure"
     );
     assert!(transport.inner.egress.is_empty(), "nothing published");
+}
+
+/// A journal holding Genesis as seq 1, then ticks with the given seqs.
+fn journal_with_seqs(seqs: &[u64]) -> MemJournal {
+    let mut j = journal_with_genesis();
+    for &seq in seqs {
+        j.append(&SequencedCommand {
+            seq,
+            time: 1_000,
+            cmd: Command::Tick,
+        })
+        .unwrap();
+    }
+    j
+}
+
+fn start_error(journal: MemJournal) -> SequenceError {
+    match Node::start(journal, MemTransport::default(), genesis(Config::default())) {
+        Err(NodeError::Journal(e)) => *e.downcast::<SequenceError>().expect("a SequenceError"),
+        Err(other) => panic!("unexpected error: {other:?}"),
+        Ok(_) => panic!("start accepted an out-of-sequence journal"),
+    }
+}
+
+#[test]
+fn replay_refuses_a_duplicate_seq() {
+    let e = start_error(journal_with_seqs(&[2, 3, 3, 4]));
+    assert_eq!(
+        e,
+        SequenceError {
+            expected: 4,
+            found: 3
+        }
+    );
+    assert!(e.to_string().contains("duplicate"), "{e}");
+}
+
+#[test]
+fn replay_refuses_a_gap() {
+    let e = start_error(journal_with_seqs(&[2, 4]));
+    assert_eq!(
+        e,
+        SequenceError {
+            expected: 3,
+            found: 4
+        }
+    );
+    assert!(e.to_string().contains("gap"), "{e}");
+}
+
+#[test]
+fn replay_refuses_a_log_that_does_not_start_at_seq_1() {
+    let mut j = MemJournal::default();
+    j.append(&SequencedCommand {
+        seq: 2,
+        time: 0,
+        cmd: Command::Genesis(genesis(Config::default())),
+    })
+    .unwrap();
+    assert_eq!(
+        start_error(j),
+        SequenceError {
+            expected: 1,
+            found: 2
+        }
+    );
+}
+
+#[test]
+fn contiguous_replay_is_accepted() {
+    let node = Node::start(
+        journal_with_seqs(&[2, 3]),
+        MemTransport::default(),
+        genesis(Config::default()),
+    )
+    .unwrap();
+    assert_eq!(node.engine().last_seq(), 3);
 }

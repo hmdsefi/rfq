@@ -2,7 +2,7 @@
 //! sequence → append → wait durable → apply → publish (architecture §4, transport spec "Live loop").
 use rfq_domain::{Command, Engine, Genesis, SequencedCommand, Timestamp};
 
-use crate::error::NodeError;
+use crate::error::{NodeError, SequenceError};
 use crate::ports::{Journal, Transport};
 use crate::protocol::{ClientCommand, EventBatch};
 use crate::sequencer::Sequencer;
@@ -26,16 +26,35 @@ pub struct Node<J, T> {
 impl<J: Journal, T: Transport> Node<J, T> {
     /// Replays the journal into a new engine with egress suppressed (nothing is published).
     ///
+    /// The replayed `seq`s must be exactly `1, 2, 3, ...`; a duplicate or a gap fails with
+    /// [`NodeError::Journal`] holding a [`SequenceError`], whatever the journal adapter.
+    ///
     /// On an empty journal, durably writes `genesis` as seq 1. On a non-empty journal `genesis` is
     /// ignored (the journal's own `Genesis` wins, so replay always uses the recorded config) and
     /// nothing is appended here: the first [`poll`](Node::poll) sequences `Resume`.
     pub fn start(mut journal: J, transport: T, genesis: Genesis) -> Result<Self, NodeError> {
         let mut engine = Engine::new();
+        let mut last_seq = 0;
+        let mut out_of_sequence = None;
         journal
             .replay(&mut |sc| {
+                if out_of_sequence.is_some() {
+                    return;
+                }
+                if sc.seq != last_seq + 1 {
+                    out_of_sequence = Some(SequenceError {
+                        expected: last_seq + 1,
+                        found: sc.seq,
+                    });
+                    return;
+                }
+                last_seq = sc.seq;
                 engine.apply(&sc);
             })
             .map_err(NodeError::Journal)?;
+        if let Some(e) = out_of_sequence {
+            return Err(NodeError::Journal(Box::new(e)));
+        }
         // The engine's clock is the largest stamped time, i.e. the last one (stamps are monotonic).
         let mut sequencer = Sequencer::resume(engine.last_seq(), engine.now());
         let resume_pending = engine.last_seq() > 0;
