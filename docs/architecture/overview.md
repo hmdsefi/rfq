@@ -188,7 +188,7 @@ Each worker reads egress events and writes commands back to ingress. It's just a
 
 ## 8. Scaling
 
-- One engine handles far more than RFQ load (commands are O(log n), no I/O).
+- **Measured:** `Engine::apply` replays a 100k-command log of full RFQ rounds (request, two quotes, tick, accept; 20,000 rounds, all filled) at **~3.7 million commands/s** on an Apple M4 Max Mac (single thread, release build, `overflow-checks` on), about 270 ns per command. `state_hash` over that final state (20k requests, 40k quotes) takes **~11.9 ms**: it hashes the whole state, so it is for snapshots and replay checks, not for every command. Run `cargo bench -p rfq-domain` to reproduce. One engine therefore handles far more than RFQ load (commands are O(log n), no I/O).
 - Built in now: a timer index (`BTreeSet<(Timestamp, TimerKey)>`), ticks only when a timer is due, and events emitted once (gateways fan them out).
 - Designed but not built: pruning terminal objects from memory, and snapshots.
 - Beyond one engine: **shard by contract group**. Each shard holds its own sub-balance per account; cross-shard transfers are two-step with an `in_transit` bucket. Multi-leg requests must stay within one shard — cross-shard atomicity would need 2PC, which is exactly where capital leaks.
