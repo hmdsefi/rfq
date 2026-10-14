@@ -70,7 +70,7 @@ const variant = (v) => (typeof v === "string" ? v : Object.keys(v)[0]); // serde
      - **Reset** re-sends `reset` with the current mode.
      - **Take over** sends `take_over`.
    - **Verdict.** When `preset.finished`, show PASS or FAIL from `preset.verdict`, with `detail` on FAIL.
-   - **Clock.** **+100 ms** and **+1 s** send `advance`; **Next timer** sends `next_timer`. In the admin view it is disabled with a tooltip when `snapshot.next_timer` is null. Other views never receive `next_timer` (it can be a sealed quote's expiry), so there the button stays enabled and an empty clock comes back as the engine's error. Show `fmtT(snapshot.now)`.
+   - **Clock.** **+100 ms** and **+1 s** send `advance`; **Next timer** sends `next_timer`. It works only in the admin view: other views never receive `next_timer`, and jumping to a timer they can't see would reveal its time through `now` (it can be a sealed quote's expiry). In the admin view it is disabled with a tooltip when `snapshot.next_timer` is null; in every other view it is disabled with the tooltip "Switch to Admin to jump to the next timer". Show `fmtT(snapshot.now)`.
    - **View as.** Admin, Alice, Carol, MM1, MM2. Each sends `view`. The engine keeps the view across `reset`, so the switch stays as the presenter left it.
    - **New rows.** Highlight the rows whose seq is in `new_seqs`. After `reset`, `new_seqs` is empty, so nothing is highlighted. `new_seqs` may name seqs the current viewer can't see; ignore those.
    - **Health chip.** `seq`, the first 8 hex digits of `state_hash`, and I1–I5 (OK, or BROKEN with `invariants.error` in a tooltip).
@@ -92,7 +92,7 @@ const variant = (v) => (typeof v === "string" ? v : Object.keys(v)[0]); // serde
    - the resolution timeline as in the mockup: trading close, proposal and `dispute_until`, resolution deadline, a "now" cursor at `snapshot.now`;
    - **Oracle actions:** Propose YES, NO or INVALID (`ProposeOutcome`, actor ORACLE);
    - **Arbiter actions:** Rule YES, NO or INVALID (`Rule`, actor ARBITER);
-   - positions from `snapshot.positions`: holders, qty, locks, settled.
+   - positions from `snapshot.positions`: holders, qty, locks, settled. A holder can be `null` for a non-admin viewer until the position settles; render it as the `.sealed` marker ("counterparty sealed until settlement"), never as `#null`.
 7. **Errors and feedback.**
    - `showError(msg)` shows a dismissible inline banner with the engine's sentence. It never uses `alert()`.
    - Form validation is inline next to the field, it blocks sending, and it clears on edit: "Enter a price between 0.01 and 99.99", "Enter a whole number of shares".
