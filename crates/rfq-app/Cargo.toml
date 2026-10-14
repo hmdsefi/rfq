@@ -1,0 +1,10 @@
+[package]
+name = "rfq-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rfq-domain = { path = "../rfq-domain" }
+serde = { workspace = true }
