@@ -5,7 +5,9 @@ A deterministic matching and settlement engine for a permissionless RFQ venue fo
 
 Design docs: [docs/README.md](docs/README.md). The brief: [docs/RFQ_Technical_Exercise.pdf](docs/RFQ_Technical_Exercise.pdf).
 
-> **CI status, 2026-10-14.** The badge is red, and not because of the code. GitHub refuses to start any job of this private repository ("recent account payments have failed or your spending limit needs to be increased"), so no workflow step has ever run. The same checks pass locally: `cargo fmt --all --check`, `cargo clippy --locked --workspace --all-targets -- -D warnings`, `cargo test --locked --workspace` (180 tests), `cargo deny check`, the Docker builds of both binaries, and `./scripts/demo.sh`. The workflow is [.github/workflows/ci.yml](.github/workflows/ci.yml).
+The repository is private (`hmdsefi/rfq`), so you need access first. Then: `git clone https://github.com/hmdsefi/rfq.git && cd rfq`.
+
+> **CI status, 2026-10-14.** The badge is red, and not because of the code. GitHub refuses to start any job of this private repository ("recent account payments have failed or your spending limit needs to be increased"), so no workflow step has ever run. The same checks pass locally: `cargo fmt --all --check`, `cargo clippy --locked --workspace --all-targets -- -D warnings`, `cargo test --locked --workspace` (all pass), `cargo deny check`, the Docker builds of both binaries, and `./scripts/demo.sh`. The workflow is [.github/workflows/ci.yml](.github/workflows/ci.yml).
 
 ## Quick start
 
@@ -22,16 +24,19 @@ The toolchain is pinned to Rust 1.99.0 in `rust-toolchain.toml`, so `rustup` ins
 - two property tests that run random command streams and check the invariants I1–I5 after every command;
 - node tests over the in-memory and file journals: startup replay, write-ahead order, restart, failure latch.
 
-Two more commands:
+Engine benchmark:
 
 ```bash
 cargo bench -p rfq-domain    # engine throughput and state_hash cost
-cargo test -p rfq-infra --features aeron --test aeron_live -- --ignored --test-threads=1   # needs the Aeron build tools and a running driver, see the file header
 ```
+
+The `#[ignore]`d tests that drive the Aeron adapters against a real media driver need the Aeron build tools and a driver, so they run in Docker. The recipe is in the header of [`crates/rfq-infra/tests/aeron_live.rs`](crates/rfq-infra/tests/aeron_live.rs).
 
 ### Run the end-to-end demo (Docker)
 
-You need Docker Desktop (Compose v2).
+You need Docker Desktop (Compose v2). This was verified on Docker Desktop for Apple Silicon (linux/aarch64); It has not been run on amd64 or on a Linux host.
+
+**Warning:** the script starts with `docker compose --profile demo down -v --remove-orphans`, which deletes the containers and the Archive volume of its compose project (`rfq`). To keep another stack, run it under its own project name: `COMPOSE_PROJECT_NAME=rfq-demo ./scripts/demo.sh`.
 
 ```bash
 ./scripts/demo.sh
@@ -73,7 +78,7 @@ Code is split into hexagonal layers, and dependencies point inward only: crate b
 |---|---|---|
 | D1 | State machine | [specs/engine.md](docs/specs/engine.md) §6, with the multi-leg "leg 2 of 3" walk-through in §8 |
 | D2 | Working implementation | `crates/`, `cargo test --workspace`, and `./scripts/demo.sh` (this README) |
-| D3 | Failure-mode notes | [specs/failure-modes.md](docs/specs/failure-modes.md) |
+| D3 | Failure-mode notes | [specs/failure-modes.md](docs/specs/failure-modes.md) (races and partial failures), [specs/adversarial.md](docs/specs/adversarial.md) (attackers) |
 | D4 | Resolution design | [specs/resolution.md](docs/specs/resolution.md) |
 | D5 | Design note (quotes living seconds vs days) | [specs/quote-lifetime.md](docs/specs/quote-lifetime.md) |
 
@@ -84,7 +89,7 @@ Also: the product and technical decisions in [rfc/0001-rfq-engine.md](docs/rfc/0
 - **Exact money.** Amounts are `u64` micro-USD and prices are `u16` basis points. The buyer locks `qty × bps × 100` and the counterparty locks the complement, so the two always sum to `qty × $1` with no rounding. All arithmetic is checked; overflow rejects the command instead of wrapping.
 - **Deterministic, replayable.** One sequencer totally orders every command and stamps its time. The engine never reads a clock or randomness and iterates only `BTreeMap`/`BTreeSet`. State is the replay of the log, and `state_hash` proves it.
 - **Money only moves through the ledger,** and every handler validates before it mutates. Five invariants (conservation, holds, escrow, ownership, no dead ends) are checked after every command in the tests.
-- **Adversarial by default.** Sealed bids, firm quotes once selected, strict per-actor nonces, a bond for disputes, role separation for oracles, a hard deadline so no money is stuck forever. The remaining risks are listed with their production defences in [failure-modes.md](docs/specs/failure-modes.md#adversarial-behaviour).
+- **Adversarial by default.** Sealed bids, firm quotes once selected, strict per-actor nonces, a bond for disputes, role separation for oracles, a hard deadline so no money is stuck forever. The remaining risks are listed with their production defences in [adversarial.md](docs/specs/adversarial.md).
 - **Write-ahead.** Nothing is applied or published until its command is durable in the journal (Aeron Archive, or a local file).
 
 ## Measured numbers

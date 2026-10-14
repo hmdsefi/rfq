@@ -2,29 +2,26 @@
 
 ## Invariant to the decision
 
-- **The state machines and ledger.** States, transitions, holds, escrow, and invariants I1–I5 never mention a duration.
-- **Absolute timestamps everywhere.** Every deadline is a `Timestamp`; nothing assumes "short".
-- **Time as data + stale-safe timers.** A timer firing in 200 ms or in 3 days goes through the same code path, and replay reproduces it exactly. Quote timers are bounded by the request: `expires_at` is clamped to `response_deadline + ACCEPT_WINDOW`.
-- **Sequencing and validate-then-apply.** Atomicity and race handling don't depend on how long anything lives.
-- **Settlement and resolution.** Positions exist only after acceptance and aren't affected by quote lifetime.
+- **State machines, ledger, invariants I1–I5.** None mentions a duration; every deadline is an absolute `Timestamp`.
+- **Time as data, stale-safe timers.** A timer firing in 200 ms or in 3 days takes the same path and replays identically.
+- **Sequencing, validate-then-apply, settlement.** Atomicity, races and payouts don't depend on how long a quote lived.
 
 ## Not invariant
 
 | Concern | Seconds | Days |
 |---|---|---|
-| **Capital cost of full reservation (P4/MM holds)** | Negligible | Large: MMs lock collateral per quote for days. They would need **shared quoting limits** (one pool backing many quotes, committed at selection) |
-| **Stale-price risk** | Small | Big: MMs need cheap cancel/replace, and maybe auto-cancel on market events |
-| **Selection style** | Sealed auction at the deadline works | Requesters may want to accept the live best quote at any time (streaming) |
-| **State size / timers** | Few live objects | Many live objects. The timer index and pruning matter, and snapshots bound replay time |
-| **Acceptance window** | Seconds | Could be hours. Selected quotes are firm (P5), so the requester's free option (accept only if the market moved its way, else reject or lapse) and shadow-RFQ price discovery grow with the window: they'd need a reject/lapse fee paid to the selected MM |
+| Capital cost of full holds (P4) | Negligible | Large: MMs need one limit backing many quotes |
+| Stale-price risk | Small | Big: cheap cancel/replace, auto-cancel on market events |
+| Selection style | Sealed auction at the deadline | Requesters may want to accept the live best quote |
+| State size, timers | Few live objects | Many: pruning and snapshots matter |
+| Acceptance window | Seconds | Hours: the requester's free option and shadow-RFQ discovery grow, so a reject/lapse fee to the selected MM |
 
 ## What we built so that either answer is cheap
 
-Built means it is in the code. Designed means the code is shaped for it but the extension is not written.
-
-1. **Built: all durations are genesis config** (`ACCEPT_WINDOW`, `MIN/MAX_RESPONSE`, `RESUME_GRACE`; `dispute_window` per contract). They are not constants in code.
-2. **Built: quote collateral is decided in one place, not spread over the engine.** Today every quote takes its full collateral as a hold in `submit_quote` and `accept` escrows it (`FullHold`; there is no policy type yet). **Designed:** a `SharedLimit` would let quotes draw on an MM's pool. It would change only `submit_quote` (no hold at submission) and selection (`on_request_deadline`). **Selection is then the commit point:** the selected quote converts to a hard hold at selection, and selection skips to the next-best quote if the pool can't cover it. Funds are never checked at acceptance, or one pool could win many selections and fail all but one accept.
-3. **Built: selection is one function** (`on_request_deadline`, sealed, at the response deadline). **Designed:** a `Continuous` policy would run the same selection step on each new best quote and allow `Accept` while `Open`. The state machine already has the `Presented` step to reuse.
-   - **Re-entered states need stamped timers.** "Left the state it was armed for" makes a timer stale only while no state is re-entered with a new deadline. `Continuous` re-enters `Presented` (and dispute rounds would re-enter `Proposed`), so each such timer must carry the deadline or epoch it expects and fire only on a match. **Built:** the dispute timer already does, because `Resume` can extend its window.
-4. **Built: cheap replace.** A quote replace is one atomic command, so frequent repricing over days costs one log entry, not a cancel and a submit.
-5. **Built: a timer index.** `BTreeSet<(Timestamp, TimerKey)>` keeps insertion and firing logarithmic in the number of pending timers, however far out they are. **Designed, not built:** pruning terminal objects from memory (Archive keeps the history) and snapshots to bound replay time ([architecture §8](../architecture/overview.md)). Every request, quote and position stays in memory today.
+1. **Built: durations are genesis config** (`ACCEPT_WINDOW`, `MIN/MAX_RESPONSE`, `RESUME_GRACE`; `dispute_window` per contract), so they are in the log.
+2. **Built: two policy seams, `ReservationPolicy` (`FullHold`) and `SelectionPolicy` (`SealedAtDeadline`).** They are enums in the genesis config (`crates/rfq-domain/src/command.rs`). One engine function matches each exhaustively (`quote_reservation`, `on_request_deadline`), and every other site a new variant must change holds a compile-time tripwire (`let ReservationPolicy::FullHold = ..;`), so the compiler forces a decision at each listed site:
+   - **Reservation (6):** `quote_reservation`; `submit_quote` funds check and hold creation; the `select_sealed` commit point; `accept`'s `mm_lock`; I4 in `check_invariants`.
+   - **Selection (5):** `on_request_deadline`; `submit_quote` (a new best quote); `accept` and `reject` (the `Presented` gate); `on_accept_by` (stamped timer).
+   - The lists are in those functions' doc comments and are maintained by hand: a site missing from them has no tripwire.
+3. **Designed, not built, behind those seams.** `SharedLimit`: quotes draw on an MM pool, so **selection is the commit point** (hard hold at selection, next-best quote if the pool can't cover it, never a funds check at accept, or one pool could win many selections and fail all but one accept). `Continuous`: run the same selection step on each new best quote and allow `Accept` while `Open`. It re-enters `Presented`, so its timers must carry the deadline they expect; the dispute timer already does, because `Resume` can extend its window.
+4. **Built: cheap replace** (one atomic command per reprice) and **a timer index** (`BTreeSet<(Timestamp, TimerKey)>`). Pruning terminal objects and snapshots are designed, not built ([architecture §8](../architecture/overview.md)).

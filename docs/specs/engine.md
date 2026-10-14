@@ -89,7 +89,7 @@ Requester hold at submission = Σ legs `qty × limit_price × 100` (P4).
 | `Dispute{contract}` | state `Proposed`; `now < dispute_until`; free ≥ `DISPUTE_BOND` | hold bond; `Disputed` |
 | `Rule{contract, outcome}` | actor = arbiter; state `Disputed` | bond returned if `outcome ≠ proposed`, else forfeited to treasury; `Final(outcome)`; settle all positions |
 | `Tick` | system (node) | none beyond timer firing |
-| `Resume` | system (node): the first command after a restart on a non-empty journal | runs **before** due timers fire: every `Proposed` contract with `dispute_until < now + RESUME_GRACE` gets `dispute_until = min(now + RESUME_GRACE, resolution_deadline − 1)`, a timer re-armed there and `OutcomeProposed` re-emitted with the new deadline (§6.3). Then timers fire as usual |
+| `Resume` | system (node): the first command after a restart on a non-empty journal | runs **before** due timers fire: every `Proposed` contract whose `dispute_until` is below `min(now + RESUME_GRACE, resolution_deadline − 1)` is extended to that value, with a timer re-armed there and `OutcomeProposed` re-emitted with the new deadline. A window is never shortened (§6.3). Then timers fire as usual |
 
 ## 6. State machines (D1)
 
@@ -155,7 +155,7 @@ stateDiagram-v2
 ```
 
 - **A timeout never turns a proposal into `Invalid`.** `ProposeOutcome` needs `now + dispute_window < resolution_deadline` and `Resume` caps extensions at `resolution_deadline − 1`, so an undisputed window always ends on its own timer first. An unruled dispute finalizes the proposal at the hard deadline with the bond returned: the arbiter failed, not the disputer. Only a contract the oracle never resolved becomes `Invalid`.
-- **Downtime can't eat a dispute window.** After a restart the node sequences `Resume` first. Before any due timer fires, every open window ending before `now + RESUME_GRACE` is moved to that point (capped as above) and re-armed. Only dispute windows are extended: accept-window lapse, quote expiry, request deadline and hard deadline are refund-safe (firing late costs nobody money), so they fire normally.
+- **Downtime can't eat a dispute window.** After a restart the node sequences `Resume` first. Before any due timer fires, every open window is extended to `min(now + RESUME_GRACE, resolution_deadline − 1)` and re-armed; a window is never shortened. If downtime outlasts `resolution_deadline − 1` this cannot give dispute time back: the extended window is already over when the timers fire, so the proposal finalizes as proposed. Only dispute windows are extended: accept-window lapse, quote expiry, request deadline and hard deadline are refund-safe (firing late costs nobody money), so they fire normally.
 
 Details in [resolution.md](resolution.md).
 
@@ -199,8 +199,10 @@ The model is already `Vec<Leg>`; enabling N > 1 means removing one validation. T
 | `MIN_RESPONSE` / `MAX_RESPONSE` | 1 s / 7 days |
 | `MAX_QTY` | 10^9 |
 | `DISPUTE_BOND` | $100 |
-| `RESUME_GRACE` | 10 min (dispute time guaranteed after a restart) |
+| `RESUME_GRACE` | 10 min (dispute time guaranteed after a restart, if the hard deadline allows) |
 | `MIN_REQUEST_NOTIONAL` | $1 per leg (`qty × limit`) |
+| `reservation` | `ReservationPolicy::FullHold`: each quote holds its full collateral ([quote-lifetime.md](quote-lifetime.md)) |
+| `selection` | `SelectionPolicy::SealedAtDeadline`: sealed until the response deadline, best eligible quote presented once |
 | operator, arbiter, treasury | account ids |
 
-The `rfq-node` binary starts a fresh journal from `rfq_testkit::scenarios::demo_config()`, not from these defaults: `ACCEPT_WINDOW` 2 s, `MIN_RESPONSE` 0.5 s, `MAX_RESPONSE` 60 s, `MAX_QTY` 10^6, `RESUME_GRACE` 2 s (bond and minimum notional unchanged), so the demo runs in seconds. A non-empty journal always replays with the config recorded in its own `Genesis`.
+The `rfq-node` binary starts a fresh journal from `rfq_testkit::scenarios::demo_config()`, not from these defaults: `ACCEPT_WINDOW` 2 s, `MIN_RESPONSE` 0.5 s, `MAX_RESPONSE` 60 s, `MAX_QTY` 10^6, `RESUME_GRACE` 2 s (bond, minimum notional and both policies unchanged), so the demo runs in seconds. A non-empty journal always replays with the config recorded in its own `Genesis`.

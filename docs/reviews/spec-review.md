@@ -145,7 +145,7 @@
 
 ## Decisions
 
-Ruled 2026-10-14 (Gate A). FIX = spec and task code/tests changed; DOC = spec wording only; ACCEPT = residual risk recorded in [failure-modes.md](../specs/failure-modes.md#adversarial-behaviour) with its production defence.
+Ruled 2026-10-14 (Gate A). FIX = spec and task code/tests changed; DOC = spec wording only; ACCEPT = residual risk recorded in [adversarial.md](../specs/adversarial.md) with its production defence.
 
 - #1 — FIX — Selected quotes are firm: `CancelQuote` only while `Active` (else `InvalidState`); P5 is "cancel/replace until selection"; `Rejected(QuoteWithdrawn)` path and variant removed; R1 is now cancel vs response deadline.
 - #2 — FIX — `SubmitQuote` no longer checks `price ≤ limit` (no limit oracle); selection filters over-limit quotes; requester hold stays `qty × limit`.

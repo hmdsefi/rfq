@@ -69,8 +69,10 @@ impl Transport for AeronTransport {
     }
 
     /// Publishes `batch` as one message, or as several chunks with the same `seq` when it exceeds
-    /// the max message length. With no subscriber connected the batch is dropped: events are
-    /// derivable from the log, and clients deduplicate by `seq`.
+    /// the max message length. With no subscriber connected the batch is dropped. Like a batch
+    /// whose publish failed, it is not re-published after a restart (replay suppresses egress):
+    /// its events are derivable from the journal, and consumers reconcile via `EventBatch.origin`
+    /// or the state (docs/specs/failure-modes.md, F5).
     fn publish(&mut self, batch: &EventBatch) -> Result<(), BoxError> {
         for chunk in split_batch(batch, self.max_message) {
             let bytes = encode(&chunk);
