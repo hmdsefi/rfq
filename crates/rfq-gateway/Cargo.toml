@@ -7,16 +7,22 @@ rust-version.workspace = true
 publish = false
 
 [features]
-# Off by default so `cargo test --workspace` never builds rusteron. The Aeron adapter and the
-# WebSocket binary come with it (docs/specs/gateway.md §9); docker/rust.Dockerfile enables it.
-aeron = []
+# Off by default so `cargo test --workspace` never builds rusteron. Without it the binary only
+# reports that it was built without Aeron and exits with status 2. The library, the WebSocket
+# server and the hub loop build and test either way; docker/rust.Dockerfile enables it.
+aeron = ["dep:rfq-infra", "rfq-infra/aeron"]
 
 [dependencies]
 rfq-app = { path = "../rfq-app" }
 rfq-domain = { path = "../rfq-domain" }
+# The Aeron adapter: `aeron::{connect, offer, ...}`, the `Reassembler` and the codec.
+rfq-infra = { path = "../rfq-infra", optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+tungstenite = { workspace = true }
 
 [dev-dependencies]
 # The scripted scenarios and the well-known accounts, for the sealing test.

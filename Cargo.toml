@@ -21,6 +21,9 @@ tempfile = "3"
 anyhow = "1"
 tracing-subscriber = "0.3"
 criterion = "0.5"
+# The gateway's WebSocket server. Default features only (the handshake); no TLS: it listens on
+# 127.0.0.1 behind the venue.
+tungstenite = "0.30"
 
 # Unchecked overflow must never silently wrap money, even in optimised builds.
 [profile.release]
