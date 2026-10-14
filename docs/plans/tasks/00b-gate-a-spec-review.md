@@ -33,7 +33,7 @@ for anything you checked and found sound, so coverage is visible.
 
 - [ ] **Step 2: Triage with the user**
 
-For each finding, decide with the user: **fix** (edit the spec, add the test to the owning task in this plan, and add the defence to `failure-modes.md`), **accept** (record it as a residual risk in `failure-modes.md` → Adversarial table), or **reject** (record the reason in the review file).
+For each finding, decide with the user: **fix** (edit the spec, add the test to the owning task in this plan, and add the defence to `failure-modes.md`), **accept** (record it as a residual risk in `docs/specs/adversarial.md`), or **reject** (record the reason in the review file).
 
 - [ ] **Step 3: Commit and push**
 

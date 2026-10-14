@@ -155,7 +155,7 @@ stateDiagram-v2
 ```
 
 - **A timeout never turns a proposal into `Invalid`.** `ProposeOutcome` needs `now + dispute_window < resolution_deadline` and `Resume` caps extensions at `resolution_deadline − 1`, so an undisputed window always ends on its own timer first. An unruled dispute finalizes the proposal at the hard deadline with the bond returned: the arbiter failed, not the disputer. Only a contract the oracle never resolved becomes `Invalid`.
-- **Downtime can't eat a dispute window.** After a restart the node sequences `Resume` first. Before any due timer fires, every open window is extended to `min(now + RESUME_GRACE, resolution_deadline − 1)` and re-armed; a window is never shortened. If downtime outlasts `resolution_deadline − 1` this cannot give dispute time back: the extended window is already over when the timers fire, so the proposal finalizes as proposed. Only dispute windows are extended: accept-window lapse, quote expiry, request deadline and hard deadline are refund-safe (firing late costs nobody money), so they fire normally.
+- **Downtime can't eat a dispute window.** After a restart the node sequences `Resume` first. Before any due timer fires, every open window that ends earlier is extended to `min(now + RESUME_GRACE, resolution_deadline − 1)` and re-armed; a window is never shortened. If downtime outlasts `resolution_deadline − 1` this cannot give dispute time back: the extended window is already over when the timers fire, so the proposal finalizes as proposed. Only dispute windows are extended: accept-window lapse, quote expiry, request deadline and hard deadline are refund-safe (firing late costs nobody money), so they fire normally.
 
 Details in [resolution.md](resolution.md).
 

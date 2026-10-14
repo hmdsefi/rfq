@@ -34,9 +34,9 @@ The `#[ignore]`d tests that drive the Aeron adapters against a real media driver
 
 ### Run the end-to-end demo (Docker)
 
-You need Docker Desktop (Compose v2). This was verified on Docker Desktop for Apple Silicon (linux/aarch64); It has not been run on amd64 or on a Linux host.
+You need Docker Desktop (Compose v2). This was verified on Docker Desktop for Apple Silicon (linux/aarch64). It has not been run on amd64 or on a Linux host.
 
-**Warning:** the script starts with `docker compose --profile demo down -v --remove-orphans`, which deletes the containers and the Archive volume of its compose project (`rfq`). To keep another stack, run it under its own project name: `COMPOSE_PROJECT_NAME=rfq-demo ./scripts/demo.sh`.
+**Warning:** after building the images, the script runs `docker compose --profile demo down -v --remove-orphans`, which deletes the containers and the Archive volume of its compose project (`rfq`). To keep another stack, run it under its own project name: `COMPOSE_PROJECT_NAME=rfq-demo ./scripts/demo.sh`.
 
 ```bash
 ./scripts/demo.sh

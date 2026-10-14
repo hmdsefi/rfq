@@ -24,7 +24,8 @@ impl ClientCommand {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventBatch {
     pub seq: u64,
-    /// `(actor, nonce)` of the user command that produced these events; `None` for ticks.
+    /// `(actor, nonce)` of the user command that produced these events; `None` for system commands
+    /// (`Genesis`, `Tick`, `Resume`).
     pub origin: Option<(AccountId, u64)>,
     pub events: Vec<Emitted>,
 }
