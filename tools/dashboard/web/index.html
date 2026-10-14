@@ -259,6 +259,28 @@ a.idlink, button.idlink { color: var(--accent); text-decoration: underline; text
 .btn:disabled, .seg-ctl button:disabled { opacity: .45; cursor: not-allowed; }
 .btn:disabled:hover { border-color: var(--line-2); }
 .btn-primary:disabled:hover { filter: none; border-color: var(--accent); }
+/* The trace adds a nonce column (the mockup had none) under a quiet column header. */
+.row-head, .log-cols { grid-template-columns: 34px 70px 34px minmax(0, 1fr) auto; }
+.log-cols { position: sticky; top: 0; z-index: 1; display: grid; gap: 8px; padding: 5px 16px; background: var(--surface); border-bottom: 1px solid var(--line); font-size: 12px; color: var(--ink-3); }
+.row .nonce { color: var(--ink-3); }
+.row .nonce svg { width: 12px; height: 12px; vertical-align: -1px; }
+.row-events { padding-left: 178px; }
+.row-events li { display: block; }
+.row-events li > * { margin-right: 6px; }
+@media (max-width: 720px) { .row-events { padding-left: 16px; } }
+/* The trace sticks under the top bar, whose height changes when it wraps (set from JS). */
+@media (min-width: 1101px) { .trace { top: var(--topbar-h, 57px); height: calc(100dvh - var(--topbar-h, 57px)); } }
+/* The mockup's 44% resolved against an auto grid row and clipped the history; tie it to the viewport. */
+.trace .inspector { max-height: calc((100dvh - var(--topbar-h, 57px)) * 0.44); }
+.check-bad { color: var(--bad); font-weight: 600; }
+/* Deliverable panels. */
+.dtable tr.dgroup th { padding-top: 14px; color: var(--ink); font-size: 13px; }
+.dtable col.c-id { width: 76px; } .dtable col.c-what { width: 17%; } .dtable col.c-test { width: 31%; } .dtable col.c-run { width: 84px; }
+.dtable td.run { white-space: nowrap; text-align: right; }
+.sm-start { fill: var(--ink-3); }
+.seam .item, .steps3 .item { align-content: start; }
+.seam code { overflow-wrap: anywhere; }
+.rules { margin: 12px 0 0; padding-left: 20px; display: grid; gap: 3px; font-size: 13px; color: var(--ink-2); }
 </style>
 </head>
 <body>
@@ -303,14 +325,17 @@ a.idlink, button.idlink { color: var(--accent); text-decoration: underline; text
     </div>
 
     <!-- Ledger and deliverable panels: filled by renderLedger and renderPanels -->
-    <section class="panel ledger" id="ledger" aria-label="Ledger"></section>
+    <section class="panel ledger" id="ledger" aria-labelledby="ledger-h"></section>
     <section class="panel" id="panels" aria-label="Deliverables"></section>
   </main>
 
   <!-- Admin trace: filled by renderTrace and renderInspector -->
-  <aside class="trace" aria-label="Trace">
-    <div id="trace" style="display:contents"></div>
-    <div class="inspector" id="inspector" aria-label="Inspector"></div>
+  <aside class="trace" aria-labelledby="trace-h">
+    <div id="trace" style="display:contents">
+      <div class="trace-head" id="trace-head"></div>
+      <div class="log" id="log" role="log" aria-label="Command log"></div>
+    </div>
+    <div class="inspector" id="inspector" aria-labelledby="insp-h"></div>
   </aside>
 </div>
 
@@ -336,8 +361,8 @@ const fmtUsd = (micro) => {
 };
 const fmtPrice = (bps) => (bps / 10000).toFixed(4).replace(/0{1,2}$/, ""); // 6000 → "0.60"
 const fmtT = (ms) => `t+${((ms - T0) / 1000).toFixed(3)} s`;
-const name = (id) => state?.snapshot.accounts.find((a) => a.id === id)?.name
-  ?? Object.entries(ACCOUNTS).find(([, v]) => v === id)?.[0] ?? `#${id}`;
+const DISPLAY_NAMES = { 1: "Operator", 2: "Arbiter", 3: "Treasury", 4: "Oracle", 10: "Alice", 20: "MM1", 21: "MM2", 30: "Carol" };
+const name = (id) => state?.snapshot.accounts.find((a) => a.id === id)?.name ?? DISPLAY_NAMES[id] ?? `#${id}`;
 const variant = (v) => (typeof v === "string" ? v : Object.keys(v)[0]); // serde enum → its variant name
 
 (async () => {
@@ -373,7 +398,15 @@ const BADGE = {
 };
 
 // Page-only state: open forms, typed drafts, inline errors and rejection toasts. Never engine data.
-const ui = { open: new Set(), drafts: new Map(), errors: new Map() };
+const ui = {
+  open: new Set(), drafts: new Map(), errors: new Map(),
+  rows: new Map(),     // trace seq → expanded (true) or collapsed (false), when the presenter chose
+  filter: "all",       // trace filter chip
+  logPinned: true,     // the log follows new rows until the presenter scrolls up
+  tab: "d1",           // deliverables tab
+  replay: null,        // the last replay check, shown until the next command
+  ledgerBase: null,    // balances before the last response that ran commands, for the ledger's deltas
+};
 const toasts = new Map(); // card key → { texts, timer }
 let rendered = null;      // the response the last render collected toasts from
 
@@ -440,6 +473,7 @@ function render() {
     rendered = state;
     clearError();
     collectToasts();
+    trackResponse();
   }
   root.dataset.view = isAdmin() ? "admin" : (VIEWS.find(([, v]) => v === viewerId())?.[0] ?? "account").toLowerCase();
   renderTopBar();
@@ -450,18 +484,26 @@ function render() {
   renderLedger();
   renderInspector();
   renderPanels();
+  followLog();
   restoreFocus(focus);
 }
-
-// Task D7 fills these four.
-function renderTrace() {}
-function renderLedger() {}
-function renderInspector() {}
-function renderPanels() {}
 
 function select(kind, id) {
   selected = { kind, id };
   render();
+}
+
+/**
+ * Once per engine response. The ledger's delta baseline is the snapshot before the last response
+ * that ran commands (one step, or a whole Run to end); a view switch or a replay check runs none and
+ * keeps the deltas, and a reset drops them. A replay check's result stays until the next command.
+ */
+function trackResponse() {
+  const s = state.snapshot, p = prev?.snapshot;
+  if (!p || prev.mode !== state.mode || s.seq < p.seq) ui.ledgerBase = null;
+  else if (s.seq > p.seq) ui.ledgerBase = { seq: p.seq, total: p.total, balances: new Map(p.accounts.map((a) => [a.id, a.balance])) };
+  if (state.replay) ui.replay = { ...state.replay, seq: s.seq, mode: state.mode };
+  else if (ui.replay && (ui.replay.seq !== s.seq || ui.replay.mode !== state.mode)) ui.replay = null;
 }
 
 /** Containers are rebuilt with innerHTML, so keep keyboard focus (and the caret) on the same control. */
@@ -581,7 +623,7 @@ function renderScenario() {
       <p>${esc(p.summary)}</p>
     </div>
     <div class="progress">${progress}</div>
-    <div class="expect" aria-label="Expected events, in order">${chips}</div>`;
+    <div class="expect" role="group" aria-label="Expected events, in order">${chips}</div>`;
 }
 
 // ---- Shared card parts -----------------------------------------------------------------------
@@ -590,14 +632,20 @@ function partyHead(a) {
   return `<div class="party-head"><h3>${esc(a.name)}</h3><span class="meta">account ${a.id}, nonce ${lastNonce(a.id)}</span></div>`;
 }
 
-function balances(a) {
-  const { free, reserved, escrowed } = a.balance;
+/** The free / reserved / escrowed split as a bar. Widths are layout only. */
+function splitBar(balance) {
+  const { free, reserved, escrowed } = balance;
   const total = free + reserved + escrowed;
   const segs = [["free", free], ["reserved", reserved], ["escrowed", escrowed]]
     .filter(([, v]) => v > 0)
     .map(([k, v]) => `<div class="seg ${k}" style="width:${((v / total) * 100).toFixed(2)}%"></div>`).join("");
+  return `<div class="bar" role="img" aria-label="Free ${fmtUsd(free)}, reserved ${fmtUsd(reserved)}, escrowed ${fmtUsd(escrowed)}">${segs}</div>`;
+}
+
+function balances(a) {
+  const { free, reserved, escrowed } = a.balance;
   return `<div class="balances">
-      <div class="bar" role="img" aria-label="Free ${fmtUsd(free)}, reserved ${fmtUsd(reserved)}, escrowed ${fmtUsd(escrowed)}">${segs}</div>
+      ${splitBar(a.balance)}
       <div class="balance-nums"><span>Free <b>${fmtUsd(free)}</b></span><span>Reserved <b>${fmtUsd(reserved)}</b></span><span>Escrowed <b>${fmtUsd(escrowed)}</b></span></div>
     </div>`;
 }
@@ -712,7 +760,6 @@ function submitQuote(form) {
   ui.errors.delete(key);
   const action = { SubmitQuote: { request, leg: 0, price, size, expires_at: state.snapshot.now + ms } };
   if (act(mm, action)) {
-    ui.open.delete(key);
     ui.drafts.delete(key);
     render();
   }
@@ -862,10 +909,7 @@ function openRequestItem(a, r) {
   const verb = replacing ? "Replace" : "Quote";
   const head = `<div class="item-head">${idlink("request", r.id, `Request #${r.id}`, where)}${badge("Open")}<span class="muted" style="font-size:13px">quotes due ${due(r.response_deadline)}</span></div>`;
   const facts = `<div class="item-facts"><span>Buy <b>${sideName(leg.side)}</b> × <b>${qty(leg.qty)}</b></span><span>${idlink("contract", leg.contract, `Contract #${leg.contract}`, `${where}r${r.id}`)}</span>${sealedMark("limit sealed")}</div>`;
-  if (!ui.open.has(key)) {
-    const label = replacing ? `Replace quote on #${r.id}` : `Quote on #${r.id}`;
-    return `<div class="item">${head}${facts}<div class="item-actions"><button class="btn btn-sm" type="button" id="${key}-toggle" data-action="toggle" data-target="${key}" aria-expanded="false">${label}</button></div></div>`;
-  }
+  // The quote form sits inline on every open request, as in the mockup.
   const d = draft(key, { price: "", size: String(leg.qty), expiry: "10" });
   return `<div class="item">${head}${facts}
       <form class="form-row" id="${key}-form" data-form="quote" data-key="${key}" data-actor="${a.id}" data-request="${r.id}" novalidate aria-label="${verb} on request #${r.id}">
@@ -1015,6 +1059,678 @@ function positionsTable(c) {
     </table></div>`;
 }
 
+// ---- Trace: the command log ------------------------------------------------------------------
+
+const MONEY_EVENTS = ["Deposited", "Withdrawn", "QuoteFilled", "PositionSettled", "DisputeBondReturned"];
+const FILTERS = [["all", "All"], ["rejections", "Rejections"], ["money", "Money"], ["clock", "Clock"]];
+const UNCONSUMED = ["Duplicate", "NonceGap"]; // rejections that consume no nonce
+
+const evName = (ev) => variant(ev.event);
+const evData = (ev) => (typeof ev.event === "string" ? {} : ev.event[variant(ev.event)] ?? {});
+const rejectionOf = (ev) => ev.event?.CommandRejected?.reason ?? null;
+const isRejected = (e) => e.events.some((ev) => rejectionOf(ev) != null);
+const audienceText = (ev) => (ev.audience === "Public" ? "Public" : `→ ${name(ev.audience?.Account)}`);
+const audBadge = (ev) => `<span class="aud${ev.audience === "Public" ? "" : " aud-acct"}">${esc(audienceText(ev))}</span>`;
+const plainRef = (kind, id) => `#${esc(id)}`;
+
+/** Best-effort formatting: an event or action of an unexpected shape falls back to its raw fields. */
+function partsOr(fn, data) {
+  try {
+    return fn();
+  } catch {
+    if (!data || typeof data !== "object") return [];
+    return Object.entries(data).map(([k, v]) => `${esc(k)} ${esc(typeof v === "object" ? JSON.stringify(v) : v)}`);
+  }
+}
+
+/** A command's fields in short form, e.g. "req #7 · 0.60 × 1,000 · exp t+10.000 s". Plain text, escaped. */
+function actionParts(kind, a) {
+  return partsOr(() => {
+    switch (kind) {
+      case "Deposit": return [`${fmtUsd(a.amount)} to ${esc(name(a.to))}`];
+      case "Withdraw": return [fmtUsd(a.amount)];
+      case "ListContract": return [`#${esc(a.id)}`, `closes ${fmtT(a.trading_close)}`, `hard deadline ${fmtT(a.resolution_deadline)}`];
+      case "SubmitRequest": return [...a.legs.map((l) => `Buy ${sideName(l.side)} × ${qty(l.qty)} · limit ${fmtPrice(l.limit_price)}`), `due ${fmtT(a.response_deadline)}`];
+      case "CancelRequest": case "Reject": return [`req #${esc(a.request)}`];
+      case "SubmitQuote": return [`req #${esc(a.request)}`, `${fmtPrice(a.price)} × ${qty(a.size)}`, `exp ${fmtT(a.expires_at)}`];
+      case "CancelQuote": return [`quote #${esc(a.quote)}`];
+      case "Accept": return [`req #${esc(a.request)}`, ...a.picks.map((p) => `#${esc(p.quote)} at ${fmtPrice(p.price)}`)];
+      case "ProposeOutcome": case "Rule": return [`#${esc(a.contract)}`, esc(outcomeName(a.outcome))];
+      case "Dispute": return [`#${esc(a.contract)}`];
+      default: throw new Error("unknown action");
+    }
+  }, a);
+}
+
+/** An event's fields in short form. `ref` renders an id: a link in lists, plain text inside a row button. */
+function eventParts(ev, ref) {
+  const v = evName(ev), d = evData(ev);
+  return partsOr(() => {
+    switch (v) {
+      case "Initialized": return [];
+      case "CommandRejected": return [esc(d.reason)];
+      case "Deposited": return [`${fmtUsd(d.amount)} to ${esc(name(d.account))}`];
+      case "Withdrawn": return [`${fmtUsd(d.amount)} from ${esc(name(d.account))}`];
+      case "ContractListed": case "ContractClosed": return [ref("contract", d.contract)];
+      case "RequestOpened": return [ref("request", d.request), `Buy ${sideName(d.side)} × ${qty(d.qty)} on ${ref("contract", d.contract)}`, `due ${fmtT(d.response_deadline)}`];
+      case "RequestCancelled": case "RequestExpired": return [ref("request", d.request)];
+      case "RequestPresented": return [ref("request", d.request), ...d.picks.map((p) => `pick ${ref("quote", p.quote)} at ${fmtPrice(p.price)}`), `accept by ${fmtT(d.accept_by)}`];
+      case "RequestRejected": return [ref("request", d.request), esc(d.cause)];
+      case "RequestFilled": return [ref("request", d.request), `position ${d.positions.map((p) => `#${esc(p)}`).join(", ")}`];
+      case "QuoteSubmitted": return [ref("quote", d.quote), `on ${ref("request", d.request)} at ${fmtPrice(d.price)}`, `expires ${fmtT(d.expires_at)}`];
+      case "QuoteReplaced": return [`${ref("quote", d.old)} → ${ref("quote", d.new)}`];
+      case "QuoteCancelled": case "QuoteExpired": case "QuoteLost": case "QuoteSelected": case "QuoteReleased": return [ref("quote", d.quote)];
+      case "QuoteFilled": return [ref("quote", d.quote), `position #${esc(d.position)}`];
+      case "OutcomeProposed": return [ref("contract", d.contract), esc(outcomeName(d.outcome)), `dispute until ${fmtT(d.dispute_until)}`];
+      case "Disputed": return [ref("contract", d.contract), `by ${esc(name(d.disputer))}`];
+      case "Ruled": return [ref("contract", d.contract), esc(outcomeName(d.outcome)), d.bond_returned ? "bond returned" : "bond forfeited"];
+      case "ContractFinalized": return [ref("contract", d.contract), esc(outcomeName(d.outcome))];
+      case "PositionSettled": return [`#${esc(d.position)}`, `${esc(name(d.yes_holder))} paid ${fmtUsd(d.yes_payout)}`, `${esc(name(d.no_holder))} paid ${fmtUsd(d.no_payout)}`];
+      case "DisputeBondReturned": return [ref("contract", d.contract), `${fmtUsd(d.amount)} to ${esc(name(d.disputer))}`];
+      default: throw new Error("unknown event");
+    }
+  }, d);
+}
+
+/** The row's one-line summary: who, what kind, and the command's fields (or, if hidden, its first event). */
+function rowSummary(e) {
+  const user = e.command?.User;
+  if (user) {
+    const kind = variant(user.action);
+    return `<b>${esc(name(user.actor))}</b> ${[esc(kind), ...actionParts(kind, user.action[kind])].join(" · ")}`;
+  }
+  if (e.kind === "genesis") {
+    const c = e.command?.Genesis?.config;
+    return `<b>system</b> genesis${c ? ` · ${esc(c.reservation)}, ${esc(c.selection)}` : ""}`;
+  }
+  if (e.kind === "tick" || e.kind === "resume") {
+    const names = [...new Set(e.events.map(evName))];
+    return `<b>system</b> ${esc(e.kind)} · ${names.length ? esc(names.join(", ")) : "no events"}`;
+  }
+  // Another party's command: only the events this viewer was sent, as the engine addressed them.
+  const first = e.events[0];
+  if (!first) return "<b>hidden</b>";
+  const parts = eventParts(first, plainRef);
+  const more = e.events.length > 1 ? ` (+${e.events.length - 1} more)` : "";
+  return `<b>${esc(audienceText(first))}</b> ${esc(evName(first))}${parts.length ? ` ${parts.join(", ")}` : ""}${more}`;
+}
+
+/** The nonce column: the nonce, "(n)" when the engine consumed nothing, a lock when the command is hidden. */
+function nonceCell(e) {
+  if (e.kind === "hidden") {
+    return `<span class="nonce" title="Command hidden in this view: only its events show">${icon("lock")}<span class="sr-only">command hidden</span></span>`;
+  }
+  if (e.nonce == null) return '<span class="nonce"></span>';
+  const unused = e.events.some((ev) => UNCONSUMED.includes(rejectionOf(ev)));
+  return `<span class="nonce" title="Nonce ${esc(e.nonce)}${unused ? ", not consumed" : ""}"><span class="sr-only">nonce </span>${unused ? `(${esc(e.nonce)})` : esc(e.nonce)}</span>`;
+}
+
+function passesFilter(e) {
+  switch (ui.filter) {
+    case "rejections": return isRejected(e);
+    case "money": return e.events.some((ev) => MONEY_EVENTS.includes(evName(ev)));
+    case "clock": return e.kind === "tick" || e.kind === "resume";
+    default: return true;
+  }
+}
+
+function traceRow(e, fresh, open) {
+  const rejected = isRejected(e);
+  const cls = ["row", fresh && "is-new", open && "is-open", rejected && "is-rejected"].filter(Boolean).join(" ");
+  const n = e.events.length;
+  const head = `<button class="row-head" type="button" data-action="toggle-row" data-seq="${e.seq}" data-key="row-${e.seq}" aria-expanded="${open}"${open ? ` aria-controls="row-ev-${e.seq}"` : ""}>`
+    + `<span class="seq"><span class="sr-only">seq </span>${e.seq}</span><span class="t">${clockText(e.time)}</span>${nonceCell(e)}`
+    + `<span class="what">${rowSummary(e)}</span><span class="count" title="${n} event${n === 1 ? "" : "s"}"><span class="sr-only">, events: </span>${n}</span></button>`;
+  if (!open) return { key: `r${e.seq}`, cls, inner: head };
+  const items = e.events.map((ev, i) => {
+    const rej = rejectionOf(ev) != null;
+    const parts = eventParts(ev, (kind, id) => idlink(kind, id, `#${id}`, `t${e.seq}e${i}`));
+    return `<li><span class="ev${rej ? " rej" : ""}">${esc(evName(ev))}</span>${parts.length ? `<span${rej ? ' class="ev rej"' : ""}>${parts.join(", ")}</span>` : ""}${audBadge(ev)}</li>`;
+  }).join("");
+  return { key: `r${e.seq}`, cls, inner: `${head}<ul class="row-events" id="row-ev-${e.seq}">${items || '<li class="muted">No events.</li>'}</ul>` };
+}
+
+/**
+ * Keyed update of a list: rows whose markup didn't change keep their DOM node, so the log doesn't
+ * flicker, keeps its scroll position, and a screen reader hears only the rows that are new.
+ */
+function patchList(box, items) {
+  const old = new Map([...box.children].map((node) => [node.dataset.k, node]));
+  const make = (it) => {
+    const node = document.createElement("div");
+    node.dataset.k = it.key;
+    node.innerHTML = it.inner;
+    node.patched = it.inner;
+    if (it.hidden) node.setAttribute("aria-hidden", "true");
+    return node;
+  };
+  let at = box.firstElementChild;
+  for (const it of items) {
+    let node = old.get(it.key);
+    old.delete(it.key);
+    if (!node) node = make(it);
+    else if (node.patched !== it.inner) {
+      const fresh = make(it);
+      if (node === at) at = fresh;
+      node.replaceWith(fresh);
+      node = fresh;
+    }
+    if (node.className !== it.cls) node.className = it.cls;
+    if (node === at) at = at.nextElementSibling;
+    else box.insertBefore(node, at);
+  }
+  for (const node of old.values()) node.remove();
+}
+
+function renderTrace() {
+  const head = document.getElementById("trace-head");
+  const sub = isAdmin() ? "Every command and event" : `What ${name(viewerId())} can see`;
+  const headHtml = `<div class="trace-head-top"><h2 id="trace-h">Trace</h2><span class="muted" style="font-size:13px">${esc(sub)}</span></div>
+      <div class="filters" role="group" aria-label="Filter the trace">${FILTERS.map(([f, label]) =>
+        `<button type="button" id="filter-${f}" data-action="filter" data-filter="${f}" aria-pressed="${ui.filter === f}">${label}</button>`).join("")}</div>`;
+  if (head.patched !== headHtml) {
+    head.innerHTML = headHtml;
+    head.patched = headHtml;
+  }
+
+  const fresh = newSeqs();
+  const last = state.trace[state.trace.length - 1];
+  // Rejections open by default (their reason is the point), and so does the newest row.
+  const rows = state.trace.filter(passesFilter).map((e) => {
+    const open = ui.rows.get(e.seq) ?? (isRejected(e) || (e === last && fresh.has(e.seq)));
+    return traceRow(e, fresh.has(e.seq), open);
+  });
+  const cols = { key: "cols", cls: "log-cols", hidden: true, inner: "<span>seq</span><span>time</span><span>nonce</span><span>command</span><span>events</span>" };
+  const none = { rejections: "No rejections yet.", money: "No money has moved yet.", clock: "No clock ticks yet." }[ui.filter] ?? "No rows yet.";
+  const empty = { key: "empty", cls: "empty", inner: `<p style="padding:10px 16px">${none}</p>` };
+  patchList(document.getElementById("log"), [cols, ...rows, ...(rows.length ? [] : [empty])]);
+}
+
+/** After a render: keep the newest row in view, unless the presenter scrolled up to read. */
+function followLog() {
+  const log = document.getElementById("log");
+  if (ui.logPinned) log.scrollTop = log.scrollHeight;
+}
+
+/** Opens a row (from the inspector), clearing a filter that hides it, and moves focus to it. */
+function revealRow(seq) {
+  ui.rows.set(seq, true);
+  const e = state.trace.find((x) => x.seq === seq);
+  if (e && !passesFilter(e)) ui.filter = "all";
+  ui.logPinned = false;
+  render();
+  const row = document.querySelector(`[data-key="row-${seq}"]`);
+  row?.scrollIntoView({ block: "nearest" });
+  row?.focus({ preventScroll: true });
+}
+
+// ---- Inspector -------------------------------------------------------------------------------
+
+const REF_FIELDS = ["request", "quote", "contract", "old", "new", "id"];
+const REF_KIND = { request: "request", quote: "quote", old: "quote", new: "quote", contract: "contract" };
+const KIND_TITLE = { request: "Request", quote: "Quote", contract: "Contract" };
+
+/** Whether a command or event mentions the id in a field named request, quote, contract, old, new or id. */
+function refers(v, id) {
+  if (Array.isArray(v)) return v.some((x) => refers(x, id));
+  if (!v || typeof v !== "object") return false;
+  return Object.entries(v).some(([k, x]) => (REF_FIELDS.includes(k) && x === id) || refers(x, id));
+}
+
+/** Every trace entry, in this view, whose command or events reference the object. */
+function historyOf(sel) {
+  if (!sel) return [];
+  return state.trace.filter((e) => refers(e.command, sel.id) || e.events.some((ev) => refers(ev.event, sel.id)));
+}
+
+/** The object's state in this view's snapshot: null when the viewer may not see it. */
+function currentState(sel) {
+  const s = state.snapshot;
+  if (sel.kind === "request") {
+    const r = s.requests.find((x) => x.id === sel.id);
+    return r?.state ? variant(r.state) : r?.public_state === "open" ? "Open" : null;
+  }
+  if (sel.kind === "quote") return s.quotes.find((q) => q.id === sel.id)?.state ?? null;
+  const c = s.contracts.find((x) => x.id === sel.id);
+  return c ? variant(c.state) : null;
+}
+
+function inspectorFacts(sel) {
+  const s = state.snapshot, where = "insp";
+  const sealed = sealedMark("sealed");
+  if (sel.kind === "request") {
+    const r = s.requests.find((x) => x.id === sel.id);
+    if (!r) return { badge: "", facts: "<span>Not in this view.</span>" };
+    const facts = [`<span>Requester ${r.requester != null ? `<b>${esc(name(r.requester))}</b>` : sealed}</span>`];
+    for (const leg of r.legs) {
+      facts.push(`<span>Buy <b>${sideName(leg.side)}</b> × <b>${qty(leg.qty)}</b> on ${idlink("contract", leg.contract, `#${leg.contract}`, where)}</span>`);
+      facts.push(`<span>Limit ${leg.limit_price != null ? `<b>${fmtPrice(leg.limit_price)}</b>` : sealed}</span>`);
+    }
+    facts.push(`<span>Quotes due <b>${fmtT(r.response_deadline)}</b></span>`);
+    if (r.state?.Presented) facts.push(`<span>Accept by <b>${fmtT(r.state.Presented.accept_by)}</b></span>`);
+    for (const p of r.picks) facts.push(`<span>Pick ${idlink("quote", p.quote, `#${p.quote}`, where)} at <b>${fmtPrice(p.price)}</b></span>`);
+    if (r.state?.Rejected) facts.push(`<span>Cause <b>${esc(r.state.Rejected)}</b></span>`);
+    const b = r.state ? badge(variant(r.state)) : badge(r.public_state, r.public_state === "open" ? "b-live" : "b-gone");
+    return { badge: b, facts: facts.join("") };
+  }
+  if (sel.kind === "quote") {
+    const q = s.quotes.find((x) => x.id === sel.id);
+    if (!q) return { badge: "", facts: sealedMark("sealed: only its market maker and admin see this quote") };
+    return {
+      badge: badge(q.state),
+      facts: `<span>Market maker <b>${esc(name(q.mm))}</b></span><span>On ${idlink("request", q.request, `request #${q.request}`, where)}</span>`
+        + `<span>Sells at <b>${fmtPrice(q.price)}</b> × <b>${qty(q.size)}</b></span><span>${q.state === "Selected" ? "Firm until" : "Expires"} <b>${fmtT(q.expires_at)}</b></span>`,
+    };
+  }
+  const c = s.contracts.find((x) => x.id === sel.id);
+  if (!c) return { badge: "", facts: "<span>Not in this view.</span>" };
+  const st = variant(c.state);
+  const facts = [`<span>Trading closes <b>${fmtT(c.trading_close)}</b></span>`, `<span>Hard deadline <b>${fmtT(c.resolution_deadline)}</b></span>`];
+  if (st === "Proposed") facts.push(`<span>Proposed <b>${esc(outcomeName(c.state.Proposed.outcome))}</b>, dispute until <b>${fmtT(c.state.Proposed.dispute_until)}</b></span>`);
+  if (st === "Disputed") facts.push(`<span>Proposed <b>${esc(outcomeName(c.state.Disputed.proposed))}</b>, disputed by <b>${esc(name(c.dispute?.disputer))}</b></span>`);
+  if (st === "Final") facts.push(`<span>Outcome <b>${esc(outcomeName(c.state.Final))}</b></span>`);
+  return { badge: badge(st), facts: facts.join("") };
+}
+
+/** One history line: the seq (opens its trace row), who did what, and each event with its ids. */
+function historyItem(e, sel) {
+  const user = e.command?.User;
+  const who = user ? name(user.actor) : e.kind === "hidden" ? (e.events[0] ? audienceText(e.events[0]) : "hidden") : "system";
+  const what = user ? variant(user.action) : e.kind === "hidden" ? "" : e.kind;
+  const ref = (field, id) => (id === sel.id ? `#${esc(id)}` : idlink(REF_KIND[field], id, `#${id}`, `insp${e.seq}`));
+  const evs = e.events.map((ev) => {
+    const d = evData(ev), v = evName(ev);
+    if (v === "QuoteReplaced") return `${esc(v)} ${ref("old", d.old)} → ${ref("new", d.new)}`;
+    const field = ["quote", "request", "contract"].find((f) => typeof d[f] === "number");
+    return `<span${rejectionOf(ev) ? ' class="check-bad"' : ""}>${esc(v)}${field ? ` ${ref(field, d[field])}` : ""}${rejectionOf(ev) ? ` (${esc(rejectionOf(ev))})` : ""}</span>`;
+  }).join(", ");
+  return `<li><button class="idlink" type="button" data-action="reveal-row" data-seq="${e.seq}" data-key="insp-seq-${e.seq}">seq ${e.seq}</button> <b>${esc(who)}</b>${what ? ` ${esc(what)}` : ""}${evs ? ` → ${evs}` : ""}</li>`;
+}
+
+function renderInspector() {
+  const el = document.getElementById("inspector");
+  if (!selected) {
+    el.innerHTML = '<h2 id="insp-h">Inspector</h2><p class="empty">Click any request, quote or contract id to trace it.</p>';
+    return;
+  }
+  const { badge: b, facts } = inspectorFacts(selected);
+  const items = historyOf(selected).map((e) => historyItem(e, selected)).join("");
+  el.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">
+      <h2 id="insp-h">${KIND_TITLE[selected.kind] ?? "Object"} #${esc(selected.id)}</h2>
+      <span style="display:flex;gap:8px;align-items:center">${b}<button class="btn btn-quiet btn-sm" type="button" id="insp-clear" data-action="deselect">Clear</button></span>
+    </div>
+    <div class="item-facts">${facts}</div>
+    ${items ? `<ol>${items}</ol>` : `<p class="empty">Nothing in this view's trace mentions it.</p>`}`;
+}
+
+// ---- Ledger ----------------------------------------------------------------------------------
+
+const LEDGER_ORDER = ["requester", "market_maker"];
+const roleText = (role) => (role === "market_maker" ? "market maker" : role);
+const sumOf = (b) => b.free + b.reserved + b.escrowed; // display only: the row's total
+
+/** A cell's change since the last command: display diff of two engine integers. */
+function deltaHtml(now, before) {
+  if (before == null || now === before) return "";
+  const d = now - before;
+  return `<span class="delta ${d > 0 ? "up" : "down"}">${d > 0 ? "+" : ""}${fmtUsd(d)}</span>`;
+}
+
+function renderLedger() {
+  const el = document.getElementById("ledger");
+  const s = state.snapshot, base = ui.ledgerBase;
+  const rank = (a) => { const i = LEDGER_ORDER.indexOf(a.role); return i < 0 ? LEDGER_ORDER.length : i; };
+  const sorted = [...s.accounts].sort((a, b) => rank(a) - rank(b));
+  // System accounts that hold nothing, and held nothing before the last command, share one row
+  // (as in the mockup); one that holds money, like the treasury after a forfeited bond, gets its own.
+  const idle = sorted.filter((a) => rank(a) === LEDGER_ORDER.length && sumOf(a.balance) === 0
+    && sumOf(base?.balances.get(a.id) ?? a.balance) === 0);
+  const grouped = idle.length > 1 ? new Set(idle) : new Set();
+  const rows = sorted.filter((a) => !grouped.has(a)).map((a) => {
+    const b = a.balance, was = base?.balances.get(a.id);
+    const cells = [[b.free, was?.free], [b.reserved, was?.reserved], [b.escrowed, was?.escrowed], [sumOf(b), was && sumOf(was)]];
+    const changed = was && cells.some(([now, before]) => now !== before);
+    return `<tr${changed ? ' class="changed"' : ""}>
+        <td><span class="who">${esc(a.name)}</span><span class="role">${esc(roleText(a.role))}</span></td>
+        ${cells.map(([now, before]) => `<td>${fmtUsd(now)}${deltaHtml(now, before)}</td>`).join("")}
+        <td>${sumOf(b) > 0 ? splitBar(b) : ""}</td>
+      </tr>`;
+  }).join("") + (grouped.size ? `<tr>
+        <td><span class="who">${esc([...grouped].map((a) => a.name).join(", "))}</span><span class="role">system accounts</span></td>
+        ${`<td>${fmtUsd(0)}</td>`.repeat(4)}<td></td>
+      </tr>` : "");
+  const foot = s.total != null
+    ? `<tfoot><tr><td colspan="4">Ledger total</td><td>${fmtUsd(s.total)}${deltaHtml(s.total, base?.total)}</td><td class="muted" style="text-align:left;font-weight:400">changes only on Deposit/Withdraw (I1)</td></tr></tfoot>`
+    : "";
+  const inv = s.invariants.ok
+    ? `<span>${badge("I1–I5 hold", "b-good")} <span class="muted">checked after every command</span></span>`
+    : `<span>${badge("I1–I5 broken", "b-bad")} <span class="check-bad">${esc(s.invariants.error ?? "")}</span></span>`;
+  const r = ui.replay;
+  const hash = (h) => esc(String(h).slice(0, 8));
+  const result = !r ? ""
+    : r.matches ? `<span class="check-ok">Replayed ${r.commands} commands → hash ${hash(r.replayed)} = live ${hash(r.live)} ✓</span>`
+    : `<span class="check-bad">Replayed ${r.commands} commands → hash ${hash(r.replayed)} ≠ live ${hash(r.live)}: mismatch ✗</span>`;
+  el.innerHTML = `<div class="panel-head">
+      <h2 id="ledger-h">Ledger</h2>
+      <div style="display:flex;gap:14px;flex-wrap:wrap">
+        <span class="key"><i style="background:var(--free)"></i>Free</span>
+        <span class="key"><i class="seg reserved"></i>Reserved (held, can be released)</span>
+        <span class="key"><i style="background:var(--escrow)"></i>Escrowed (locked to the contract)</span>
+      </div>
+    </div>
+    <table>
+      <thead><tr><th scope="col">Account</th><th scope="col">Free</th><th scope="col">Reserved</th><th scope="col">Escrowed</th><th scope="col">Total</th><th scope="col" class="barcol">Split</th></tr></thead>
+      <tbody>${rows}</tbody>
+      ${foot}
+    </table>
+    <div class="ledger-foot">
+      ${inv}
+      <span style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <span role="status">${result}</span>
+        <button class="btn btn-sm" type="button" id="replay-check" data-action="replay" title="Rebuild the state from the command log in a fresh engine and compare state hashes">Replay check</button>
+      </span>
+    </div>
+    ${s.total == null ? '<p class="muted" style="font-size:13px;padding:0 16px 10px">Only your own account is shown. The ledger total is shown to admin.</p>' : ""}`;
+}
+
+// ---- Deliverables: D1 state machines -----------------------------------------------------------
+
+// Transcribed from engine.md §6.1–6.3: every state, every edge, each edge's trigger and who fires it.
+// Node: [key, x, y, width, text, terminal]. Edge: [key, path, labels as [x, y, text, anchor?]].
+const MACHINES = [
+  {
+    kind: "request", title: "Request", view: "0 0 520 206", start: [14, 102],
+    caption: "Every exit except Filled releases every hold in the same command.",
+    nodes: [
+      ["Open", 80, 86, 80, "Open"], ["Presented", 240, 86, 100, "Presented"], ["Filled", 430, 86, 84, "Filled", true],
+      ["Cancelled", 75, 8, 90, "Cancelled", true], ["Expired", 75, 168, 90, "Expired", true], ["Rejected", 240, 168, 100, "Rejected", true],
+    ],
+    edges: [
+      ["start", "M19 102 H78", [[4, 84, "Submit"], [4, 96, "(requester)"]]],
+      ["present", "M160 102 H238", [[166, 84, "deadline"], [166, 96, "(clock)"]]],
+      ["accept", "M340 102 H428", [[346, 84, "Accept"], [346, 96, "(requester)"]]],
+      ["cancel", "M120 86 V42", [[127, 54, "Cancel"], [127, 66, "(requester)"]]],
+      ["expire", "M120 118 V166", [[127, 138, "deadline, a leg"], [127, 150, "unquoted (clock)"]]],
+      ["reject", "M290 118 V166", [[297, 138, "Reject (requester)"], [297, 150, "or accept_by (clock)"]]],
+    ],
+  },
+  {
+    kind: "quote", title: "Quote", view: "0 0 520 222", start: [14, 112],
+    caption: "Every end state except Filled releases the quote's hold. Only an Active quote can be cancelled.",
+    nodes: [
+      ["Active", 50, 96, 170, "Active"], ["Selected", 320, 96, 86, "Selected"], ["Filled", 444, 96, 72, "Filled", true],
+      ["Replaced", 45, 8, 90, "Replaced", true], ["Cancelled", 145, 8, 90, "Cancelled", true],
+      ["Expired", 45, 184, 90, "Expired", true], ["Lost", 145, 184, 90, "Lost", true], ["Released", 320, 184, 86, "Released", true],
+    ],
+    edges: [
+      ["start", "M19 112 H48", [[4, 94, "Submit"], [4, 106, "(MM)"]]],
+      ["replace", "M90 96 V42", [[96, 66, "Replace"], [96, 78, "(MM)"]]],
+      ["cancel", "M190 96 V42", [[196, 66, "Cancel"], [196, 78, "(MM)"]]],
+      ["expire", "M90 128 V182", [[96, 152, "expires_at"], [96, 164, "(clock)"]]],
+      ["lose", "M190 128 V182", [[196, 152, "not selected (clock)"], [196, 164, "or request cancelled"]]],
+      ["select", "M220 112 H318", [[226, 94, "chosen at"], [226, 106, "deadline (clock)"]]],
+      ["fill", "M406 112 H442", [[410, 78, "Accept"], [410, 90, "(requester)"]]],
+      ["release", "M363 128 V182", [[370, 152, "Reject or lapse"], [370, 164, "(requester, clock)"]]],
+    ],
+  },
+  {
+    kind: "contract", title: "Contract", view: "0 0 520 240", start: [65, 26],
+    caption: "Final settles every position in the same command. Resume can extend an open dispute window after downtime.",
+    nodes: [
+      ["Trading", 30, 96, 70, "Trading"], ["Closed", 140, 96, 70, "Closed"], ["Proposed", 262, 96, 90, "Proposed"],
+      ["FinalA", 440, 96, 76, "Final", true], ["Disputed", 262, 176, 90, "Disputed"], ["FinalB", 440, 176, 76, "Final", true],
+    ],
+    edges: [
+      ["start", "M65 31 V94", [[58, 58, "List", "end"], [58, 70, "(operator)", "end"]]],
+      ["close", "M100 112 H138", [[104, 80, "close"], [104, 92, "(clock)"]]],
+      ["propose", "M210 112 H260", [[214, 80, "Propose"], [214, 92, "(oracle)"]]],
+      ["resume", "M292 96 C292 64, 322 64, 322 94", [[307, 58, "Resume (system)", "middle"]]],
+      ["window", "M352 112 H438", [[358, 80, "window ends"], [358, 92, "(clock)"]]],
+      ["hardClosed", "M175 96 C175 14, 478 14, 478 94", [[326, 26, "hard deadline, no proposal: INVALID (clock)", "middle"]]],
+      ["dispute", "M307 128 V174", [[300, 150, "Dispute", "end"], [300, 162, "(anyone, bond)", "end"]]],
+      ["rule", "M352 186 H438", [[358, 180, "Rule (arbiter)"]]],
+      ["hardDisputed", "M352 200 H438", [[358, 220, "hard deadline (clock):"], [358, 232, "as proposed, bond returned"]]],
+    ],
+  },
+];
+
+// Which edge each event is, per kind: [edge, the state it enters].
+const REQUEST_STEPS = {
+  RequestOpened: ["start", "Open"], RequestCancelled: ["cancel", "Cancelled"], RequestExpired: ["expire", "Expired"],
+  RequestPresented: ["present", "Presented"], RequestFilled: ["accept", "Filled"], RequestRejected: ["reject", "Rejected"],
+};
+const QUOTE_STEPS = {
+  QuoteSubmitted: ["start", "Active"], QuoteReplaced: ["replace", "Replaced"], QuoteCancelled: ["cancel", "Cancelled"],
+  QuoteExpired: ["expire", "Expired"], QuoteLost: ["lose", "Lost"], QuoteSelected: ["select", "Selected"],
+  QuoteFilled: ["fill", "Filled"], QuoteReleased: ["release", "Released"],
+};
+
+/** The contract edge an event took, which depends on the state it left (both Finals are "Final"). */
+function contractStep(v, at, entry) {
+  switch (v) {
+    case "ContractListed": return ["start", "Trading"];
+    case "ContractClosed": return ["close", "Closed"];
+    case "OutcomeProposed": return entry.kind === "resume" || at === "Proposed" ? ["resume", "Proposed"] : ["propose", "Proposed"];
+    case "Disputed": return ["dispute", "Disputed"];
+    case "Ruled": return ["rule", "FinalB"];
+    case "ContractFinalized":
+      if (at === "Proposed") return ["window", "FinalA"];
+      if (at === "Disputed") return ["hardDisputed", "FinalB"];
+      if (at === "Closed") return ["hardClosed", "FinalA"];
+      return null; // after Ruled (same command), or from a state this view never saw
+    default: return null;
+  }
+}
+
+/** The selected object's transitions, from the state-changing events in its history. */
+function transitionsOf(sel) {
+  const out = [];
+  let at = null;
+  for (const e of historyOf(sel)) {
+    for (const ev of e.events) {
+      const v = evName(ev), d = evData(ev);
+      let step = null;
+      if (sel.kind === "request" && d.request === sel.id) step = REQUEST_STEPS[v];
+      else if (sel.kind === "quote" && (v === "QuoteReplaced" ? d.old : d.quote) === sel.id) step = QUOTE_STEPS[v];
+      else if (sel.kind === "contract" && d.contract === sel.id) step = contractStep(v, at, e);
+      if (step) {
+        out.push({ edge: step[0], to: step[1], seq: e.seq });
+        at = step[1];
+      }
+    }
+  }
+  return out;
+}
+
+/** What the selected object lights in its diagram: its current node, and the edge it took last. */
+function litFor(m) {
+  if (!selected || selected.kind !== m.kind) return null;
+  const now = currentState(selected);
+  const last = transitionsOf(selected).at(-1);
+  const node = (key) => (key === "FinalA" || key === "FinalB" ? "Final" : key);
+  const edge = last && now && node(last.to) === now ? last.edge : null;
+  let nodes = [];
+  if (now === "Final") nodes = edge ? [last.to] : ["FinalA", "FinalB"];
+  else if (now) nodes = [now];
+  return { now, nodes: new Set(nodes), edge };
+}
+
+function machineHtml(m) {
+  const lit = litFor(m);
+  const p = `sm-${m.kind}`;
+  const labelOf = (key) => m.edges.find(([k]) => k === key)?.[2].map((l) => l[2]).join(" ") ?? "";
+  const edges = m.edges.map(([key, d]) => `<path class="sm-edge${lit?.edge === key ? " is-last" : ""}" d="${d}" marker-end="url(#${p}-ah${lit?.edge === key ? "-last" : ""})"/>`).join("");
+  const labels = m.edges.flatMap(([key, , ls]) => ls.map(([x, y, t, anchor]) =>
+    `<text class="sm-label${lit?.edge === key ? " is-last" : ""}" x="${x}" y="${y}"${anchor ? ` text-anchor="${anchor}"` : ""}>${esc(t)}</text>`)).join("");
+  const nodes = m.nodes.map(([key, x, y, w, t, terminal]) => {
+    const cls = ["sm-node", terminal && "is-terminal", lit?.nodes.has(key) && "is-current"].filter(Boolean).join(" ");
+    return `<g class="${cls}"><rect x="${x}" y="${y}" width="${w}" height="32" rx="6"/><text x="${x + w / 2}" y="${y + 21}" text-anchor="middle">${esc(t)}</text></g>`;
+  }).join("");
+  const marker = (id, fill, size) => `<marker id="${id}" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="${size}" markerHeight="${size}" orient="auto"><path d="M0 0L8 4L0 8z" style="fill:var(${fill})"/></marker>`;
+  const sel = selected?.kind === m.kind ? selected : null;
+  const status = !sel ? `select a ${m.kind} to light it`
+    : lit.now ? `#${sel.id} is ${lit.now}` : `#${sel.id}: its state is sealed in this view`;
+  const aria = [`${m.title} state machine.`];
+  if (sel) aria.push(lit.now ? `#${sel.id} is ${lit.now}${lit.edge ? `, entered by ${labelOf(lit.edge)}` : ""}.` : `#${sel.id}'s state is sealed in this view.`);
+  return `<div class="machine">
+      <h3>${m.title} <span class="muted" style="font-weight:400;font-size:13px">${esc(status)}</span></h3>
+      <svg viewBox="${m.view}" role="img" aria-label="${esc(aria.join(" "))}"><defs>${marker(`${p}-ah`, "--ink-3", 7)}${marker(`${p}-ah-last`, "--accent", 6)}</defs>
+        <circle class="sm-start" cx="${m.start[0]}" cy="${m.start[1]}" r="5"/>${edges}${labels}${nodes}</svg>
+      <p class="muted caption">${esc(m.caption)}</p>
+    </div>`;
+}
+
+function d1Panel() {
+  return `<div class="machines">${MACHINES.map(machineHtml).join("")}</div>
+    <div class="legend">
+      <span><svg width="22" height="12" aria-hidden="true"><rect x="1" y="1" width="20" height="10" rx="3" fill="var(--accent-tint)" stroke="var(--accent)" stroke-width="2"/></svg> Current state of the selected object</span>
+      <span><svg width="22" height="12" aria-hidden="true"><line x1="1" y1="6" x2="21" y2="6" stroke="var(--accent)" stroke-width="2.5"/></svg> The transition it took last</span>
+      <span><svg width="22" height="12" aria-hidden="true"><rect x="1" y="1" width="20" height="10" rx="3" fill="none" stroke="var(--line-2)" stroke-dasharray="3 2"/></svg> Terminal</span>
+      <span><svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="5" fill="var(--ink-3)"/></svg> Created by</span>
+      <span>Labels show the trigger and who can fire it.</span>
+    </div>`;
+}
+
+// ---- Deliverables: multi-leg, D3, D4, D5 -------------------------------------------------------
+
+function multiLegPanel() {
+  // engine.md §8: the "leg 2 of 3" table as three steps, and the five atomicity rules.
+  return `<p style="margin-bottom:10px"><span class="not-built">Designed, not built (P6)</span> <span class="muted">The engine rejects more than one leg today: a request with two or more legs is CommandRejected (Unsupported). This is the design for "leg 2 of 3 fails after leg 1 matched".</span></p>
+    <div class="steps3">
+      <div class="item"><div class="item-head"><span class="id">1. Before the deadline</span></div><p style="font-size:13px">Leg 1: MM-A's quote is Active and holds. Leg 2: no quote. Leg 3: MM-C's quote is Active and holds. The request is Open. Nothing provisional is escrowed.</p></div>
+      <div class="item"><div class="item-head"><span class="id">2. The deadline fires</span></div><p style="font-size:13px">Leg 2 has no eligible quote, so the whole request is Expired. MM-A's, MM-C's and the requester's holds are all released in that one command.</p></div>
+      <div class="item"><div class="item-head"><span class="id">3. Alternative path</span></div><p style="font-size:13px">Every leg has a quote and the request is Presented. MM-B's cancel on leg 2 is rejected (InvalidState) because selected quotes are firm. Accept fills all three legs in one command; Reject or a lapse releases all of them.</p></div>
+    </div>
+    <ol class="rules">
+      <li>One hold per request covers all legs, and one hold per quote: no per-leg partial commitment.</li>
+      <li>Selection is all-or-nothing: every leg needs an eligible quote, or the request expires and every hold is released.</li>
+      <li>Acceptance is one command: all legs are validated first, then all escrows applied.</li>
+      <li>A presented request stays whole: selected quotes are firm, so no leg drops out inside the window.</li>
+      <li>Every leg's contract outlives the request: the trading-close guard runs per leg.</li>
+    </ol>`;
+}
+
+/** A Run button that resets to a preset from the catalogue; none if the catalogue lacks it. */
+function runButton(presetName, where) {
+  const p = presets.find((x) => x.name === presetName);
+  if (!p) return null;
+  return `<button class="btn btn-sm" type="button" data-action="run-preset" data-preset="${esc(p.name)}" data-key="run-${where}" title="Reset to ${esc(p.name)}: ${esc(p.summary)}">Run<span class="sr-only"> ${esc(p.name)}</span></button>`;
+}
+const runCell = (presetName, where, fallback) => `<td class="run">${runButton(presetName, where) ?? `<span class="muted">${fallback}</span>`}</td>`;
+
+// failure-modes.md, transcribed: [id, race or failure, handling, tests, preset that demonstrates it].
+const FAILURES = [
+  ["Races", [
+    ["R1", "Cancel vs response deadline", "Before the deadline the cancel removes the quote; at or after it, the quote is Selected (firm): InvalidState.", ["cancel_before_deadline_removes_quote", "cancel_after_selection_rejected"], "mm_cannot_withdraw_after_selection"],
+    ["R2", "Accept vs accept_by", "At or after accept_by, the accept runs after the lapse timer: rejected.", ["accept_after_window_rejected_without_tick"], "requester_lapses"],
+    ["R3", "Quote vs response deadline", "At or after the deadline, the quote finds the request Presented or Expired.", ["quote_after_deadline_rejected"], "no_quotes_expire"],
+    ["R4", "Quote expiry vs selection", "Eligible quotes are firm through the accept window; expiry is clamped to it.", ["short_expiry_not_selected", "selected_quote_expiring_at_accept_by_is_left_to_the_lapse"]],
+    ["R5", "Double accept or reject", "The second finds the request no longer Presented: InvalidState.", ["double_accept_rejected"], "attack_double_accept"],
+    ["R6", "Duplicate or skipped command", "Strict nonces: ≤ last is Duplicate, > last + 1 is NonceGap; neither consumes anything.", ["duplicate_nonce_ignored", "nonce_gap_rejected_and_not_consumed"], "attack_replayed_nonce"],
+    ["R7", "Withdraw vs reservation", "Only free is withdrawable; holds leave free atomically.", ["withdraw_cannot_touch_reserved"]],
+    ["R8", "Quote replace vs selection", "One command: release the old hold, hold the new.", ["replace_quote_atomic"]],
+    ["R9", "Dispute vs window end", "At or after dispute_until, the dispute runs after the window timer: InvalidState.", ["dispute_after_window_rejected", "dispute_at_the_window_end_is_too_late"], "disputed_ruled_invalid"],
+  ]],
+  ["Partial failures", [
+    ["F1", "Funds short mid-accept", "All legs validated before any escrow; holds already cover the accept.", []],
+    ["F2", "Arithmetic overflow", "checked_* gives CommandRejected; balances untouched, nonce consumed.", ["deposit_overflow_rejected"]],
+    ["F3", "Crash before durable", "Nothing applied or published; a torn FileJournal tail is truncated; a retry applies once or is Duplicate.", ["failed_durability_applies_and_publishes_nothing", "file_journal_truncates_torn_tail"]],
+    ["F4", "Crash before apply", "Replay applies it.", ["restart_replays_to_same_state_without_republishing"]],
+    ["F5", "Egress lost after apply", "Egress is best-effort: never re-published on replay. Exactly-once effects (withdrawals) read the journal.", ["failed_publish_still_applies_the_durable_batch", "restart_replays_to_same_state_without_republishing"]],
+    ["F6", "Replay diverges", "No clock, RNG or HashMap; replay hashes are checked in tests and in this demo.", ["replay_reproduces_state_hash"], "replay"],
+    ["F7", "Oracle never answers", "Hard deadline gives Final(Invalid), full refunds.", ["oracle_silent_hard_deadline_refunds"], "oracle_silent_hard_deadline"],
+    ["F8", "Arbiter never rules", "Hard deadline gives Final(proposed), bond returned (DisputeBondReturned to the disputer).", ["arbiter_silent_hard_deadline_returns_bond", "hard_deadline_announces_the_returned_bond_to_the_disputer"]],
+    ["F9", "Downtime in a dispute window", "Resume goes first and extends open windows to min(now + RESUME_GRACE, resolution_deadline − 1).", ["resume_extends_open_dispute_window", "resume_does_not_extend_accept_window", "restart_appends_resume"]],
+    ["F10", "Clock behind the log", "Time is max(wall, last_time), resumed from the journal.", ["sequencer_time_is_monotonic", "clock_never_goes_back_across_a_restart"]],
+    ["F11", "A port fails", "The node latches Halted; restart replays. FileJournal poisons itself.", ["poll_after_failure_is_refused", "write_failure_poisons_the_handle"]],
+    ["F12", "Replayed seq gap or duplicate", "Node::start refuses to start.", ["replay_refuses_a_duplicate_seq", "replay_refuses_a_gap"]],
+    ["F13", "Aeron crashes", "Per-session recordings; redelivered ingress is Duplicate if durable, else applied once.", ["archive_journal_replays_every_recording_across_restarts_and_crashes"]],
+    ["F14", "Live stall or clock jump", "A poll gap over STALL_GAP_MS (1 s) sequences Resume first, as F9. Residual: downtime past resolution_deadline − dispute_window ends Invalid.", ["a_stall_cannot_eat_a_dispute_window", "a_stall_longer_than_the_gap_sequences_resume_before_the_batch"]],
+    ["F15", "Egress subscriber stops polling", "5 s of tethered back-pressure halts the node, and again after each restart. Residual: subscribers must be venue-operated.", []],
+  ]],
+  // The brief's accept-echo attack has no R/F row; these come from adversarial.md's attacker table.
+  ["Attacks with a preset (adversarial.md)", [
+    ["Requester", "Accept a different price than shown", "Accept must echo quote ids and prices; a mismatch is rejected.", ["accept_must_echo_exact_selection"], "attack_accept_wrong_price"],
+    ["MM", "Probe the sealed limit with quotes", "SubmitQuote doesn't check the limit; selection drops over-limit quotes and QuoteLost doesn't say why.", ["over_limit_quote_accepted_but_never_selected"], "attack_over_limit_quote"],
+    ["Either", "Self-trade", "mm ≠ requester, else rejected (SelfTrade).", ["quote_validation"], "attack_self_trade"],
+  ]],
+];
+
+function d3Panel() {
+  const body = FAILURES.map(([group, rows]) => `<tbody>
+      <tr class="dgroup"><th scope="colgroup" colspan="5">${esc(group)}</th></tr>
+      ${rows.map(([id, what, how, tests, preset]) => {
+        const run = preset === "replay"
+          ? `<td class="run"><button class="btn btn-sm" type="button" data-action="replay" data-key="run-f6" title="Replay this run's command log in a fresh engine">Replay check</button></td>`
+          : runCell(preset, id, tests.length ? "test only" : "—");
+        return `<tr><td>${esc(id)}</td><td>${esc(what)}</td><td>${esc(how)}</td><td>${tests.length ? tests.map((t) => `<code>${esc(t)}</code>`).join("<br>") : '<span class="muted">—</span>'}</td>${run}</tr>`;
+      }).join("")}
+    </tbody>`).join("");
+  return `<div style="overflow-x:auto"><table class="dtable">
+      <colgroup><col class="c-id"><col class="c-what"><col><col class="c-test"><col class="c-run"></colgroup>
+      <thead><tr><th scope="col">#</th><th scope="col">Race or failure</th><th scope="col">Handling</th><th scope="col">Test</th><th scope="col"><span class="sr-only">Run</span></th></tr></thead>
+      ${body}
+    </table></div>
+    <p class="muted" style="font-size:13px;margin-top:8px">Full notes: docs/specs/failure-modes.md · Attacker table: docs/specs/adversarial.md</p>`;
+}
+
+function d4Panel() {
+  // resolution.md: the four ways a contract reaches Final, and how its funds unlock.
+  const rows = [
+    ["Undisputed", "The oracle proposes after close; nobody disputes before dispute_until, and the window timer makes it Final.", "Final with the proposed outcome; every position settles in that same command.", "happy_path"],
+    ["Disputed, ruled", "Anyone disputes before dispute_until, holding the bond; the arbiter rules.", "Final with the ruling; positions settle in that command. The bond is returned if the ruling differs from the proposal, else forfeited to the treasury.", "disputed_ruled_invalid"],
+    ["Oracle silent", "Nobody proposes by the hard deadline.", "Final INVALID at the hard deadline: each side gets its own lock back, in that command.", "oracle_silent_hard_deadline"],
+    ["Unruled dispute", "The arbiter never rules by the hard deadline.", "Final with the proposed outcome, bond returned to the disputer; positions settle in that command.", null, "arbiter_silent_hard_deadline_returns_bond"],
+  ];
+  return `<div style="overflow-x:auto"><table class="dtable">
+      <thead><tr><th scope="col">Path</th><th scope="col">What happens</th><th scope="col">Funds</th><th scope="col"><span class="sr-only">Run</span></th></tr></thead>
+      <tbody>${rows.map(([path, what, funds, preset, test], i) => `<tr><td>${esc(path)}</td>`
+        + `<td>${esc(what)}${test ? `<br><span class="muted">Test:</span> <code>${esc(test)}</code>` : ""}</td><td>${esc(funds)}</td>`
+        + `${runCell(preset, `d4-${i}`, "test only")}</tr>`).join("")}</tbody>
+    </table></div>
+    <p class="muted" style="font-size:13px;margin-top:8px">Funds unlock only when the contract is Final, which settles every position in the same command: YES pays the YES holder both locks, NO pays the NO holder, INVALID returns each side its own lock. A timeout never turns a proposal into INVALID.</p>`;
+}
+
+function d5Panel() {
+  // The two seams come from this run's Genesis entry in the log, never from the page.
+  const g = state.trace.find((e) => e.kind === "genesis")?.command?.Genesis?.config;
+  const val = (v) => (g ? `<b>${esc(v)}</b>` : sealedMark("visible to admin"));
+  const s = (ms) => `${(ms / 1000).toLocaleString("en-US", { maximumFractionDigits: 3 })} s`;
+  const durations = g
+    ? `<div class="item-facts"><span>Accept window <b>${s(g.accept_window)}</b></span><span>Response <b>${s(g.min_response)}–${s(g.max_response)}</b></span><span>Resume grace <b>${s(g.resume_grace)}</b></span></div>`
+    : "";
+  return `<div class="seam">
+      <div class="item"><div class="item-head"><span class="id">Read from this run's Genesis</span></div>
+        <div class="item-facts"><span>Reservation ${val(g?.reservation)}</span><span>Selection ${val(g?.selection)}</span></div>
+        ${durations}
+        <p class="muted" style="font-size:13px">Both are enums in the genesis config, so the choice is in the log and replays identically. Durations are genesis config too.</p></div>
+      <div class="item"><div class="item-head"><span class="id">Same whether quotes live seconds or days</span></div>
+        <ul><li>State machines, ledger and invariants I1–I5 never mention a duration</li><li>Every deadline is an absolute timestamp</li><li>A timer firing in 200 ms or in 3 days takes the same path and replays identically</li></ul></div>
+      <div class="item"><div class="item-head"><span class="id">Changes with the answer</span></div>
+        <ul><li>Collateral: full holds are cheap vs one limit behind many quotes</li><li>Stale prices: small risk vs cheap cancel/replace</li><li>Selection: sealed at the deadline vs accept the live best quote</li><li>State size: few objects vs pruning and snapshots</li><li>Acceptance window: seconds vs hours, with a lapse fee</li></ul></div>
+      <div class="item"><div class="item-head"><span class="id">What we built</span></div>
+        <ul><li><code class="mono">ReservationPolicy::FullHold</code> and <code class="mono">SelectionPolicy::SealedAtDeadline</code>, enums in <code class="mono">crates/rfq-domain/src/command.rs</code></li><li>Matched in <code class="mono">crates/rfq-domain/src/engine/rfq.rs</code> (and I4 in <code class="mono">engine/mod.rs</code>); each site is a compile-time tripwire</li><li>Designed, not built: SharedLimit and Continuous selection</li></ul></div>
+    </div>`;
+}
+
+const TABS = [
+  ["d1", "D1 State machines", d1Panel],
+  ["ml", "Multi-leg <small>— Designed, not built (P6)</small>", multiLegPanel],
+  ["d3", "D3 Failure modes", d3Panel],
+  ["d4", "D4 Resolution", d4Panel],
+  ["d5", "D5 Quote lifetime", d5Panel],
+];
+
+function renderPanels() {
+  const el = document.getElementById("panels");
+  const tabs = TABS.map(([k, label]) =>
+    `<button class="tab" role="tab" type="button" id="tab-${k}" data-action="tab" data-tab="${k}" aria-selected="${ui.tab === k}" aria-controls="t-${k}" tabindex="${ui.tab === k ? 0 : -1}">${label}</button>`).join("");
+  // Only the open tab is built; the others stay as empty, hidden targets for aria-controls.
+  const panels = TABS.map(([k, , body]) =>
+    `<div class="tabpanel" role="tabpanel" id="t-${k}" aria-labelledby="tab-${k}" tabindex="0"${ui.tab === k ? `>${body()}` : " hidden>"}</div>`).join("");
+  el.innerHTML = `<div class="tabs" role="tablist" aria-label="Deliverables">${tabs}</div>${panels}`;
+}
+
 // ---- Errors ----------------------------------------------------------------------------------
 
 /** A dismissible banner with the engine's sentence. Never alert(). Cleared by the next good response. */
@@ -1045,7 +1761,9 @@ function reset(mode) {
   selected = null;
   ui.drafts.clear();
   ui.errors.clear();
-  for (const k of [...ui.open]) if (!k.startsWith("req-")) ui.open.delete(k);
+  ui.rows.clear();
+  ui.replay = null;
+  ui.logPinned = true;
   clearToasts();
   if (!send({ op: "reset", mode })) renderTopBar(); // a refused reset: put the picker back
 }
@@ -1065,7 +1783,7 @@ function stopPlay() {
   if (!playing) return;
   clearInterval(playing);
   playing = null;
-  if (state) renderTopBar();
+  if (state) render(); // through render(), so keyboard focus stays on Pause (or Reset)
 }
 
 function toggleTheme() {
@@ -1084,6 +1802,13 @@ app.addEventListener("click", (e) => {
   if (!state) return;
   switch (d.action) {
     case "select": return select(d.kind, n("id"));
+    case "deselect": selected = null; return render();
+    case "toggle-row": ui.rows.set(n("seq"), b.getAttribute("aria-expanded") !== "true"); return render();
+    case "reveal-row": return revealRow(n("seq"));
+    case "filter": ui.filter = d.filter; ui.logPinned = true; return render();
+    case "tab": ui.tab = d.tab; return render();
+    case "replay": stopPlay(); return send({ op: "replay_check" });
+    case "run-preset": return reset(d.preset);
     case "step": stopPlay(); return send({ op: "step" });
     case "play": return playing ? stopPlay() : startPlay();
     case "run-all": stopPlay(); return send({ op: "run_all" });
@@ -1095,7 +1820,7 @@ app.addEventListener("click", (e) => {
     case "toggle":
       if (ui.open.has(d.target)) ui.open.delete(d.target); else ui.open.add(d.target);
       render();
-      document.getElementById(`${d.target}-${d.target.startsWith("q-") ? "price" : "qty"}`)?.focus();
+      document.getElementById(`${d.target}-qty`)?.focus();
       return;
     case "cancel-request": return act(n("actor"), { CancelRequest: { request: n("request") } });
     case "accept": {
@@ -1130,6 +1855,32 @@ app.addEventListener("input", (e) => {
     render();
   }
 });
+
+// Tabs follow the ARIA pattern: arrow keys, Home and End move between them.
+app.addEventListener("keydown", (e) => {
+  const tab = e.target.closest?.('[role="tab"]');
+  if (!tab || !state) return;
+  const keys = TABS.map(([k]) => k);
+  const i = keys.indexOf(tab.dataset.tab);
+  const to = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: keys.length - 1 }[e.key];
+  if (to == null) return;
+  e.preventDefault();
+  ui.tab = keys[(to + keys.length) % keys.length];
+  render();
+  document.getElementById(`tab-${ui.tab}`)?.focus();
+});
+
+// The trace sidebar sticks right under the top bar, which wraps to two rows on narrower screens.
+const topbar = document.getElementById("topbar");
+const syncTopbar = () => root.style.setProperty("--topbar-h", `${topbar.offsetHeight}px`);
+if (typeof ResizeObserver === "function") new ResizeObserver(syncTopbar).observe(topbar);
+syncTopbar();
+
+// The log follows new rows only while it is scrolled to the bottom.
+document.getElementById("log").addEventListener("scroll", (e) => {
+  const log = e.currentTarget;
+  ui.logPinned = log.scrollHeight - log.scrollTop - log.clientHeight < 24;
+}, { passive: true });
 
 document.getElementById("preset").addEventListener("change", (e) => {
   if (state) reset(e.target.value);
