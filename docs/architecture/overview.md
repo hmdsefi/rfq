@@ -134,6 +134,7 @@ flowchart LR
 
 - `aeron`: `eclipse-temurin:21-jre` and the `aeron-all` 1.53.3 jar, checked against its sha256; runs the media driver and the Archive with fsync on (`file.sync.level=2`); `ipc: shareable`, `shm_size: 512m`.
 - `engine`, `demo`: Rust images from `docker/rust.Dockerfile` (`--features aeron`, `--locked`); `ipc: "service:aeron"` so all share `/dev/shm/aeron`; `init: true`. Every container runs as the same non-root uid 10001, because the driver's files in `/dev/shm/aeron` are `0644` and owned by it. All channels are `aeron:ipc`. The `demo` service sits in compose profile `demo` and runs on demand (`docker compose run --rm demo [scenario]`).
+- `aeron` and `engine` have `restart: on-failure`: a halted node exits with status 1 and comes back to replay, and a driver that exits non-zero comes back with its Archive volume ([transport-aeron.md](../specs/transport-aeron.md#docker-compose)). A manual stop, such as the `SIGKILL` in `scripts/demo.sh`, is not restarted.
 - Archive data is on the named volume `archive`, so it survives the engine being killed and restarted. `./scripts/demo.sh` does exactly that: it runs the six scenarios, `SIGKILL`s the engine, restarts it, and checks that the replayed state hash equals the last hash the engine logged before the kill (`RECOVERY OK`).
 
 ## 6. Production path (not built)

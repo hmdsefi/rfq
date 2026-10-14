@@ -38,6 +38,8 @@ You need Docker Desktop (Compose v2). This was verified on Docker Desktop for Ap
 
 **Warning:** after building the images, the script runs `docker compose --profile demo down -v --remove-orphans`, which deletes the containers and the Archive volume of its compose project (`rfq`). To keep another stack, run it under its own project name: `COMPOSE_PROJECT_NAME=rfq-demo ./scripts/demo.sh`.
 
+**Upgrading from an older checkout:** run `docker compose down -v` once first. An `archive` volume that an older, root-run stack created is root-owned, so the non-root Archive cannot open it (`Permission denied`, and its container restarts in a loop). `./scripts/demo.sh` already runs `down -v`, so it is unaffected.
+
 ```bash
 ./scripts/demo.sh
 ```
@@ -78,7 +80,7 @@ Code is split into hexagonal layers, and dependencies point inward only: crate b
 |---|---|---|
 | D1 | State machine | [specs/engine.md](docs/specs/engine.md) §6, with the multi-leg "leg 2 of 3" walk-through in §8 |
 | D2 | Working implementation | `crates/`, `cargo test --workspace`, and `./scripts/demo.sh` (this README) |
-| D3 | Failure-mode notes | [specs/failure-modes.md](docs/specs/failure-modes.md) (races and partial failures), [specs/adversarial.md](docs/specs/adversarial.md) (attackers) |
+| D3 | Failure-mode notes | [specs/failure-modes.md](docs/specs/failure-modes.md) (races and partial failures). It links to a companion, [specs/adversarial.md](docs/specs/adversarial.md), the adversarial analysis (attackers). |
 | D4 | Resolution design | [specs/resolution.md](docs/specs/resolution.md) |
 | D5 | Design note (quotes living seconds vs days) | [specs/quote-lifetime.md](docs/specs/quote-lifetime.md) |
 

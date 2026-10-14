@@ -1,6 +1,6 @@
 # Adversarial Behaviour
 
-Part of the failure-mode notes ([failure-modes.md](failure-modes.md), D3): what each kind of attacker can try against a permissionless venue, and what stops it. Races and partial failures are in failure-modes.md.
+The adversarial analysis that D3 ([failure-modes.md](failure-modes.md)) links to; D3 itself is that file, not this one. It covers what each kind of attacker can try against a permissionless venue, and what stops it. Races and partial failures are in failure-modes.md.
 
 `#n` = finding in [spec-review.md](../reviews/spec-review.md). **Residual** = accepted risk, with its production defence.
 
@@ -33,3 +33,4 @@ Part of the failure-mode notes ([failure-modes.md](failure-modes.md), D3): what 
 | IPC peer | Open many ingress sessions, each leaving a fragmented message unfinished | **Residual:** the reassembler never evicts a dead session's partial (up to 64 KiB each). Production: drop it when the image goes away; cap partials in flight. |
 | Supply chain | Swap a base image or rusteron's Gradle bootstrap | **Residual:** both are pinned by name, not content (the `aeron-all` jar is sha256-checked; crates are locked and audited by cargo-deny). Production: image digests, vendored Gradle artifacts. |
 | Anyone | Grow state so the demo's `RFQ_HASH_EVERY_BATCH` slows every batch | **Residual:** demo-only: it hashes the full state after every batch, for the crash-recovery check. Production: off, or a hash at a cadence. |
+| Clock fault | Step the wall clock forward while the node runs | **Residual:** the stall `Resume` extends dispute windows only. Trading closes and hard deadlines fire early in real time: an unresolved contract ends `Invalid`, an unruled dispute ends as proposed ([engine.md](engine.md) §6.3, which also covers sustained slow steps). Production: a monotonic clock anchored once to wall time. |
