@@ -78,6 +78,7 @@ fn best_quote_is_presented_and_losers_released() {
         names(&out),
         vec!["QuoteLost", "QuoteSelected", "RequestPresented"]
     );
+    assert_sealed(&w.h, &out); // QuoteLost/QuoteSelected only to their MM, RequestPresented only to ALICE
     assert_eq!(
         w.h.engine.request(w.r).unwrap().state,
         RequestState::Presented { accept_by: ACCEPT_BY }
@@ -115,11 +116,45 @@ fn short_expiry_not_selected() {
     assert_eq!(w.h.engine.quote(q2).unwrap().state, QuoteState::Selected);
 }
 
+// Controller ruling R23: the limit is inclusive. Only a price strictly above it is ineligible.
+#[test]
+fn quote_at_exact_limit_is_selected() {
+    let mut w = world(Side::BuyYes);
+    let q = quote(&mut w, MM1, 7_000, 100_000); // exactly ALICE's 0.70 limit
+    let out = w.h.tick(DEADLINE);
+    assert_eq!(names(&out), vec!["QuoteSelected", "RequestPresented"]);
+    assert_sealed(&w.h, &out);
+    assert_eq!(w.h.engine.quote(q).unwrap().state, QuoteState::Selected);
+    assert_eq!(
+        w.h.engine.request(w.r).unwrap().state,
+        RequestState::Presented { accept_by: ACCEPT_BY }
+    );
+}
+
+// Controller ruling R23: pins the timer order at one timestamp. `QuoteExpiry` fires before
+// `RequestDeadline` (variant order), so a quote expiring exactly at the deadline is Expired. If the
+// request deadline fired first it would drop the quote as ineligible (it is not firm through the
+// accept window) and the quote would end Lost instead.
+#[test]
+fn quote_expiring_at_deadline_is_expired_not_lost() {
+    let mut w = world(Side::BuyYes);
+    let q = quote(&mut w, MM1, 6_000, DEADLINE);
+    let out = w.h.tick(DEADLINE);
+    assert_eq!(names(&out), vec!["QuoteExpired", "RequestExpired"]);
+    assert_sealed(&w.h, &out);
+    assert_eq!(w.h.engine.quote(q).unwrap().state, QuoteState::Expired);
+    assert_eq!(w.h.engine.request(w.r).unwrap().state, RequestState::Expired);
+    for a in [ALICE, MM1] {
+        assert_eq!(w.h.engine.balance(a).free, dollars(1_000));
+    }
+}
+
 #[test]
 fn no_quotes_expires_request() {
     let mut w = world(Side::BuyYes);
     let out = w.h.tick(DEADLINE);
     assert_eq!(names(&out), vec!["RequestExpired"]);
+    assert_sealed(&w.h, &out);
     assert_eq!(w.h.engine.balance(ALICE).free, dollars(1_000));
 }
 
@@ -136,6 +171,7 @@ fn accept_escrows_exact_amounts_buy_yes() {
         },
     );
     assert_eq!(names(&out), vec!["QuoteFilled", "RequestFilled"]);
+    assert_sealed(&w.h, &out); // QuoteFilled only to MM2, RequestFilled only to ALICE
     assert_eq!(
         w.h.engine.balance(ALICE),
         Balance {
@@ -243,6 +279,7 @@ fn reject_releases_everything() {
     w.h.tick(DEADLINE);
     let out = w.h.user(ALICE, Action::Reject { request: w.r });
     assert_eq!(names(&out), vec!["QuoteReleased", "RequestRejected"]);
+    assert_sealed(&w.h, &out); // QuoteReleased only to MM2
     assert_eq!(
         w.h.engine.request(w.r).unwrap().state,
         RequestState::Rejected(RejectCause::Declined)
@@ -271,6 +308,7 @@ fn accept_after_window_rejected_without_tick() {
         names(&out),
         vec!["QuoteReleased", "RequestRejected", "CommandRejected"]
     );
+    assert_sealed(&w.h, &out);
     assert_eq!(
         w.h.engine.request(w.r).unwrap().state,
         RequestState::Rejected(RejectCause::Lapsed)
@@ -299,6 +337,7 @@ fn idle_engine_fires_deadline_then_lapse_in_one_command() {
             "CommandRejected"
         ]
     );
+    assert_sealed(&w.h, &out);
     assert_eq!(w.h.engine.balance(ALICE).free, dollars(1_000));
 }
 
@@ -311,6 +350,7 @@ fn over_limit_quote_accepted_but_never_selected() {
     let out = w.h.tick(DEADLINE);
     // It is the only quote: without the eligibility check it would have been selected.
     assert_eq!(names(&out), vec!["QuoteLost", "RequestExpired"]);
+    assert_sealed(&w.h, &out);
     assert_eq!(w.h.engine.quote(q).unwrap().state, QuoteState::Lost);
     for a in [ALICE, MM1] {
         assert_eq!(w.h.engine.balance(a).free, dollars(1_000));
@@ -325,6 +365,7 @@ fn cancel_before_deadline_removes_quote() {
     w.h.set_time(DEADLINE - 1);
     let out = w.h.user(MM1, Action::CancelQuote { quote: q1 });
     assert_eq!(names(&out), vec!["QuoteCancelled"]);
+    assert_sealed(&w.h, &out);
     assert_eq!(w.h.engine.balance(MM1).free, dollars(1_000));
     // A cancel stamped at the deadline is sequenced after selection: the quote is already Selected.
     w.h.set_time(DEADLINE);
@@ -333,6 +374,7 @@ fn cancel_before_deadline_removes_quote() {
         names(&out),
         vec!["QuoteSelected", "RequestPresented", "CommandRejected"]
     );
+    assert_sealed(&w.h, &out);
     assert_eq!(rejection(&out), Some(RejectReason::InvalidState));
     assert_eq!(w.h.engine.quote(q2).unwrap().state, QuoteState::Selected);
 }
@@ -362,6 +404,7 @@ fn cancel_after_selection_rejected() {
         },
     );
     assert_eq!(names(&out), vec!["QuoteFilled", "RequestFilled"]);
+    assert_sealed(&w.h, &out);
     assert_eq!(w.h.engine.balance(MM2).escrowed, dollars(400));
 }
 
@@ -375,6 +418,7 @@ fn lapse_at_accept_by_releases_everything() {
     assert_eq!(w.h.tick(ACCEPT_BY - 1), vec![], "still inside the window");
     let out = w.h.tick(ACCEPT_BY);
     assert_eq!(names(&out), vec!["QuoteReleased", "RequestRejected"]);
+    assert_sealed(&w.h, &out);
     assert_eq!(
         out[1],
         Emitted::public(Event::RequestRejected {

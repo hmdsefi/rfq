@@ -11,6 +11,8 @@ use std::collections::BTreeMap;
 
 use rfq_domain::*;
 
+pub mod scenarios;
+
 pub mod accounts {
     use rfq_domain::AccountId;
     pub const OPERATOR: AccountId = AccountId(1);
@@ -50,6 +52,61 @@ pub fn rejection(events: &[Emitted]) -> Option<RejectReason> {
 
 pub fn names(events: &[Emitted]) -> Vec<&'static str> {
     events.iter().map(|e| e.event.name()).collect()
+}
+
+/// Sealed bids: every `Quote*` event goes only to that quote's MM, and `RequestPresented` /
+/// `RequestFilled` go only to the requester. The request-level events that open or end a request
+/// without a fill (`RequestOpened`, `Cancelled`, `Expired`, `Rejected`) are public.
+///
+/// Call it with the engine *after* the command that produced `out`: quotes and requests are never
+/// removed, so their owners can always be looked up.
+pub fn assert_sealed(h: &Harness, out: &[Emitted]) {
+    for e in out {
+        let quotes: Vec<QuoteId> = match &e.event {
+            Event::QuoteSubmitted { quote, .. }
+            | Event::QuoteCancelled { quote }
+            | Event::QuoteExpired { quote }
+            | Event::QuoteLost { quote }
+            | Event::QuoteSelected { quote }
+            | Event::QuoteReleased { quote }
+            | Event::QuoteFilled { quote, .. } => vec![*quote],
+            Event::QuoteReplaced { old, new } => vec![*old, *new],
+            other => {
+                assert!(
+                    !other.name().starts_with("Quote"),
+                    "unhandled quote event {other:?}"
+                );
+                Vec::new()
+            }
+        };
+        for q in quotes {
+            let mm = h.engine.quote(q).expect("quote exists").mm;
+            assert_eq!(
+                e.audience,
+                Audience::Account(mm),
+                "{:?} must reach only its MM",
+                e.event
+            );
+        }
+        if let Event::RequestPresented { request, .. } | Event::RequestFilled { request, .. } = &e.event {
+            let requester = h.engine.request(*request).expect("request exists").requester;
+            assert_eq!(
+                e.audience,
+                Audience::Account(requester),
+                "{:?} must reach only the requester",
+                e.event
+            );
+        }
+        if matches!(
+            e.event,
+            Event::RequestOpened { .. }
+                | Event::RequestCancelled { .. }
+                | Event::RequestExpired { .. }
+                | Event::RequestRejected { .. }
+        ) {
+            assert_eq!(e.audience, Audience::Public, "{:?} is request-level", e.event);
+        }
+    }
 }
 
 pub struct Harness {

@@ -69,49 +69,6 @@ fn quote(h: &mut Harness, mm: AccountId, r: RequestId, bps: u16) -> QuoteId {
     quote_out(h, mm, r, bps).0
 }
 
-/// Sealed bids: every `Quote*` event goes only to that quote's MM, and the request lifecycle events
-/// that end or open a request are public. (`RequestPresented` and `RequestFilled` are requester-only;
-/// `selection_accept.rs` covers them.)
-fn assert_sealed(h: &Harness, out: &[Emitted]) {
-    for e in out {
-        let quotes: Vec<QuoteId> = match &e.event {
-            Event::QuoteSubmitted { quote, .. }
-            | Event::QuoteCancelled { quote }
-            | Event::QuoteExpired { quote }
-            | Event::QuoteLost { quote }
-            | Event::QuoteSelected { quote }
-            | Event::QuoteReleased { quote }
-            | Event::QuoteFilled { quote, .. } => vec![*quote],
-            Event::QuoteReplaced { old, new } => vec![*old, *new],
-            other => {
-                assert!(
-                    !other.name().starts_with("Quote"),
-                    "unhandled quote event {other:?}"
-                );
-                Vec::new()
-            }
-        };
-        for q in quotes {
-            let mm = h.engine.quote(q).unwrap().mm;
-            assert_eq!(
-                e.audience,
-                Audience::Account(mm),
-                "{:?} must reach only its MM",
-                e.event
-            );
-        }
-        if matches!(
-            e.event,
-            Event::RequestOpened { .. }
-                | Event::RequestCancelled { .. }
-                | Event::RequestExpired { .. }
-                | Event::RequestRejected { .. }
-        ) {
-            assert_eq!(e.audience, Audience::Public, "{:?} is request-level", e.event);
-        }
-    }
-}
-
 #[test]
 fn list_contract_requires_operator_and_valid_times() {
     let (mut h, _) = setup();

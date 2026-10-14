@@ -643,3 +643,208 @@ fn zero_bond_dispute_from_an_unknown_account_is_rejected_not_a_panic() {
         ContractState::Final(Outcome::No)
     );
 }
+
+fn list_second_contract(h: &mut Harness, id: u64, close: Timestamp, hard: Timestamp) -> ContractId {
+    let c = ContractId(id);
+    let out = h.user(
+        OPERATOR,
+        Action::ListContract {
+            id: c,
+            description: "q".into(),
+            oracle: ORACLE,
+            trading_close: close,
+            resolution_deadline: hard,
+            dispute_window: WINDOW,
+        },
+    );
+    assert_eq!(rejection(&out), None);
+    c
+}
+
+// Controller ruling R22: `Resume` only touches open dispute windows. A disputed contract (its bond
+// held for the arbiter) and a closed one (nothing proposed yet) are left exactly as they were.
+#[test]
+fn resume_leaves_disputed_and_closed_untouched() {
+    let (mut h, disputed) = filled_with(short_grace());
+    let closed = list_second_contract(&mut h, 2, CLOSE + 1_000, HARD);
+    h.user(
+        ORACLE,
+        Action::ProposeOutcome {
+            contract: disputed,
+            outcome: Outcome::Yes,
+        },
+    );
+    assert_eq!(
+        rejection(&h.user(CAROL, Action::Dispute { contract: disputed })),
+        None
+    );
+    h.tick(CLOSE + 1_000);
+    assert_eq!(h.engine.contract(closed).unwrap().state, ContractState::Closed);
+    let before = (
+        h.engine.contract(disputed).unwrap().clone(),
+        h.engine.contract(closed).unwrap().clone(),
+    );
+
+    // Down from before the old window's end (CLOSE + WINDOW) until well after it.
+    h.set_time(CLOSE + 50_000);
+    let out = h.submit(Command::Resume);
+    assert_eq!(out, vec![], "no event for a disputed or a closed contract");
+
+    assert_eq!(
+        (
+            h.engine.contract(disputed).unwrap().clone(),
+            h.engine.contract(closed).unwrap().clone(),
+        ),
+        before,
+        "neither contract changed"
+    );
+    assert_eq!(
+        h.engine.contract(disputed).unwrap().state,
+        ContractState::Disputed {
+            proposed: Outcome::Yes
+        }
+    );
+    assert!(
+        h.engine
+            .contract(disputed)
+            .unwrap()
+            .dispute
+            .unwrap()
+            .hold
+            .is_some(),
+        "the bond is still held"
+    );
+    assert_eq!(h.engine.balance(CAROL).reserved, dollars(100));
+    assert_eq!(free(&h, CAROL), dollars(900));
+
+    // Both still resolve normally afterwards.
+    let out = h.user(
+        ARBITER,
+        Action::Rule {
+            contract: disputed,
+            outcome: Outcome::No,
+        },
+    );
+    assert_eq!(names(&out)[0], "Ruled");
+    let out = h.tick(HARD);
+    assert_eq!(
+        out,
+        vec![Emitted::public(Event::ContractFinalized {
+            contract: closed,
+            outcome: Outcome::Invalid
+        })],
+        "an unresolved contract still ends Invalid at the hard deadline"
+    );
+}
+
+// Controller ruling R22: every open window is extended, not just the first, and the events come out
+// in contract-id order (the engine iterates a BTreeMap) regardless of listing or proposal order.
+#[test]
+fn resume_extends_every_proposed_contract() {
+    let mut h = Harness::new(short_grace());
+    let (late, early) = (ContractId(7), ContractId(3));
+    // Listed 7 before 3 and proposed 7 before 3, so id order is not insertion order.
+    for (id, hard) in [(late, HARD), (early, CLOSE + 30_000)] {
+        h.user(
+            OPERATOR,
+            Action::ListContract {
+                id,
+                description: "q".into(),
+                oracle: ORACLE,
+                trading_close: CLOSE,
+                resolution_deadline: hard,
+                dispute_window: WINDOW,
+            },
+        );
+    }
+    h.tick(CLOSE);
+    for (id, outcome) in [(late, Outcome::Yes), (early, Outcome::No)] {
+        let out = h.user(
+            ORACLE,
+            Action::ProposeOutcome {
+                contract: id,
+                outcome,
+            },
+        );
+        assert_eq!(rejection(&out), None);
+    }
+
+    // Both windows (ending CLOSE + WINDOW) elapsed while the node was down.
+    let resume_at = CLOSE + 15_000;
+    h.set_time(resume_at);
+    let out = h.submit(Command::Resume);
+    assert_eq!(
+        out,
+        vec![
+            // 3's hard deadline is CLOSE + 30_000 < now + grace, so its extension is capped just below it.
+            Emitted::public(Event::OutcomeProposed {
+                contract: early,
+                outcome: Outcome::No,
+                dispute_until: CLOSE + 30_000 - 1
+            }),
+            Emitted::public(Event::OutcomeProposed {
+                contract: late,
+                outcome: Outcome::Yes,
+                dispute_until: resume_at + 20_000
+            }),
+        ]
+    );
+
+    // Each window then closes at its own extended end, and each contract keeps its own proposal.
+    assert_eq!(
+        h.tick(CLOSE + 30_000 - 1),
+        vec![Emitted::public(Event::ContractFinalized {
+            contract: early,
+            outcome: Outcome::No
+        })]
+    );
+    assert_eq!(
+        h.tick(resume_at + 20_000),
+        vec![Emitted::public(Event::ContractFinalized {
+            contract: late,
+            outcome: Outcome::Yes
+        })]
+    );
+}
+
+#[test]
+fn yes_proposed_no_ruled_pays_no_holder_and_returns_bond() {
+    let (mut h, c) = filled();
+    h.user(
+        ORACLE,
+        Action::ProposeOutcome {
+            contract: c,
+            outcome: Outcome::Yes,
+        },
+    );
+    h.user(CAROL, Action::Dispute { contract: c });
+    let out = h.user(
+        ARBITER,
+        Action::Rule {
+            contract: c,
+            outcome: Outcome::No,
+        },
+    );
+    assert_eq!(
+        out[0],
+        Emitted::public(Event::Ruled {
+            contract: c,
+            outcome: Outcome::No,
+            bond_returned: true
+        })
+    );
+    assert_eq!(
+        h.engine.contract(c).unwrap().state,
+        ContractState::Final(Outcome::No)
+    );
+    // ALICE (YES, locked $600) loses it; MM2 (NO, locked $400) wins the whole $1000 pot.
+    assert_eq!(free(&h, ALICE), dollars(400));
+    assert_eq!(free(&h, MM2), dollars(1_600));
+    // The disputer was right that the proposal was wrong: the bond comes back, the treasury gets nothing.
+    assert_eq!(free(&h, CAROL), dollars(1_000));
+    assert_eq!(h.engine.balance(CAROL).reserved, 0);
+    assert_eq!(free(&h, TREASURY), 0);
+    for a in [ALICE, MM2] {
+        assert_eq!(h.engine.balance(a).escrowed, 0);
+    }
+}
