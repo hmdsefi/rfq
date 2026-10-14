@@ -1,4 +1,6 @@
 mod account;
+mod contract;
+mod rfq;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -12,7 +14,6 @@ use crate::model::*;
 use crate::types::*;
 
 /// Message for `.expect` on mutations whose preconditions were checked in validation.
-#[expect(dead_code, reason = "first used by the request and quote handlers in Task 4")]
 pub(crate) const VALIDATED: &str = "precondition checked during validation";
 
 pub(crate) type Out = Vec<Emitted>;
@@ -120,6 +121,36 @@ impl Engine {
         let result = match action {
             Action::Deposit { to, amount } => self.deposit(actor, *to, *amount, out),
             Action::Withdraw { amount } => self.withdraw(actor, *amount, out),
+            Action::ListContract {
+                id,
+                description,
+                oracle,
+                trading_close,
+                resolution_deadline,
+                dispute_window,
+            } => self.list_contract(
+                actor,
+                *id,
+                description,
+                *oracle,
+                *trading_close,
+                *resolution_deadline,
+                *dispute_window,
+                out,
+            ),
+            Action::SubmitRequest {
+                legs,
+                response_deadline,
+            } => self.submit_request(actor, legs, *response_deadline, out),
+            Action::CancelRequest { request } => self.cancel_request(actor, *request, out),
+            Action::SubmitQuote {
+                request,
+                leg,
+                price,
+                size,
+                expires_at,
+            } => self.submit_quote(actor, *request, *leg, *price, *size, *expires_at, out),
+            Action::CancelQuote { quote } => self.cancel_quote(actor, *quote, out),
             _ => Err(RejectReason::Unsupported),
         };
         if let Err(reason) = result {
@@ -127,13 +158,6 @@ impl Engine {
         }
     }
 
-    // Placeholder dispatch: Tasks 4-6 add the real arms and make this match exhaustive. Each task
-    // that touches it must drop these `expect`s; an unfulfilled expectation fails clippy.
-    #[expect(clippy::match_single_binding, reason = "timer arms are added in Tasks 4-6")]
-    #[expect(
-        unused_variables,
-        reason = "`out` is first written by the timer handlers in Task 4"
-    )]
     fn fire_due_timers(&mut self, out: &mut Out) {
         while let Some(&(at, key)) = self.timers.first() {
             if at > self.now {
@@ -142,15 +166,14 @@ impl Engine {
             self.timers.pop_first();
             // Timers are stale-safe: each handler is a no-op if its object moved on.
             match key {
+                TimerKey::QuoteExpiry(q) => self.on_quote_expiry(q, out),
+                TimerKey::RequestDeadline(r) => self.on_request_deadline(r, at, out),
+                TimerKey::ContractClose(c) => self.on_contract_close(c, out),
                 _ => {}
             }
         }
     }
 
-    #[expect(
-        dead_code,
-        reason = "first used when contracts and requests arm timers in Task 4"
-    )]
     pub(crate) fn arm(&mut self, at: Timestamp, key: TimerKey) {
         self.timers.insert((at, key));
     }
@@ -158,7 +181,6 @@ impl Engine {
     pub(crate) fn genesis(&self) -> &Genesis {
         self.genesis.as_ref().expect("initialized")
     }
-    #[expect(dead_code, reason = "first used by request validation in Task 4")]
     pub(crate) fn config(&self) -> Config {
         self.genesis().config
     }
