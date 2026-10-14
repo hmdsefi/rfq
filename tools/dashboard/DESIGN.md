@@ -1,6 +1,6 @@
 # RFQ Dashboard: design spec
 
-Status: draft for PO review, 2026-10-14. The visual design (Task D1) needs PO approval before any implementation task starts.
+Status: approved by the PO on 2026-10-14 (spec, plan and the D1 mockup).
 
 > **A demo aid for the live session. It is not part of the engine.**
 > The brief puts UI out of scope. This tool sits outside the cargo workspace and changes nothing under `crates/`. It runs the real `rfq-domain` engine, compiled to WebAssembly, so the reviewers can watch and drive the same code the tests and the Aeron node run.
