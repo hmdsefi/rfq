@@ -11,7 +11,7 @@
 
 Stream ids start at 1001 because Aeron Archive's local control channel already uses `aeron:ipc` stream 10.
 
-Encoding: `serde` + `bincode` (fixed-int, little-endian, 64 KiB size limit), with a `u8` version prefix. A message that fails to decode on ingress is dropped and counted; it never reaches the log. Ingress decodes to `ClientCommand`, which cannot express `Genesis`, `Tick` or `Resume`. Only the node itself creates those.
+Encoding: `serde` + `bincode` (fixed-int, little-endian, trailing bytes rejected), with a `u8` version prefix. Size policy: ingress messages longer than `MAX_INGRESS` (64 KiB) are dropped before decoding; journal records and egress batches are produced by the node and are not size-limited by the codec (the Aeron adapter splits an egress batch that exceeds the transport's max message size into several `EventBatch` chunks with the same `seq`). A message that fails to decode on ingress is dropped and counted; it never reaches the log. Ingress decodes to `ClientCommand`, which cannot express `Genesis`, `Tick` or `Resume`. Only the node itself creates those.
 
 ## Sequencer
 

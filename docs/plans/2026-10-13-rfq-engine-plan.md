@@ -28,7 +28,7 @@
 - Default config: `accept_window = 30_000` ms, `min_response = 1_000`, `max_response = 604_800_000`, `max_qty = 1_000_000_000`, `dispute_bond = 100 × ONE_DOLLAR`, `resume_grace = 600_000`, `min_request_notional = ONE_DOLLAR` (the last two from Gate A).
 - Nonces are strict per actor: only `last + 1` is accepted (`Duplicate` / `NonceGap` otherwise). Every client, test builder and demo keeps a per-actor counter.
 - Aeron streams are all `aeron:ipc`: ingress 1001, log 1002, egress 1003, replay 1004. Never use stream 10, which is Archive's local control.
-- Codec: a `u8` version prefix (`1`) followed by bincode (fixint, little-endian, 64 KiB limit).
+- Codec: a `u8` version prefix (`1`) followed by bincode (fixint, little-endian, trailing bytes rejected). Size limit only at untrusted ingress: `decode_ingress` drops messages longer than `MAX_INGRESS` = 64 KiB before decoding. Trusted encode/decode (journal, egress) is unlimited, so `encode` never panics (ruling R21).
 - Event names returned by `Event::name()` are exactly the variant names.
 - `rfq-core` has `#![forbid(unsafe_code)]` and denies `clippy::unwrap_used`, `cast_possible_truncation`, `cast_possible_wrap` and `cast_sign_loss` (set up in Task 1). Narrowing conversions use `try_from(...).expect("<why it fits>")`, e.g. leg indices: `u32::try_from(i).expect("leg count is bounded")`.
 - Release and bench builds keep `overflow-checks = true`. An unchecked overflow that slips past review panics instead of silently wrapping money.
