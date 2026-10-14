@@ -94,7 +94,7 @@ impl Engine {
                     out.push(Emitted::public(Event::Initialized));
                 }
             }
-            Command::Tick => {}
+            Command::Tick | Command::Resume => {}
             Command::User { actor, nonce, action } => self.apply_user(*actor, *nonce, action, &mut out),
         }
         debug_assert_eq!(self.check_invariants(), Ok(()));
@@ -106,8 +106,14 @@ impl Engine {
         if self.genesis.is_none() {
             return reject(out, RejectReason::NotInitialized);
         }
-        if nonce <= self.nonces.get(&actor).copied().unwrap_or(0) {
+        // Nonces are strictly consecutive per actor, so `Duplicate` always means "already sequenced"
+        // and a skipped nonce can never be mistaken for one. Neither rejection consumes anything.
+        let last = self.nonces.get(&actor).copied().unwrap_or(0);
+        if nonce <= last {
             return reject(out, RejectReason::Duplicate);
+        }
+        if last.checked_add(1) != Some(nonce) {
+            return reject(out, RejectReason::NonceGap);
         }
         // A valid nonce is consumed even if the action is then rejected: retries stay idempotent.
         self.nonces.insert(actor, nonce);
@@ -232,6 +238,30 @@ impl Engine {
                 return Err(format!(
                     "I5 request {:?} in {:?} has no exit timer",
                     r.id, r.state
+                ));
+            }
+        }
+        // A live quote's exit is its request's exit (or its own expiry timer), so it is only
+        // reachable if the request is live in the matching state and lists the quote on its leg.
+        for q in self.quotes.values().filter(|q| q.state.is_live()) {
+            let request = self.requests.get(&q.request);
+            let state_matches = matches!(
+                (q.state, request.map(|r| r.state)),
+                (QuoteState::Active, Some(RequestState::Open))
+                    | (QuoteState::Selected, Some(RequestState::Presented { .. }))
+            );
+            let listed = request
+                .zip(usize::try_from(q.leg).ok())
+                .and_then(|(r, i)| r.legs.get(i))
+                .is_some_and(|l| l.quotes.contains(&q.id));
+            if !state_matches || !listed {
+                return Err(format!(
+                    "I5 quote {:?} in {:?} is not reachable from a live request (request {:?}: {:?}, listed on leg {}: {listed})",
+                    q.id,
+                    q.state,
+                    q.request,
+                    request.map(|r| r.state),
+                    q.leg
                 ));
             }
         }
@@ -363,5 +393,124 @@ mod tests {
         assert!(err(&e).starts_with("I5 contract"));
         e.timers.insert((20, TimerKey::HardDeadline(ContractId(1))));
         assert_eq!(e.check_invariants(), Ok(()));
+    }
+
+    fn leg(quotes: &[QuoteId]) -> Leg {
+        Leg {
+            contract: ContractId(1),
+            side: Side::BuyYes,
+            qty: 1,
+            limit_price: Price::new(5_000).unwrap(),
+            quotes: quotes.iter().copied().collect(),
+            selected: None,
+        }
+    }
+
+    fn quote(hold: Option<HoldId>, state: QuoteState) -> Quote {
+        Quote {
+            id: QuoteId(8),
+            mm: B,
+            request: RequestId(7),
+            leg: 0,
+            price: Price::new(5_000).unwrap(),
+            size: 1,
+            expires_at: 100,
+            hold,
+            state,
+        }
+    }
+
+    /// A consistent state: an `Open` request with one `Active` quote, both holding funds.
+    fn engine_with_live_quote() -> Engine {
+        let mut e = engine();
+        e.ledger.deposit(A, 10).unwrap();
+        e.ledger.deposit(B, 10).unwrap();
+        let request_hold = e.ledger.hold(A, 10).unwrap();
+        let quote_hold = e.ledger.hold(B, 10).unwrap();
+        let mut r = request(Some(request_hold));
+        r.legs = vec![leg(&[QuoteId(8)])];
+        e.requests.insert(RequestId(7), r);
+        e.quotes
+            .insert(QuoteId(8), quote(Some(quote_hold), QuoteState::Active));
+        e.timers.insert((100, TimerKey::RequestDeadline(RequestId(7))));
+        assert_eq!(e.check_invariants(), Ok(()));
+        e
+    }
+
+    #[test]
+    fn i5_accepts_active_quote_on_open_request_and_selected_on_presented() {
+        let mut e = engine_with_live_quote();
+        e.requests.get_mut(&RequestId(7)).unwrap().state = RequestState::Presented { accept_by: 100 };
+        e.quotes.get_mut(&QuoteId(8)).unwrap().state = QuoteState::Selected;
+        e.timers.insert((100, TimerKey::AcceptBy(RequestId(7))));
+        assert_eq!(e.check_invariants(), Ok(()));
+    }
+
+    #[test]
+    fn i5_rejects_live_quote_on_a_terminal_request() {
+        // The request ended (no hold, no timer needed) but its quote still holds funds.
+        let mut e = engine();
+        e.ledger.deposit(B, 10).unwrap();
+        let quote_hold = e.ledger.hold(B, 10).unwrap();
+        let mut r = request(None);
+        r.state = RequestState::Cancelled;
+        r.legs = vec![leg(&[QuoteId(8)])];
+        e.requests.insert(RequestId(7), r);
+        e.quotes
+            .insert(QuoteId(8), quote(Some(quote_hold), QuoteState::Active));
+        assert!(err(&e).starts_with("I5 quote"), "{}", err(&e));
+    }
+
+    #[test]
+    fn i5_rejects_live_quote_whose_state_does_not_match_its_request() {
+        let mut active_on_presented = engine_with_live_quote();
+        active_on_presented.requests.get_mut(&RequestId(7)).unwrap().state =
+            RequestState::Presented { accept_by: 100 };
+        active_on_presented
+            .timers
+            .insert((100, TimerKey::AcceptBy(RequestId(7))));
+        assert!(err(&active_on_presented).starts_with("I5 quote"));
+
+        let mut selected_on_open = engine_with_live_quote();
+        selected_on_open.quotes.get_mut(&QuoteId(8)).unwrap().state = QuoteState::Selected;
+        assert!(err(&selected_on_open).starts_with("I5 quote"));
+    }
+
+    #[test]
+    fn i5_rejects_live_quote_missing_from_its_leg() {
+        let mut e = engine_with_live_quote();
+        e.requests.get_mut(&RequestId(7)).unwrap().legs[0].quotes.clear();
+        assert!(err(&e).starts_with("I5 quote"));
+    }
+
+    #[test]
+    fn i5_rejects_live_quote_with_unknown_request_or_leg() {
+        let mut unknown_request = engine_with_live_quote();
+        unknown_request.quotes.get_mut(&QuoteId(8)).unwrap().request = RequestId(99);
+        assert!(err(&unknown_request).starts_with("I5 quote"));
+
+        let mut unknown_leg = engine_with_live_quote();
+        unknown_leg.quotes.get_mut(&QuoteId(8)).unwrap().leg = 5;
+        assert!(err(&unknown_leg).starts_with("I5 quote"));
+    }
+
+    #[test]
+    fn resume_behaves_like_tick_for_now() {
+        let mut base = engine();
+        base.timers.insert((10, TimerKey::RequestDeadline(RequestId(7))));
+        let mut ticked = base.clone();
+        let mut resumed = base.clone();
+        let at = |cmd| SequencedCommand {
+            seq: 2,
+            time: 10,
+            cmd,
+        };
+        assert_eq!(ticked.apply(&at(Command::Tick)), Vec::new());
+        assert_eq!(resumed.apply(&at(Command::Resume)), Vec::new());
+        // Same effect: the due timer fired (and, being stale, did nothing), seq and time advanced.
+        assert_eq!(resumed.next_timer(), None);
+        assert_eq!(resumed.last_seq(), 2);
+        assert_eq!(resumed.now(), 10);
+        assert_eq!(ticked.state_hash(), resumed.state_hash());
     }
 }

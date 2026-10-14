@@ -15,6 +15,7 @@ pub enum RejectReason {
     NotInitialized,
     AlreadyInitialized,
     Duplicate,
+    NonceGap,
     Unauthorized,
     UnknownObject,
     InvalidState,

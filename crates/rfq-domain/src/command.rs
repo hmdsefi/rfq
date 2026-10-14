@@ -9,6 +9,8 @@ pub struct Config {
     pub max_response: Duration,
     pub max_qty: Qty,
     pub dispute_bond: Amount,
+    pub resume_grace: Duration,
+    pub min_request_notional: Amount,
 }
 
 impl Default for Config {
@@ -19,6 +21,8 @@ impl Default for Config {
             max_response: 7 * 24 * 3_600_000,
             max_qty: 1_000_000_000,
             dispute_bond: 100 * ONE_DOLLAR,
+            resume_grace: 600_000,
+            min_request_notional: ONE_DOLLAR,
         }
     }
 }
@@ -104,6 +108,7 @@ pub enum Action {
 pub enum Command {
     Genesis(Genesis),
     Tick,
+    Resume,
     User {
         actor: AccountId,
         nonce: u64,
@@ -116,4 +121,26 @@ pub struct SequencedCommand {
     pub seq: u64,
     pub time: Timestamp,
     pub cmd: Command,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Added beyond the brief: pins the Global Constraints defaults, field by field.
+    #[test]
+    fn default_config_matches_global_constraints() {
+        assert_eq!(
+            Config::default(),
+            Config {
+                accept_window: 30_000,
+                min_response: 1_000,
+                max_response: 604_800_000,
+                max_qty: 1_000_000_000,
+                dispute_bond: 100_000_000,
+                resume_grace: 600_000,
+                min_request_notional: 1_000_000,
+            }
+        );
+    }
 }
