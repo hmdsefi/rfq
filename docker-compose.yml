@@ -2,6 +2,7 @@
 #
 #   aeron   the Java ArchivingMediaDriver: media driver + Archive (the engine's journal)
 #   engine  rfq-node: sequencer + engine, journaling to the Archive
+#   gateway rfq-gateway: the WebSocket client edge on ws://127.0.0.1:8080 (docs/specs/gateway.md)
 #   demo    rfq-demo: runs the scripted scenarios as an Aeron client (profile `demo`, run on demand:
 #           `docker compose run --rm demo [scenario]`)
 #
@@ -37,6 +38,23 @@ services:
       # Logs `applied seq=<n> hash=<state hash>` after every batch: scripts/demo.sh compares the
       # last one before a crash with the `replayed seq=<n> hash=<state hash>` after the restart.
       RFQ_HASH_EVERY_BATCH: "1"
+    depends_on: [aeron]
+
+  gateway:
+    build: { context: ., dockerfile: docker/rust.Dockerfile, args: { BIN: rfq-gateway } }
+    ipc: "service:aeron"
+    init: true
+    # A dead engine is not fatal for the gateway (its clients see `status down`); a dead media
+    # driver or Aeron client is: it exits with status 1, and this brings it back. Capped like the
+    # others, so a gateway that keeps failing stays down and `docker compose logs gateway` says why.
+    restart: "on-failure:3"
+    environment:
+      # 0.0.0.0 inside the container, so the port mapping reaches it; on the host it is published
+      # on 127.0.0.1 only (gateway.md §7).
+      RFQ_GATEWAY_ADDR: "0.0.0.0:8080"
+    # Host port 8080 unless RFQ_GATEWAY_PORT says otherwise (8080 may be taken on a dev machine).
+    ports: ["127.0.0.1:${RFQ_GATEWAY_PORT:-8080}:8080"]
+    # It may start before the engine: its status is simply down until the engine is there.
     depends_on: [aeron]
 
   demo:
