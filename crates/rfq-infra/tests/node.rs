@@ -2,6 +2,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use rfq_app::node::STALL_GAP_MS;
 use rfq_app::{BoxError, ClientCommand, EventBatch, Journal, Node, NodeError, SequenceError, Transport};
 use rfq_domain::*;
 use rfq_infra::journal::{FileJournal, MemJournal};
@@ -94,7 +95,7 @@ fn ticks_only_when_a_timer_is_due() {
             id: ContractId(1),
             description: "x".into(),
             oracle: ORACLE,
-            trading_close: 10_000,
+            trading_close: 2_000,
             resolution_deadline: 20_000,
             dispute_window: 1,
         },
@@ -103,8 +104,9 @@ fn ticks_only_when_a_timer_is_due() {
     t.ingress.push_back(list);
     let mut node = Node::start(j, t, genesis(Config::default())).unwrap();
     node.poll(1_000).unwrap();
-    assert_eq!(node.poll(9_999).unwrap(), 0);
-    assert_eq!(node.poll(10_000).unwrap(), 1, "tick at trading_close");
+    // Polls stay within `STALL_GAP_MS` of each other, so no stall `Resume` is sequenced.
+    assert_eq!(node.poll(1_999).unwrap(), 0);
+    assert_eq!(node.poll(2_000).unwrap(), 1, "tick at trading_close");
 }
 
 #[test]
@@ -156,6 +158,151 @@ fn restart_from_a_file_journal_reaches_the_same_state() {
         recorded,
         vec![(1, true), (2, false), (3, false)],
         "genesis not rewritten"
+    );
+}
+
+// ---- Stalls while running: a long gap between polls is treated like a restart. ----
+
+/// A `MemTransport` the test keeps a handle to, so it can queue commands between polls.
+#[derive(Clone, Default)]
+struct SharedTransport(Rc<RefCell<MemTransport>>);
+
+impl SharedTransport {
+    fn push(&self, c: ClientCommand) {
+        self.0.borrow_mut().ingress.push_back(c);
+    }
+    fn egress_names(&self) -> Vec<&'static str> {
+        let t = self.0.borrow();
+        t.egress
+            .iter()
+            .flat_map(|b| b.events.iter().map(|e| e.event.name()))
+            .collect()
+    }
+}
+
+impl Transport for SharedTransport {
+    fn poll(&mut self, max: usize, sink: &mut dyn FnMut(ClientCommand)) -> Result<(), BoxError> {
+        self.0.borrow_mut().poll(max, sink)
+    }
+    fn publish(&mut self, batch: &EventBatch) -> Result<(), BoxError> {
+        self.0.borrow_mut().publish(batch)
+    }
+}
+
+/// When the live node last polled in the stall tests.
+const LAST_POLL: Timestamp = 5_000;
+
+/// A fresh node (so no restart `Resume` is pending) that sequenced deposit 1 at [`LAST_POLL`].
+fn live_node() -> (Node<MemJournal, SharedTransport>, SharedTransport) {
+    let t = SharedTransport::default();
+    t.push(deposit(1));
+    let mut node = Node::start(MemJournal::default(), t.clone(), genesis(Config::default())).unwrap();
+    assert_eq!(node.poll(LAST_POLL).unwrap(), 1);
+    (node, t)
+}
+
+#[test]
+fn a_stall_longer_than_the_gap_sequences_resume_before_the_batch() {
+    let (mut node, t) = live_node();
+    t.push(deposit(2));
+    let wall = LAST_POLL + STALL_GAP_MS + 1;
+    assert_eq!(node.poll(wall).unwrap(), 2, "Resume, then the deposit");
+    let (journal, _) = node.into_parts();
+    let tail: Vec<_> = journal.entries()[2..]
+        .iter()
+        .map(|sc| (sc.seq, sc.time, sc.cmd == Command::Resume))
+        .collect();
+    assert_eq!(
+        tail,
+        vec![(3, wall, true), (4, wall, false)],
+        "Resume first, stamped with the live clock, exactly as after a restart"
+    );
+}
+
+#[test]
+fn a_stall_with_nothing_queued_still_sequences_resume() {
+    let (mut node, _) = live_node();
+    assert_eq!(
+        node.poll(LAST_POLL + STALL_GAP_MS + 1).unwrap(),
+        1,
+        "Resume alone"
+    );
+    assert_eq!(
+        node.poll(LAST_POLL + STALL_GAP_MS + 2).unwrap(),
+        0,
+        "the next normal poll logs nothing"
+    );
+}
+
+#[test]
+fn a_normal_poll_gap_does_not_resume() {
+    let (mut node, t) = live_node();
+    t.push(deposit(2));
+    assert_eq!(
+        node.poll(LAST_POLL + STALL_GAP_MS).unwrap(),
+        1,
+        "the deposit only"
+    );
+    assert_eq!(
+        node.poll(LAST_POLL - 4_000).unwrap(),
+        0,
+        "a backward clock step is not a stall"
+    );
+    let (journal, _) = node.into_parts();
+    assert!(!journal.entries().iter().any(|sc| sc.cmd == Command::Resume));
+}
+
+/// The attack in the final security review (M3): a live node that stalls past a dispute window
+/// must not let the window's timer fire ahead of a dispute that was waiting on ingress.
+#[test]
+fn a_stall_cannot_eat_a_dispute_window() {
+    let contract = ContractId(1);
+    let t = SharedTransport::default();
+    t.push(ClientCommand {
+        actor: OPERATOR,
+        nonce: 1,
+        action: Action::Deposit {
+            to: CAROL,
+            amount: dollars(100),
+        },
+    });
+    t.push(ClientCommand {
+        actor: OPERATOR,
+        nonce: 2,
+        action: Action::ListContract {
+            id: contract,
+            description: "x".into(),
+            oracle: ORACLE,
+            trading_close: 2_000,
+            resolution_deadline: 10_000_000,
+            dispute_window: 60_000,
+        },
+    });
+    let mut node = Node::start(MemJournal::default(), t.clone(), genesis(Config::default())).unwrap();
+    node.poll(1_000).unwrap();
+    node.poll(2_000).unwrap(); // trading closes
+    t.push(ClientCommand {
+        actor: ORACLE,
+        nonce: 1,
+        action: Action::ProposeOutcome {
+            contract,
+            outcome: Outcome::Yes,
+        },
+    });
+    node.poll(2_500).unwrap(); // the window ends at 62_500
+    // The process freezes for 65 s; Carol's dispute waits on ingress.
+    t.push(ClientCommand {
+        actor: CAROL,
+        nonce: 1,
+        action: Action::Dispute { contract },
+    });
+    node.poll(2_500 + 65_000).unwrap();
+    let names = t.egress_names();
+    assert!(!names.contains(&"ContractFinalized"), "{names:?}");
+    assert_eq!(
+        names[names.len() - 2..],
+        ["OutcomeProposed", "Disputed"],
+        "Resume re-opened the window, then the dispute landed"
     );
 }
 

@@ -10,14 +10,28 @@ use crate::sequencer::Sequencer;
 /// Most ingress commands taken per `poll`. Bounds the batch that shares one durability wait.
 pub const MAX_BATCH: usize = 256;
 
+/// A wall-clock gap between two polls longer than this is treated like a restart: the next poll
+/// sequences `Resume` first, so the stall cannot eat a dispute window.
+///
+/// The live loop polls about every millisecond, so a gap this long means the process was suspended
+/// (`SIGSTOP`, `docker pause`, host sleep, VM migration), a step was blocked (for example on a
+/// back-pressured egress), or the clock jumped forward. Ingress was not read during the gap, so
+/// a holder's dispute may be waiting behind timers that are already due. A backward clock step is
+/// not a gap: the sequencer clamps time so it never goes back.
+pub const STALL_GAP_MS: Timestamp = 1_000;
+
 /// One engine behind a journal and a transport. Sees typed values only, never bytes.
 pub struct Node<J, T> {
     engine: Engine,
     journal: J,
     transport: T,
     sequencer: Sequencer,
-    /// Set when `start` replayed a non-empty journal: the first `poll` sequences `Resume`.
+    /// Set when `start` replayed a non-empty journal, or when a poll comes more than
+    /// [`STALL_GAP_MS`] after the previous one: that poll sequences `Resume` first.
     resume_pending: bool,
+    /// The wall clock of the previous poll (`None` before the first). Not `engine.now()`: idle
+    /// polls log nothing, so the engine's clock legitimately falls behind the wall clock.
+    last_poll_wall: Option<Timestamp>,
     /// Latched by the first failed `poll`. A failure can leave the sequencer ahead of the journal
     /// or the journal ahead of the engine, so continuing could diverge from replay.
     halted: bool,
@@ -71,6 +85,7 @@ impl<J: Journal, T: Transport> Node<J, T> {
             transport,
             sequencer,
             resume_pending,
+            last_poll_wall: None,
             halted: false,
         })
     }
@@ -78,8 +93,8 @@ impl<J: Journal, T: Transport> Node<J, T> {
     /// One loop iteration. Returns how many commands it sequenced, counting `Resume` and `Tick`;
     /// `0` means nothing was logged.
     ///
-    /// 1. After a restart, the first call sequences `Resume` before anything else, stamped with
-    ///    `wall_ms`.
+    /// 1. After a restart, or when `wall_ms` is more than [`STALL_GAP_MS`] past the previous
+    ///    call's, sequences `Resume` before anything else, stamped with `wall_ms`.
     /// 2. Takes up to [`MAX_BATCH`] client commands from the transport and stamps them.
     /// 3. If there was nothing to sequence and the engine's earliest timer is due, sequences one
     ///    `Tick` (any command fires due timers, so idle periods add nothing to the log).
@@ -98,9 +113,14 @@ impl<J: Journal, T: Transport> Node<J, T> {
     }
 
     fn step(&mut self, wall_ms: Timestamp) -> Result<usize, NodeError> {
+        let stalled = self
+            .last_poll_wall
+            .replace(wall_ms)
+            .is_some_and(|last| wall_ms.saturating_sub(last) > STALL_GAP_MS);
         let mut batch: Vec<SequencedCommand> = Vec::new();
-        if std::mem::take(&mut self.resume_pending) {
-            // Stamped with the live clock, so the engine's `resume_grace` counts from the restart.
+        if std::mem::take(&mut self.resume_pending) || stalled {
+            // Stamped with the live clock, so the engine's `resume_grace` counts from the restart
+            // or the end of the stall.
             batch.push(self.sequencer.stamp(wall_ms, Command::Resume));
         }
         let sequencer = &mut self.sequencer;
