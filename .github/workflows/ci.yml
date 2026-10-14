@@ -17,8 +17,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # Same version as rust-toolchain.toml.
-      - uses: dtolnay/rust-toolchain@master
+      # Same version as rust-toolchain.toml. Pinned to a commit (tag v1 = master on 2026-10-14),
+      # not a moving branch.
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
         with:
           toolchain: 1.99.0
           components: clippy, rustfmt
