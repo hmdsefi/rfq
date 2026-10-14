@@ -151,6 +151,8 @@ impl Engine {
                 expires_at,
             } => self.submit_quote(actor, *request, *leg, *price, *size, *expires_at, out),
             Action::CancelQuote { quote } => self.cancel_quote(actor, *quote, out),
+            Action::Accept { request, picks } => self.accept(actor, *request, picks, out),
+            Action::Reject { request } => self.reject(actor, *request, out),
             _ => Err(RejectReason::Unsupported),
         };
         if let Err(reason) = result {
@@ -168,6 +170,7 @@ impl Engine {
             match key {
                 TimerKey::QuoteExpiry(q) => self.on_quote_expiry(q, out),
                 TimerKey::RequestDeadline(r) => self.on_request_deadline(r, at, out),
+                TimerKey::AcceptBy(r) => self.on_accept_by(r, out),
                 TimerKey::ContractClose(c) => self.on_contract_close(c, out),
                 _ => {}
             }
@@ -466,6 +469,49 @@ mod tests {
         e.quotes.get_mut(&QuoteId(8)).unwrap().state = QuoteState::Selected;
         e.timers.insert((100, TimerKey::AcceptBy(RequestId(7))));
         assert_eq!(e.check_invariants(), Ok(()));
+    }
+
+    /// `engine_with_live_quote` moved on to selection: `Presented` until `accept_by`, quote `Selected`.
+    fn engine_with_selected_quote(expires_at: Timestamp) -> Engine {
+        let mut e = engine_with_live_quote();
+        let r = e.requests.get_mut(&RequestId(7)).unwrap();
+        r.state = RequestState::Presented { accept_by: 200 };
+        r.legs[0].selected = Some(QuoteId(8));
+        let q = e.quotes.get_mut(&QuoteId(8)).unwrap();
+        q.state = QuoteState::Selected;
+        q.expires_at = expires_at;
+        e.timers.insert((200, TimerKey::AcceptBy(RequestId(7))));
+        assert_eq!(e.check_invariants(), Ok(()));
+        e
+    }
+
+    // Unreachable through commands (submit clamps expiry to `accept_by`), so the state is built directly.
+    #[test]
+    fn selected_quote_expiring_before_accept_by_fails_the_request() {
+        let mut e = engine_with_selected_quote(100);
+        let mut out = Vec::new();
+        e.on_quote_expiry(QuoteId(8), &mut out);
+        let names: Vec<_> = out.iter().map(|e| e.event.name()).collect();
+        assert_eq!(names, vec!["QuoteExpired", "RequestRejected"]);
+        assert_eq!(
+            e.requests[&RequestId(7)].state,
+            RequestState::Rejected(RejectCause::QuoteExpired)
+        );
+        assert_eq!(e.quotes[&QuoteId(8)].state, QuoteState::Expired);
+        assert_eq!(e.check_invariants(), Ok(()));
+        for a in [A, B] {
+            assert_eq!(e.balance(a).free, 10, "both holds released");
+        }
+    }
+
+    #[test]
+    fn selected_quote_expiring_at_accept_by_is_left_to_the_lapse() {
+        let mut e = engine_with_selected_quote(200);
+        let before = e.state_hash();
+        let mut out = Vec::new();
+        e.on_quote_expiry(QuoteId(8), &mut out);
+        assert_eq!(out, Vec::new());
+        assert_eq!(e.state_hash(), before);
     }
 
     #[test]

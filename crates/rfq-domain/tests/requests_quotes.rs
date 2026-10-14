@@ -49,7 +49,7 @@ fn request(h: &mut Harness, c: ContractId) -> RequestId {
     id
 }
 
-fn quote(h: &mut Harness, mm: AccountId, r: RequestId, bps: u16) -> QuoteId {
+fn quote_out(h: &mut Harness, mm: AccountId, r: RequestId, bps: u16) -> (QuoteId, Vec<Emitted>) {
     let id = QuoteId(h.next_seq());
     let out = h.user(
         mm,
@@ -62,7 +62,54 @@ fn quote(h: &mut Harness, mm: AccountId, r: RequestId, bps: u16) -> QuoteId {
         },
     );
     assert_eq!(rejection(&out), None);
-    id
+    (id, out)
+}
+
+fn quote(h: &mut Harness, mm: AccountId, r: RequestId, bps: u16) -> QuoteId {
+    quote_out(h, mm, r, bps).0
+}
+
+/// Sealed bids: every `Quote*` event goes only to that quote's MM, and the request lifecycle events
+/// that end or open a request are public. (`RequestPresented` and `RequestFilled` are requester-only;
+/// `selection_accept.rs` covers them.)
+fn assert_sealed(h: &Harness, out: &[Emitted]) {
+    for e in out {
+        let quotes: Vec<QuoteId> = match &e.event {
+            Event::QuoteSubmitted { quote, .. }
+            | Event::QuoteCancelled { quote }
+            | Event::QuoteExpired { quote }
+            | Event::QuoteLost { quote }
+            | Event::QuoteSelected { quote }
+            | Event::QuoteReleased { quote }
+            | Event::QuoteFilled { quote, .. } => vec![*quote],
+            Event::QuoteReplaced { old, new } => vec![*old, *new],
+            other => {
+                assert!(
+                    !other.name().starts_with("Quote"),
+                    "unhandled quote event {other:?}"
+                );
+                Vec::new()
+            }
+        };
+        for q in quotes {
+            let mm = h.engine.quote(q).unwrap().mm;
+            assert_eq!(
+                e.audience,
+                Audience::Account(mm),
+                "{:?} must reach only its MM",
+                e.event
+            );
+        }
+        if matches!(
+            e.event,
+            Event::RequestOpened { .. }
+                | Event::RequestCancelled { .. }
+                | Event::RequestExpired { .. }
+                | Event::RequestRejected { .. }
+        ) {
+            assert_eq!(e.audience, Audience::Public, "{:?} is request-level", e.event);
+        }
+    }
 }
 
 #[test]
@@ -305,9 +352,13 @@ fn quote_after_deadline_rejected() {
 fn replace_quote_atomic() {
     let (mut h, c) = setup();
     let r = request(&mut h, c);
-    let q1 = quote(&mut h, MM1, r, 6_000); // holds 400
+    let (q1, out1) = quote_out(&mut h, MM1, r, 6_000); // holds 400
+    assert_eq!(names(&out1), vec!["QuoteSubmitted"]);
+    assert_sealed(&h, &out1);
     // MM1 now has 600 free; a 3000-bps quote needs 700 — only possible net of the old hold.
-    let q2 = quote(&mut h, MM1, r, 3_000);
+    let (q2, out2) = quote_out(&mut h, MM1, r, 3_000);
+    assert_eq!(names(&out2), vec!["QuoteReplaced", "QuoteSubmitted"]);
+    assert_sealed(&h, &out2);
     assert_eq!(h.engine.quote(q1).unwrap().state, QuoteState::Replaced);
     assert_eq!(h.engine.quote(q2).unwrap().state, QuoteState::Active);
     assert_eq!(h.engine.balance(MM1).reserved, dollars(700));
@@ -323,7 +374,10 @@ fn cancel_quote_releases() {
         rejection(&h.user(MM2, Action::CancelQuote { quote: q })),
         Some(RejectReason::Unauthorized)
     );
-    assert_eq!(rejection(&h.user(MM1, Action::CancelQuote { quote: q })), None);
+    let out = h.user(MM1, Action::CancelQuote { quote: q });
+    assert_eq!(rejection(&out), None);
+    assert_eq!(names(&out), vec!["QuoteCancelled"]);
+    assert_sealed(&h, &out);
     assert_eq!(h.engine.balance(MM1).free, dollars(1_000));
     assert_eq!(
         rejection(&h.user(MM1, Action::CancelQuote { quote: q })),
@@ -336,7 +390,7 @@ fn quote_expiry_releases_hold() {
     let (mut h, c) = setup();
     let r = request(&mut h, c);
     let id = QuoteId(h.next_seq());
-    h.user(
+    let submitted = h.user(
         MM1,
         Action::SubmitQuote {
             request: r,
@@ -346,8 +400,10 @@ fn quote_expiry_releases_hold() {
             expires_at: 5_000,
         },
     );
+    assert_sealed(&h, &submitted);
     let out = h.tick(5_000);
     assert_eq!(names(&out), vec!["QuoteExpired"]);
+    assert_sealed(&h, &out);
     assert_eq!(h.engine.quote(id).unwrap().state, QuoteState::Expired);
     assert_eq!(h.engine.balance(MM1).free, dollars(1_000));
 }
@@ -363,9 +419,125 @@ fn cancel_request_releases_everything() {
     );
     let out = h.user(ALICE, Action::CancelRequest { request: r });
     assert_eq!(names(&out), vec!["QuoteLost", "RequestCancelled"]);
+    assert_sealed(&h, &out);
+    assert_eq!(out[1].audience, Audience::Public);
     assert_eq!(h.engine.balance(ALICE).free, dollars(1_000));
     assert_eq!(h.engine.balance(MM1).free, dollars(1_000));
     assert_eq!(h.engine.quote(q).unwrap().state, QuoteState::Lost);
+}
+
+#[test]
+fn rejected_replace_keeps_old_quote() {
+    let (mut h, c) = setup();
+    let r = request(&mut h, c);
+    let q1 = quote(&mut h, MM1, r, 6_000); // holds $400, leaves $600 free
+    assert_eq!(
+        rejection(&h.user(MM1, Action::Withdraw { amount: dollars(500) })),
+        None
+    );
+    let before = h.engine.balance(MM1);
+    assert_eq!(
+        before,
+        Balance {
+            free: dollars(100),
+            reserved: dollars(400),
+            escrowed: 0
+        }
+    );
+    let hold = h.engine.quote(q1).unwrap().hold;
+    // A 1_000-bps quote needs $900, but the old hold plus free funds are only $500.
+    let out = h.user(
+        MM1,
+        Action::SubmitQuote {
+            request: r,
+            leg: 0,
+            price: price(1_000),
+            size: 1_000,
+            expires_at: 100_000,
+        },
+    );
+    assert_eq!(rejection(&out), Some(RejectReason::InsufficientFunds));
+    assert_eq!(
+        names(&out),
+        vec!["CommandRejected"],
+        "no QuoteReplaced, nothing half-done"
+    );
+    let old = h.engine.quote(q1).unwrap();
+    assert_eq!(old.state, QuoteState::Active);
+    assert_eq!(old.price, price(6_000));
+    assert_eq!(old.hold, hold, "same hold, untouched");
+    assert_eq!(h.engine.balance(MM1), before);
+    let quotes = &h.engine.request(r).unwrap().legs[0].quotes;
+    assert_eq!((quotes.len(), quotes.contains(&q1)), (1, true));
+}
+
+#[test]
+fn two_mms_do_not_replace_each_other() {
+    let (mut h, c) = setup();
+    let r = request(&mut h, c);
+    let q1 = quote(&mut h, MM1, r, 6_000);
+    let q2 = quote(&mut h, MM2, r, 6_200);
+    assert_eq!(h.engine.quote(q1).unwrap().state, QuoteState::Active);
+    assert_eq!(h.engine.quote(q2).unwrap().state, QuoteState::Active);
+    let quotes = &h.engine.request(r).unwrap().legs[0].quotes;
+    assert_eq!(quotes.len(), 2);
+    assert!(quotes.contains(&q1) && quotes.contains(&q2));
+    let out = h.user(ALICE, Action::CancelRequest { request: r });
+    assert_eq!(
+        out,
+        vec![
+            Emitted::to(MM1, Event::QuoteLost { quote: q1 }),
+            Emitted::to(MM2, Event::QuoteLost { quote: q2 }),
+            Emitted::public(Event::RequestCancelled { request: r }),
+        ]
+    );
+}
+
+#[test]
+fn double_cancel_request_rejected() {
+    let (mut h, c) = setup();
+    let r = request(&mut h, c);
+    assert_eq!(
+        rejection(&h.user(ALICE, Action::CancelRequest { request: r })),
+        None
+    );
+    let out = h.user(ALICE, Action::CancelRequest { request: r });
+    assert_eq!(names(&out), vec!["CommandRejected"]);
+    assert_eq!(rejection(&out), Some(RejectReason::InvalidState));
+    assert_eq!(h.engine.balance(ALICE).free, dollars(1_000));
+}
+
+#[test]
+fn unknown_ids_rejected() {
+    let (mut h, c) = setup();
+    request(&mut h, c);
+    let unknown = Some(RejectReason::UnknownObject);
+    assert_eq!(
+        rejection(&h.user(
+            ALICE,
+            Action::CancelRequest {
+                request: RequestId(999)
+            }
+        )),
+        unknown
+    );
+    assert_eq!(
+        rejection(&h.user(
+            MM1,
+            Action::SubmitQuote {
+                request: RequestId(999),
+                leg: 0,
+                price: price(6_000),
+                size: 1_000,
+                expires_at: 100_000,
+            }
+        )),
+        unknown
+    );
+    assert_eq!(
+        rejection(&h.user(MM1, Action::CancelQuote { quote: QuoteId(999) })),
+        unknown
+    );
 }
 
 #[test]
@@ -392,8 +564,8 @@ fn contract_closes_at_trading_close() {
     assert_eq!(rejection(&out), Some(RejectReason::InvalidState));
 }
 
-// Added beyond the brief: exercises the `on_request_deadline` stub. With no quotes, Task 5's
-// selection also ends in `Expired`, so this stays valid when the stub is replaced.
+// Added beyond the brief: a request nobody quotes expires at its deadline (selection finds no
+// eligible quote) and its hold is released.
 #[test]
 fn request_without_quotes_expires_at_deadline() {
     let (mut h, c) = setup();

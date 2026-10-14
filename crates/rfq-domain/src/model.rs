@@ -42,7 +42,6 @@ pub struct Contract {
 pub enum RejectCause {
     Declined,
     Lapsed,
-    QuoteWithdrawn,
     QuoteExpired,
 }
 

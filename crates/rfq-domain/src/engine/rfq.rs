@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use super::{Engine, Handled, Out, VALIDATED};
-use crate::command::LegSpec;
+use crate::command::{LegSpec, Pick};
 use crate::event::{Emitted, Event, RejectReason};
 use crate::model::*;
 use crate::types::*;
@@ -197,21 +197,210 @@ impl Engine {
         let Some(q) = self.quotes.get(&id) else {
             return;
         };
-        if q.state == QuoteState::Active {
-            self.end_quote(id, QuoteState::Expired, out);
+        match q.state {
+            QuoteState::Active => self.end_quote(id, QuoteState::Expired, out),
+            // A selected quote is firm through `accept_by`: eligibility needs `expires_at >= accept_by`
+            // and submit clamps it to at most that, so this timer fires together with (just before)
+            // the request's `AcceptBy`, which lapses the request. Defensive only: a selected quote
+            // that expired *before* `accept_by` would fail the request, never fall back (RFC P8).
+            QuoteState::Selected => {
+                let request = q.request;
+                let early = matches!(
+                    self.requests[&request].state,
+                    RequestState::Presented { accept_by } if q.expires_at < accept_by
+                );
+                if early {
+                    self.end_quote(id, QuoteState::Expired, out);
+                    self.close_request(request, RequestState::Rejected(RejectCause::QuoteExpired), out);
+                }
+            }
+            _ => {}
         }
     }
 
-    /// Placeholder until Task 5 adds selection: an `Open` request expires at its deadline and
-    /// releases everything. Without it the deadline timer would be dropped and the still-`Open`
-    /// request would have no exit timer, which the I5 check rejects.
-    pub(super) fn on_request_deadline(&mut self, id: RequestId, _deadline: Timestamp, out: &mut Out) {
+    /// Fired at `response_deadline`. Picks the best eligible quote per leg; all-or-nothing.
+    pub(super) fn on_request_deadline(&mut self, id: RequestId, deadline: Timestamp, out: &mut Out) {
         let Some(r) = self.requests.get(&id) else {
             return;
         };
-        if r.state == RequestState::Open {
-            self.close_request(id, RequestState::Expired, out);
+        if r.state != RequestState::Open {
+            return;
         }
+        let accept_by = deadline.saturating_add(self.config().accept_window);
+        // Eligible = active, within limit, and firm through the whole acceptance window. This is the
+        // only check of the sealed limit (SubmitQuote doesn't do it, so it can't be probed).
+        let picks: Option<Vec<Pick>> = r
+            .legs
+            .iter()
+            .enumerate()
+            .map(|(i, l)| {
+                l.quotes
+                    .iter()
+                    .map(|q| &self.quotes[q])
+                    .filter(|q| {
+                        q.state == QuoteState::Active && q.price <= l.limit_price && q.expires_at >= accept_by
+                    })
+                    .min_by_key(|q| (q.price, q.id))
+                    .map(|q| Pick {
+                        leg: u32::try_from(i).expect("leg count is bounded"),
+                        quote: q.id,
+                        price: q.price,
+                    })
+            })
+            .collect();
+        let Some(picks) = picks else {
+            // Some leg has no eligible quote: the whole request expires (all-or-nothing).
+            self.close_request(id, RequestState::Expired, out);
+            return;
+        };
+        for p in &picks {
+            let losers: Vec<QuoteId> = self.requests[&id].legs[p.leg as usize]
+                .quotes
+                .iter()
+                .copied()
+                .filter(|q| *q != p.quote)
+                .collect();
+            for q in losers {
+                self.end_quote(q, QuoteState::Lost, out);
+            }
+            self.requests.get_mut(&id).expect("exists").legs[p.leg as usize].selected = Some(p.quote);
+            let q = self.quotes.get_mut(&p.quote).expect("exists");
+            q.state = QuoteState::Selected;
+            out.push(Emitted::to(q.mm, Event::QuoteSelected { quote: p.quote }));
+        }
+        let r = self.requests.get_mut(&id).expect("exists");
+        r.state = RequestState::Presented { accept_by };
+        let requester = r.requester;
+        self.arm(accept_by, TimerKey::AcceptBy(id));
+        out.push(Emitted::to(
+            requester,
+            Event::RequestPresented {
+                request: id,
+                picks,
+                accept_by,
+            },
+        ));
+    }
+
+    pub(super) fn on_accept_by(&mut self, id: RequestId, out: &mut Out) {
+        let Some(r) = self.requests.get(&id) else {
+            return;
+        };
+        if matches!(r.state, RequestState::Presented { .. }) {
+            self.close_request(id, RequestState::Rejected(RejectCause::Lapsed), out);
+        }
+    }
+
+    pub(super) fn reject(&mut self, actor: AccountId, id: RequestId, out: &mut Out) -> Handled {
+        let r = self.requests.get(&id).ok_or(RejectReason::UnknownObject)?;
+        if r.requester != actor {
+            return Err(RejectReason::Unauthorized);
+        }
+        if !matches!(r.state, RequestState::Presented { .. }) {
+            return Err(RejectReason::InvalidState);
+        }
+        self.close_request(id, RequestState::Rejected(RejectCause::Declined), out);
+        Ok(())
+    }
+
+    /// Escrows every leg in one command. All checks run before the first mutation.
+    pub(super) fn accept(
+        &mut self,
+        actor: AccountId,
+        id: RequestId,
+        picks: &[Pick],
+        out: &mut Out,
+    ) -> Handled {
+        let r = self.requests.get(&id).ok_or(RejectReason::UnknownObject)?;
+        if r.requester != actor {
+            return Err(RejectReason::Unauthorized);
+        }
+        if !matches!(r.state, RequestState::Presented { .. }) {
+            return Err(RejectReason::InvalidState);
+        }
+        if picks.len() != r.legs.len() {
+            return Err(RejectReason::Mismatch);
+        }
+        let mut requester_total: Amount = 0;
+        for (i, (l, p)) in r.legs.iter().zip(picks).enumerate() {
+            if p.leg as usize != i || l.selected != Some(p.quote) {
+                return Err(RejectReason::Mismatch);
+            }
+            let q = &self.quotes[&p.quote];
+            if q.state != QuoteState::Selected || q.price != p.price {
+                return Err(RejectReason::Mismatch);
+            }
+            let lock = buyer_lock(l.qty, q.price).ok_or(RejectReason::Overflow)?;
+            requester_total = requester_total.checked_add(lock).ok_or(RejectReason::Overflow)?;
+        }
+        let hold = r.hold.expect("live request has a hold");
+        if self.ledger.hold_amount(hold).unwrap_or(0) < requester_total {
+            return Err(RejectReason::InsufficientFunds);
+        }
+
+        // Apply: nothing below can fail.
+        let requester = r.requester;
+        let legs = r.legs.clone();
+        self.ledger
+            .escrow_from_hold(hold, requester_total)
+            .expect(VALIDATED);
+        let mut positions = Vec::with_capacity(legs.len());
+        for l in &legs {
+            let qid = l.selected.expect(VALIDATED);
+            let q = self.quotes.get_mut(&qid).expect(VALIDATED);
+            let mm_hold = q.hold.take().expect("selected quote has a hold");
+            let mm_lock = self.ledger.hold_amount(mm_hold).expect(VALIDATED);
+            self.ledger.escrow_from_hold(mm_hold, mm_lock).expect(VALIDATED);
+            q.state = QuoteState::Filled;
+            let buyer = buyer_lock(l.qty, q.price).expect(VALIDATED);
+            let (yes_holder, yes_lock, no_holder, no_lock) = match l.side {
+                Side::BuyYes => (requester, buyer, q.mm, mm_lock),
+                Side::BuyNo => (q.mm, mm_lock, requester, buyer),
+            };
+            self.next_position += 1;
+            let pid = PositionId(self.next_position);
+            self.positions.insert(
+                pid,
+                Position {
+                    id: pid,
+                    contract: l.contract,
+                    request: id,
+                    qty: l.qty,
+                    yes_holder,
+                    yes_lock,
+                    no_holder,
+                    no_lock,
+                    settled: false,
+                },
+            );
+            self.contracts
+                .get_mut(&l.contract)
+                .expect(VALIDATED)
+                .positions
+                .push(pid);
+            out.push(Emitted::to(
+                q.mm,
+                Event::QuoteFilled {
+                    quote: qid,
+                    position: pid,
+                },
+            ));
+            positions.push(pid);
+        }
+        let r = self.requests.get_mut(&id).expect(VALIDATED);
+        r.state = RequestState::Filled;
+        r.hold = None;
+        for l in &mut r.legs {
+            l.quotes.clear();
+        }
+        out.push(Emitted::to(
+            requester,
+            Event::RequestFilled {
+                request: id,
+                positions,
+            },
+        ));
+        Ok(())
     }
 
     /// Releases a live quote's hold, sets its terminal state and detaches it from its leg.
