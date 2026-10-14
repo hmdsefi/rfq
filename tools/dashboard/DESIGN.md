@@ -88,7 +88,7 @@ When a preset finishes, the page runs `contains_in_order` against the scenario's
 | `attack_accept_wrong_price` | Alice accepts with a price other than the one presented | `CommandRejected(Mismatch)`; the presented quote stays firm |
 | `attack_double_accept` | Alice accepts twice | the second is `CommandRejected(InvalidState)`; escrow happens once |
 | `attack_replayed_nonce` | MM1 resends an already-used nonce, then skips one | `Duplicate`, then `NonceGap`; nothing consumed |
-| `attack_over_limit_quote` | MM2 quotes above Alice's sealed limit | quote `Active`, never selected; the in-limit quote wins |
+| `attack_over_limit_quote` | MM2 quotes above Alice's sealed limit, and it's the only quote | quote accepted as `Active` but never eligible: at the deadline it's `Lost` and the request `Expired`; every hold released, Alice never pays above her limit |
 | `attack_self_trade` | Alice quotes her own request | `CommandRejected(SelfTrade)` |
 | `attack_cancel_others_quote` | Carol cancels MM1's quote | `CommandRejected(Unauthorized)` |
 
