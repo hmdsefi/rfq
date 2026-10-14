@@ -67,12 +67,12 @@ services:
     ipc: shareable
     shm_size: 512m
     volumes: [archive:/data/archive]
-    restart: on-failure
+    restart: "on-failure:3"
   engine:                       # rfq-node: sequencer + engine, journaling to the Archive
     build: { context: ., dockerfile: docker/rust.Dockerfile, args: { BIN: rfq-node } }
     ipc: "service:aeron"
     init: true                  # an init as PID 1, so SIGTERM stops the node at once
-    restart: on-failure         # a halted node exits with status 1; it comes back and replays
+    restart: "on-failure:3"     # a halted node exits with status 1; it replays, at most 3 retries
     environment:
       RFQ_JOURNAL: archive
       RFQ_HASH_EVERY_BATCH: "1" # logs `applied seq=<n> hash=<hex>` after every batch
@@ -92,7 +92,7 @@ volumes:
 - `docker/rust.Dockerfile` builds one workspace binary (`BIN`) with `--features aeron` and `--locked` on `rust:1.99.0-bookworm`, and runs it on `debian:bookworm-slim`.
 - `RFQ_HASH_EVERY_BATCH` (demo only: it hashes the whole state after every batch) is what lets `scripts/demo.sh` prove recovery: it compares the last `applied seq=<n> hash=<hex>` logged before `SIGKILL` with the `replayed seq=<n> hash=<hex>` the restarted engine logs after replaying the Archive. They must be equal (`RECOVERY OK`).
 - The Archive data lives on the `archive` volume, so it survives the engine being killed and restarted. `docker compose --profile demo down -v` deletes it.
-- `aeron` and `engine` have `restart: on-failure`. A halted node exits with status 1 (any port failure) and restarts into a replay. A driver that exits non-zero restarts too; the engine halts on the dead driver and replays once it is back. Checked by sending `SIGTERM` to the driver's JVM (exit 143): both containers restarted, and the engine replayed to the same `seq` and state hash it had logged before. A hard JVM crash was not tried. A manual stop (`docker compose stop` or `kill`) is not restarted, so `scripts/demo.sh`'s `SIGKILL` and explicit `start` are unaffected. A journal that fails to replay fails every start, so the engine then restarts in a loop until someone reads the log.
+- `aeron` and `engine` have `restart: "on-failure:3"`. A halted node exits with status 1 (any port failure) and restarts into a replay. A driver that exits non-zero restarts too; the engine halts on the dead driver and replays once it is back. Checked once, by sending `SIGTERM` to the driver's JVM (exit 143): both containers restarted, and the engine replayed to the same `seq` and state hash it had logged before. A hard JVM crash was not tried. Retries are capped at 3: a journal that fails to replay fails every start, so after the third retry the container stays down, and `docker compose logs engine` (or `aeron`) shows why. Checked with an engine that fails at startup (`RFQ_JOURNAL=bogus`, not a corrupt journal): `RestartCount` stopped at 3 and the container stayed `exited`, where the uncapped policy was still restarting after 30 s. The count belongs to the container, and a healthy run does not reset it (a probe container that ran 11 s between failures still stopped after 3), so three unrelated crashes over weeks use it up too. A manual stop (`docker compose stop` or `kill`) is not restarted, so `scripts/demo.sh`'s `SIGKILL` and explicit `start` are unaffected; the script checks that the engine's `RestartCount` is 0 before the `SIGKILL`.
 
 ## Implementation notes (Task 10)
 

@@ -34,25 +34,49 @@ One **deterministic engine** consumes a **totally-ordered command log** and prod
 
 ```mermaid
 flowchart TB
-  subgraph Clients
+  subgraph CL[Clients]
     R[Requesters]
     M[Market makers]
-    O[Oracle / arbiter adapter]
+    O[Oracle / arbiter]
     OP[Operator / mock chain]
   end
-  subgraph NODE[rfq-node process]
-    SEQ[Sequencer<br/>stamps seq + time]
-    ENG[RFQ engine<br/>apply seq,time,cmd → events]
+  subgraph DRV["Aeron media driver + Archive (Java container, shared /dev/shm)"]
+    ING[["ingress 1001<br/>ClientCommand"]]
+    EGR[["egress 1003<br/>EventBatch"]]
+    LOG[["log 1002<br/>exclusive per-node session"]]
+    ARC[("Archive<br/>fsync level 2")]
+    RPL[["replay 1004"]]
   end
-  R & M & O & OP -->|ClientCommand| ING[[Aeron ingress stream 1001]]
-  ING --> SEQ
-  SEQ -->|SequencedCommand| LOG[[Aeron log stream 1002]]
-  LOG -->|recorded| ARC[(Aeron Archive)]
-  ARC -. "recorded: the engine may apply" .-> ENG
-  ENG -->|EventBatch| EGR[[Aeron egress stream 1003]]
-  EGR --> R & M & O & OP
-  ARC -. "replay on restart: stream 1004" .-> ENG
+  subgraph NODE["rfq-node process (composition root)"]
+    subgraph INFRA["rfq-infra · adapters"]
+      AT["AeronTransport<br/>Reassembler · decode_ingress (≤ 64 KiB) · split_batch"]
+      AJ["ArchiveJournal<br/>append · wait_durable (RecordingPos) · replay"]
+    end
+    subgraph APP["rfq-app · ports + use case"]
+      N["Node<br/>poll → stamp → append → wait_durable → apply → publish<br/>Resume on restart or stall · Tick when a timer is due · Halted latch"]
+      S["Sequencer<br/>seq = last + 1 · time = max(last, wall)"]
+    end
+    subgraph DOM["rfq-domain · pure"]
+      E["Engine.apply(seq, time, cmd)<br/>Ledger · state machines · timers · invariants I1–I5"]
+    end
+  end
+  R & M & O & OP -->|publish| ING
+  ING --> AT
+  AT -->|"Transport::poll → ClientCommand"| N
+  N --- S
+  N -->|"Journal::append / wait_durable"| AJ
+  AJ -->|offer| LOG
+  LOG -->|recorded| ARC
+  ARC -. "recording position ≥ offer position" .-> AJ
+  N -->|"apply (whole batch)"| E
+  N -->|"Transport::publish(EventBatch)"| AT
+  AT --> EGR
+  EGR -->|best-effort| R & M & O & OP
+  ARC -. "startup: every recording, in id order" .-> RPL
+  RPL -.-> AJ
 ```
+
+Ports (`Journal`, `Transport`) are typed traits in `rfq-app`; `rfq-infra` implements them (Aeron behind the `aeron` feature, plus `FileJournal`, `MemJournal`, `MemTransport` for tests and the fallback). The engine never sees bytes, Aeron or time other than what the `SequencedCommand` carries.
 
 | Component | Where | Responsibility | Depends on |
 |---|---|---|---|
@@ -94,22 +118,50 @@ Everything outside this line (Aeron, Docker, Archive, Cluster later) is plumbing
 
 ## 4. Live loop and durability
 
+One iteration of `Node::poll` (a batch of up to `MAX_BATCH` = 256 client commands):
+
 ```mermaid
 sequenceDiagram
-  participant C as Client
-  participant S as Sequencer
-  participant L as Log stream 1002
+  participant C as Clients
+  participant T as AeronTransport (1001 in / 1003 out)
+  participant N as Node (rfq-app)
+  participant J as ArchiveJournal (log 1002)
+  participant A as Archive
+  participant E as Engine (rfq-domain)
+  C->>T: ClientCommand bytes (possibly fragmented)
+  N->>T: poll(256)
+  T-->>N: ClientCommands (reassembled; malformed or > 64 KiB dropped)
+  Note over N: prepend Resume after a restart or a poll gap > 1 s;<br/>add Tick only if idle and a timer is due
+  N->>N: Sequencer stamps seq n..n+k, time = max(last, wall)
+  N->>J: append(SequencedCommand) for each
+  J->>A: exclusive-publication offer → recorded
+  N->>J: wait_durable(last position)
+  A-->>J: RecordingPos ≥ position (segment fsynced)
+  J-->>N: durable
+  N->>E: apply(seq, time, cmd) for the whole batch
+  E-->>N: Vec<Emitted> per command
+  N->>T: publish(EventBatch{seq, origin, events}) per command
+  T-->>C: chunks via split_batch (dropped if no subscriber)
+  Note over N,J: any port Err ⇒ NodeError, Halted latch, process exits 1 ⇒ Compose restart ⇒ replay
+```
+
+Startup and recovery (`Node::start`):
+
+```mermaid
+sequenceDiagram
+  participant N as Node::start
+  participant J as ArchiveJournal
   participant A as Archive
   participant E as Engine
-  participant G as Egress stream 1003
-  C->>S: Command(actor, nonce, ...)
-  S->>L: SequencedCommand(seq=n, time=t)
-  L->>A: recorded
-  S->>S: wait until recording position ≥ n's position
-  S->>E: apply(n, t, cmd)
-  E-->>S: events
-  S->>G: publish events (tagged with seq n)
-  G-->>C: events
+  J->>A: stop any recording of 1002 still active (a crashed node's)
+  J->>A: list recordings of 1002; replay each [start, stop) on 1004 in id order
+  A-->>J: SequencedCommands (fragments reassembled)
+  J-->>N: replay callback
+  N->>N: require seq == last + 1 (else SequenceError: refuse to start)
+  N->>E: apply, with egress suppressed
+  Note over N: empty journal ⇒ append + fsync Genesis as seq 1
+  N->>J: first append opens an exclusive publication,<br/>records only our session-id, checks the start position
+  Note over N: first poll sequences Resume (extends open dispute windows)
 ```
 
 **Write-ahead rule:** nothing is applied or published before its command is durably recorded. Durable means fsynced: the Archive runs with `aeron.archive.file.sync.level=2` (and the same for its catalog), so the recording position `wait_durable` reads advances only after the segment file is forced, and `FileJournal` calls `sync_data`. That puts an fsync on the write-ahead path; a batch (up to `MAX_BATCH` client commands) shares one durability wait, and the whole batch is applied before any of it is published. If the engine crashes:
@@ -124,17 +176,23 @@ sequenceDiagram
 
 ```mermaid
 flowchart LR
-  subgraph shm["shared IPC namespace (/dev/shm/aeron)"]
-    AE[aeron<br/>Java ArchivingMediaDriver]
-    EN[engine<br/>Rust rfq-node]
-    DE[demo<br/>Rust rfq-demo]
+  subgraph PROJ["docker compose project · every container runs as uid 10001"]
+    subgraph SHM["shared IPC namespace /dev/shm/aeron (ipc: shareable / service:aeron)"]
+      AE["aeron<br/>eclipse-temurin 21 JRE + aeron-all 1.53.3 (sha256-checked)<br/>ArchivingMediaDriver, fsync on · restart on failure (capped)"]
+      EN["engine<br/>rfq-node --features aeron · init: true<br/>restart on failure (capped)"]
+      DE["demo (profile: demo)<br/>rfq-demo: 6 scenarios"]
+    end
+    VOL[("named volume: archive<br/>/data/archive")]
   end
-  AE --- VOL[(archive volume)]
+  AE --- VOL
+  EN <-->|"aeron:ipc 1001–1004"| AE
+  DE <-->|"aeron:ipc 1001 / 1003"| AE
+  SCRIPT["scripts/demo.sh<br/>build → down -v → up → demo → SIGKILL engine → start → compare seq + hash"] -.-> PROJ
 ```
 
 - `aeron`: `eclipse-temurin:21-jre` and the `aeron-all` 1.53.3 jar, checked against its sha256; runs the media driver and the Archive with fsync on (`file.sync.level=2`); `ipc: shareable`, `shm_size: 512m`.
 - `engine`, `demo`: Rust images from `docker/rust.Dockerfile` (`--features aeron`, `--locked`); `ipc: "service:aeron"` so all share `/dev/shm/aeron`; `init: true`. Every container runs as the same non-root uid 10001, because the driver's files in `/dev/shm/aeron` are `0644` and owned by it. All channels are `aeron:ipc`. The `demo` service sits in compose profile `demo` and runs on demand (`docker compose run --rm demo [scenario]`).
-- `aeron` and `engine` have `restart: on-failure`: a halted node exits with status 1 and comes back to replay, and a driver that exits non-zero comes back with its Archive volume ([transport-aeron.md](../specs/transport-aeron.md#docker-compose)). A manual stop, such as the `SIGKILL` in `scripts/demo.sh`, is not restarted.
+- `aeron` and `engine` have `restart: "on-failure:3"`: a halted node exits with status 1 and comes back to replay, and a driver that exits non-zero comes back with its Archive volume ([transport-aeron.md](../specs/transport-aeron.md#docker-compose)). Retries are capped at 3: after that the container stays down, and `docker compose logs engine` shows why. A manual stop, such as the `SIGKILL` in `scripts/demo.sh`, is not restarted.
 - Archive data is on the named volume `archive`, so it survives the engine being killed and restarted. `./scripts/demo.sh` does exactly that: it runs the six scenarios, `SIGKILL`s the engine, restarts it, and checks that the replayed state hash equals the last hash the engine logged before the kill (`RECOVERY OK`).
 
 ## 6. Production path (not built)

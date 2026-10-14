@@ -38,7 +38,7 @@ You need Docker Desktop (Compose v2). This was verified on Docker Desktop for Ap
 
 **Warning:** after building the images, the script runs `docker compose --profile demo down -v --remove-orphans`, which deletes the containers and the Archive volume of its compose project (`rfq`). To keep another stack, run it under its own project name: `COMPOSE_PROJECT_NAME=rfq-demo ./scripts/demo.sh`.
 
-**Upgrading from an older checkout:** run `docker compose down -v` once first. An `archive` volume that an older, root-run stack created is root-owned, so the non-root Archive cannot open it (`Permission denied`, and its container restarts in a loop). `./scripts/demo.sh` already runs `down -v`, so it is unaffected.
+**Upgrading from an older checkout:** run `docker compose down -v` once first. An `archive` volume that an older, root-run stack created is root-owned, so the non-root Archive cannot open it (`Permission denied`: Docker retries the container 3 times, then leaves it down, and `docker compose logs aeron` shows why). `./scripts/demo.sh` already runs `down -v`, so it is unaffected.
 
 ```bash
 ./scripts/demo.sh
