@@ -59,13 +59,16 @@ Per account: `free`, `reserved`, `escrowed` (all `Amount`). The ledger is the **
 ## 4. Domain objects
 
 ```text
-Contract { id, description, oracle, trading_close, resolution_deadline, dispute_window, state }
-Request  { id, requester, legs: Vec<Leg>, response_deadline, accept_by?, hold, state }
-Leg      { contract, side: BuyYes|BuyNo, qty, limit_price, selected_quote? }
-Quote    { id, mm, request, leg_index, price, size, expires_at, hold, state }
-Position { id, contract, yes_holder, no_holder, qty, yes_lock, no_lock, settled }
-Dispute  { contract, disputer, bond_hold }
+Contract { id, description, oracle, trading_close, resolution_deadline, dispute_window, state,
+           dispute?, positions }
+Request  { id, requester, legs: Vec<Leg>, response_deadline, hold?, state }   // accept_by lives in state: Presented{accept_by}
+Leg      { contract, side: BuyYes|BuyNo, qty, limit_price, quotes: live quote ids, selected? }
+Quote    { id, mm, request, leg, price, size, expires_at, hold?, state }
+Position { id, contract, request, qty, yes_holder, yes_lock, no_holder, no_lock, settled }
+Dispute  { disputer, hold? }                                                   // held by its Contract; hold = the bond
 ```
+
+`hold?` is `Some` only while the hold is live: each owner `take()`s it when the hold is released, escrowed or forfeited (§3).
 
 Requester hold at submission = Σ legs `qty × limit_price × 100` (P4).
 
@@ -73,9 +76,9 @@ Requester hold at submission = Σ legs `qty × limit_price × 100` (P4).
 
 | Command | Validation (any failure ⇒ `CommandRejected`, no state change) | Effects |
 |---|---|---|
-| `Deposit{to, amount}` | actor is operator | ledger deposit |
-| `Withdraw{amount}` | `amount ≤ free` | ledger withdraw |
-| `ListContract{...}` | operator; unique id; `now < trading_close < resolution_deadline`; `dispute_window > 0`; `oracle ∉ {operator, arbiter, treasury}` (role separation) | contract `Trading`; timers for close + hard deadline |
+| `Deposit{to, amount}` | actor is operator; `amount > 0` | ledger deposit |
+| `Withdraw{amount}` | `0 < amount ≤ free` | ledger withdraw |
+| `ListContract{...}` | operator; unique id; `now < trading_close < resolution_deadline`; `dispute_window > 0` and `trading_close + dispute_window < resolution_deadline` (a proposal must fit before the hard deadline, else the contract could only finalize `Invalid`); `oracle ∉ {operator, arbiter, treasury}` (role separation) | contract `Trading`; timers for close + hard deadline |
 | `SubmitRequest{legs, response_deadline}` | `legs.len() == 1` (P6); `now + MIN_RESPONSE ≤ deadline ≤ now + MAX_RESPONSE`; for **every** leg: contract `Trading`, `deadline + ACCEPT_WINDOW < trading_close`, qty in range, `qty × limit × 100 ≥ MIN_REQUEST_NOTIONAL` (else `InvalidInput`); free ≥ hold | hold; request `Open`; timer at deadline |
 | `CancelRequest{request}` | actor = requester; state `Open` | release request + all quote holds; `Cancelled` |
 | `SubmitQuote{request, leg, price, size, expires_at}` | request `Open` and `now < deadline`; `mm ≠ requester`; `size ≥ leg.qty`; `expires_at > now`; MM free ≥ `qty × (10000−price) × 100` (net of any replaced quote). **No `price ≤ limit` check:** a rejection would be an oracle for the sealed limit; selection filters over-limit quotes and `QuoteLost` doesn't say why | `expires_at` clamped to `min(expires_at, deadline + ACCEPT_WINDOW)` (a quote is useless after that) and the clamped value used for the quote, its event and its timer; if MM already has an active quote on this leg → **replace** (release old hold, hold new) atomically; quote `Active` |
@@ -158,11 +161,13 @@ Details in [resolution.md](resolution.md).
 
 ## 7. Events
 
-Every event carries `seq` (of the command that caused it) and an `audience` (`Public` or `Account(id)`); gateways filter by audience so **quotes stay sealed** (P7).
+Every event carries an `audience` (`Public` or `Account(id)`), and each `EventBatch` carries the `seq` of the command that caused its events; gateways filter by audience so **quotes stay sealed** (P7).
 
 **Trust boundary.** Sealing relies on that filter: the egress stream, the Archive and the gateways are venue-operated, and participants only ever reach their own audience-filtered session. Production: encrypted or commit-reveal quotes.
 
-`Initialized`, `CommandRejected{reason}`, `Deposited`, `Withdrawn`, `ContractListed`, `ContractClosed`, `RequestOpened` (public: contract, side, qty, deadline; never the limit or the requester), `RequestCancelled`, `RequestExpired`, `RequestPresented` (requester only: picks, accept_by), `RequestRejected{cause}`, `RequestFilled{positions}`, `QuoteSubmitted`/`QuoteReplaced`/`QuoteCancelled`/`QuoteExpired`/`QuoteLost`/`QuoteSelected`/`QuoteReleased`/`QuoteFilled` (quote owner only), `OutcomeProposed` (re-emitted with the new `dispute_until` when `Resume` extends a window), `Disputed`, `Ruled`, `ContractFinalized{outcome}`, `PositionSettled{payouts}` (to both holders).
+`Initialized`, `CommandRejected{reason}`, `Deposited`, `Withdrawn`, `ContractListed`, `ContractClosed`, `RequestOpened` (public: contract, side, qty, deadline; never the limit or the requester), `RequestCancelled`, `RequestExpired`, `RequestPresented` (requester only: picks, accept_by), `RequestRejected{cause}`, `RequestFilled{positions}` (requester only), `QuoteSubmitted`/`QuoteReplaced`/`QuoteCancelled`/`QuoteExpired`/`QuoteLost`/`QuoteSelected`/`QuoteReleased`/`QuoteFilled` (quote owner only), `OutcomeProposed` (re-emitted with the new `dispute_until` when `Resume` extends a window), `Disputed`, `Ruled`, `ContractFinalized{outcome}`, `PositionSettled{payouts}` (to both holders).
+
+**Known gap.** When the hard deadline finalizes a `Disputed` contract it returns the disputer's bond and finalizes the proposal, but emits no event for the bond (`Ruled{bond_returned}` is only emitted by `Rule`). The balance change is visible in the ledger but not in the event stream. Documented spec gap; not changed in this build.
 
 On egress the node wraps each command's events in an `EventBatch{seq, origin: Option<(actor, nonce)>, events}`. `origin` lets a client match its command to the ids it created, since `RequestId`/`QuoteId` equal the `seq` of the command that created them.
 
@@ -197,3 +202,5 @@ The model is already `Vec<Leg>`; enabling N > 1 means removing one validation. T
 | `RESUME_GRACE` | 10 min (dispute time guaranteed after a restart) |
 | `MIN_REQUEST_NOTIONAL` | $1 per leg (`qty × limit`) |
 | operator, arbiter, treasury | account ids |
+
+The `rfq-node` binary starts a fresh journal from `rfq_testkit::scenarios::demo_config()`, not from these defaults: `ACCEPT_WINDOW` 2 s, `MIN_RESPONSE` 0.5 s, `MAX_RESPONSE` 60 s, `MAX_QTY` 10^6, `RESUME_GRACE` 2 s (bond and minimum notional unchanged), so the demo runs in seconds. A non-empty journal always replays with the config recorded in its own `Genesis`.

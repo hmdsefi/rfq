@@ -4,20 +4,24 @@
 
 | Stream | Id | Writer → Reader | Payload |
 |---|---|---|---|
-| Ingress | 1001 | clients → sequencer | `ClientCommand{actor, nonce, action}` |
-| Log | 1002 | sequencer → engine (and recorded by Archive) | `SequencedCommand` |
-| Egress | 1003 | engine → clients | `EventBatch{seq, origin, events}` |
-| Replay | 1004 | Archive → engine at startup | `SequencedCommand` |
+| Ingress | 1001 | clients → node | `ClientCommand{actor, nonce, action}` |
+| Log | 1002 | node → Archive (recorded, never read live) | `SequencedCommand` |
+| Egress | 1003 | node → clients | `EventBatch{seq, origin, events}` |
+| Replay | 1004 | Archive → node at startup | `SequencedCommand` |
 
 Stream ids start at 1001 because Aeron Archive's local control channel already uses `aeron:ipc` stream 10.
 
-Encoding: `serde` + `bincode` (fixed-int, little-endian, trailing bytes rejected), with a `u8` version prefix. Size policy: ingress messages longer than `MAX_INGRESS` (64 KiB) are dropped before decoding; journal records and egress batches are produced by the node and are not size-limited by the codec (the Aeron adapter splits an egress batch that exceeds the transport's max message size into several `EventBatch` chunks with the same `seq`). A message that fails to decode on ingress is dropped and counted; it never reaches the log. Ingress decodes to `ClientCommand`, which cannot express `Genesis`, `Tick` or `Resume`. Only the node itself creates those.
+The engine does not subscribe to the log stream. It runs in the same process as the sequencer and applies a command as soon as the Archive has recorded it (`wait_durable`); the only way back out of stream 1002 is replay on 1004.
+
+Encoding: `serde` + `bincode` (fixed-int, little-endian, trailing bytes rejected), with a `u8` version prefix. Size policy: ingress messages longer than `MAX_INGRESS` (64 KiB) are dropped before decoding; journal records and egress batches are produced by the node and are not size-limited by the codec (the Aeron adapter splits an egress batch that exceeds the transport's max message size into several `EventBatch` chunks with the same `seq`). A message that fails to decode on ingress is dropped and logged; it never reaches the log. Ingress decodes to `ClientCommand`, which cannot express `Genesis`, `Tick` or `Resume`. Only the node itself creates those.
 
 ## Sequencer
 
-- Polls ingress. For each command it sets `seq = last_seq + 1` and `time = max(last_time, wall_clock_ms)`, so time never goes backwards.
-- When there's no client traffic and the engine's earliest timer (`Engine::next_timer()`) is due, it emits a `Tick`. Idle periods add nothing to the log.
-- Publishes the `SequencedCommand` to stream 1002 through an exclusive publication. Back pressure, admin actions and `NOT_CONNECTED` (the Archive's recording subscription not attached yet) are retried for up to 10 s; after that, and on `CLOSED`, `MAX_POSITION_EXCEEDED` or any other offer error, it is fatal and the node exits. Restarting resumes cleanly.
+`rfq_app::Sequencer` is only the stamp: `seq = last_seq + 1` and `time = max(last_time, wall_clock_ms)`, so time never goes backwards. `Node::poll` drives it, and `ArchiveJournal::append` does the publishing.
+
+- Each loop iteration takes up to `MAX_BATCH` (256) ingress commands and stamps each one.
+- When there's no client traffic and the engine's earliest timer (`Engine::next_timer()`) is due, it stamps a `Tick`. Idle periods add nothing to the log.
+- It publishes the `SequencedCommand` to stream 1002 through an exclusive publication. Back pressure, admin actions and `NOT_CONNECTED` (the Archive's recording subscription not attached yet) are retried for up to 10 s; after that, and on `CLOSED`, `MAX_POSITION_EXCEEDED` or any other offer error, it is fatal and the node exits. Restarting resumes cleanly.
 
 ## Journal (the `Journal` trait)
 
@@ -36,44 +40,59 @@ pub trait Transport {
 ```
 
 - **`ArchiveJournal`:** each node start writes the log through a new *exclusive* publication on `aeron:ipc` stream 1002 and calls `start_recording(aeron:ipc?session-id=<that publication's session>, 1002, LOCAL)`, which creates a new recording of exactly that session. Together, all the recordings of stream 1002 in recording-id order make up the log. `wait_durable` reads the recording's position counter in shared memory until it reaches the publication position returned by `offer`. `replay` (allowed only before the first `append`) stops any recording a crashed node left active, then replays every recording for stream 1002 in order onto stream 1004. Details and reasons: [Implementation notes](#implementation-notes-task-10).
-- **`FileJournal` (fallback, and for local runs without Docker):** an append-only file of length-prefixed records with a CRC32 on each. `wait_durable` = `fsync`.
+- **`FileJournal` (fallback; `RFQ_JOURNAL=file:<path>`):** an append-only file of length-prefixed records with a CRC32 on each. `wait_durable` = `File::sync_data`. On open it truncates an incomplete or checksum-failing tail: that tail was never durable, so it was never applied (a bad checksum mid-file also truncates everything after it, as a database WAL does). A checksum-valid record that does not decode is `Corrupt` and is never truncated. The first I/O error poisons the handle. The node still needs a media driver for the Aeron transport.
 - **`MemJournal`:** used by tests.
 
 ## Startup
 
 1. Connect to the media driver and the archive.
-2. If no recording exists, append `Genesis` as seq 1.
+2. If the journal is empty, durably append `Genesis` as seq 1 (the `rfq-node` binary builds it from `demo_config()`, [engine.md §9](engine.md)). A non-empty journal keeps its own recorded `Genesis`.
 3. Replay everything through `Engine::apply` with egress **suppressed**. The replayed `seq`s must be exactly `1, 2, 3, …`: `Node::start` refuses a duplicate or a gap with `NodeError::Journal(SequenceError)`, whatever the journal (the engine would silently skip a duplicate `seq`, and the state would diverge from the one built live). Record `last_seq` and `last_time`; the sequencer resumes from them, so time never goes backwards across a restart.
 4. Log `state_hash`, then enter the live loop at `last_seq + 1`.
 5. If the journal was non-empty (a restart, not a fresh start), the first live-loop iteration sequences `Resume`, stamped with the wall clock, before any ingress command or `Tick`. The engine handles it before firing due timers, so downtime can't eat an open dispute window ([engine.md §6.3](engine.md)).
 
 ## Live loop (batching)
 
-Poll up to N ingress messages → sequence and append them all → `wait_durable(last)` → apply each one → publish one `EventBatch` per command. Batching amortises the durability wait without changing order.
+Poll up to `MAX_BATCH` ingress messages → sequence and append them all → `wait_durable(last)` → apply the whole batch → publish one `EventBatch` per command that has an `origin` or events (a `Tick` or `Resume` that emits nothing publishes nothing). Batching amortises the durability wait without changing order, and applying everything before publishing anything means a failed publish can never leave memory behind the journal.
 
 ## Docker Compose
 
+`docker-compose.yml` (project name `rfq`), with its comments trimmed:
+
 ```yaml
+name: rfq
 services:
-  aeron:   # Java ArchivingMediaDriver, pinned aeron-all version
+  aeron:                        # Java ArchivingMediaDriver (aeron-all 1.53.3): media driver + Archive
     build: docker/aeron
     ipc: shareable
     shm_size: 512m
     volumes: [archive:/data/archive]
-  engine:
+  engine:                       # rfq-node: sequencer + engine, journaling to the Archive
     build: { context: ., dockerfile: docker/rust.Dockerfile, args: { BIN: rfq-node } }
     ipc: "service:aeron"
+    init: true                  # an init as PID 1, so SIGTERM stops the node at once
+    environment:
+      RFQ_JOURNAL: archive
+      RFQ_HASH_EVERY_BATCH: "1" # logs `applied seq=<n> hash=<hex>` after every batch
     depends_on: [aeron]
-  demo:
+  demo:                         # rfq-demo: on demand, `docker compose run --rm demo [scenario]`
     build: { context: ., dockerfile: docker/rust.Dockerfile, args: { BIN: rfq-demo } }
     ipc: "service:aeron"
+    init: true
     depends_on: [engine]
-volumes: { archive: {} }
+    profiles: [demo]            # not started by `docker compose up`
+volumes:
+  archive: {}
 ```
+
+- All three containers share the driver's `/dev/shm/aeron` through `ipc: "service:aeron"`. Every stream is `aeron:ipc`, so there is no network between them.
+- `docker/rust.Dockerfile` builds one workspace binary (`BIN`) with `--features aeron` and `--locked` on `rust:1.99.0-bookworm`, and runs it on `debian:bookworm-slim`.
+- `RFQ_HASH_EVERY_BATCH` is what lets `scripts/demo.sh` prove recovery: it compares the last `applied seq=<n> hash=<hex>` logged before `SIGKILL` with the `replayed seq=<n> hash=<hex>` the restarted engine logs after replaying the Archive. They must be equal (`RECOVERY OK`).
+- The Archive data lives on the `archive` volume, so it survives the engine being killed and restarted. `docker compose --profile demo down -v` deletes it.
 
 ## Implementation notes (Task 10)
 
-How `crates/rfq-infra/src/aeron/` departs from, or adds to, the spike's findings below. Each point was verified in Docker (`crates/rfq-infra/tests/aeron_live.rs` and a node smoke test).
+How `crates/rfq-infra/src/aeron/` departs from, or adds to, the spike's findings below. Each point was verified in Docker (`crates/rfq-infra/tests/aeron_live.rs`, and end to end by the `SIGKILL` and replay check in `scripts/demo.sh`).
 
 - **One writer per driver.** The journal assumes it is the only node writing stream 1002 on its media driver and Archive. At startup it stops every recording of the stream that is still active, which would cut off a second live node.
 - **Exclusive, session-scoped log recording.** A crashed node's publication stays in the driver until its client times out (about 10 s). It may hold commands it offered but the Archive never recorded: never durable, so never applied or published. With the spike's shared (non-exclusive) publication the next node inherits that session, and its new recording joins at the slowest subscriber's position, so it can capture those bytes as its own. On a later restart they replay as duplicate `seq`s. So the log is written through `async_add_exclusive_publication` (a session of its own) and recorded with `aeron:ipc?session-id=<ours>`; a dead node's later writes find no subscriber and are never recorded. The new recording is identified as the id that was not listed before *and* has our session id. Before the first offer, its start position must equal the publication's position (otherwise `RecordingMisaligned`, fatal).
@@ -81,13 +100,7 @@ How `crates/rfq-infra/src/aeron/` departs from, or adds to, the spike's findings
 - **`wait_durable` reads the recording position counter** (`RecordingPos::find_counter_id_by_recording_id` + `counters_reader().get_counter_value`), the same value `get_recording_position` reports, guarded by `RecordingPos::is_active` so a freed or reused counter is never trusted. Why not the control call: the Archive pings every control session once a second and closes it when a ping has not fitted in the response stream for `connectTimeoutMs`. The node reads that stream only during a request, so after about nine idle minutes the session was gone and the next `get_recording_position` failed (measured). The control session is therefore used only at startup (replay, starting the recording) and closed right after. Closing it does not stop the recording, and leaving it open would also hold an unpolled, tethered response subscription that can back-pressure the Archive's other clients.
 - **Fragment reassembly.** The IPC MTU is 1408 bytes, so any message over about 1.3 KB arrives in several fragments (`BEGIN` flag `0x80`, `END` `0x40`). Ingress, replay and egress consumers join them per session with `rfq_infra::fragment::Reassembler` (fed by `rfq_infra::aeron::frame_of(&header)`). Ingress caps a message at `MAX_INGRESS` while it is still in fragments. The replay loop polls the replay image until `image.position() >= stop`, which also counts padding frames.
 - **Egress.** A batch over the publication's max message length (8 MiB with the default IPC term) is split into chunks with the same `seq` (`transport::split_batch`). With no subscriber connected a batch is dropped (events are derivable from the log). Back pressure for more than 5 s is fatal.
-- **Ingress after quick repeated crashes.** A new node's ingress subscription joins at the slowest live subscriber's position. That subscriber may be a dead node that the driver has not yet timed out, so commands an intermediate node already sequenced can be delivered again. Strict nonces reject them as `Duplicate` (deterministic, and in the log like any other command).
-
-## Open items (resolved by the Task 0 spike)
-
-- Which Aeron version `rusteron` bundles, so the `aeron-all` jar can be pinned to match.
-- Whether `rusteron-archive` exposes a recording-position counter for `wait_durable`. If it doesn't, poll `get_recording_position` over the control session.
-- Whether IPC across containers through `ipc: service:` works on Docker Desktop for Apple Silicon.
+- **Ingress after quick repeated crashes.** A new node's ingress subscription joins at the slowest live subscriber's position. That subscriber may be a dead node that the driver has not yet timed out, so commands an intermediate node already polled can be delivered again. What happens to a redelivered command depends on whether it became durable before that node died. A durable command is in the log and its nonce is consumed, so the copy is rejected as `Duplicate` (deterministic, and in the log like any other command). A command that was polled but never made durable is not in the log and its nonce is still free, so the copy is applied, late but exactly once. A client that reuses a nonce (for example to retry after silence) must therefore not assume its last send is the one that took effect: it reconciles through `EventBatch.origin`, which carries the `(actor, nonce)` of every batch. The first batch for an origin is that nonce's outcome, and a later `Duplicate` batch for the same origin only means it was already sequenced.
 
 ## Verified API (Task 0)
 
@@ -150,9 +163,7 @@ These calls live in `crates/rfq-infra/src/aeron/` behind the cargo feature `aero
      - On `ActiveSubscription`, call `archive.stop_recording_channel_and_stream(&ch, 1002)?` and retry. This succeeded immediately. The new `async_add_publication` shares the crashed publication's session (same session id, position continues, for example 192 to 384). The old recording ends at 192 and the new one starts at 192, so the log stays contiguous. Find the new recording as "the id that was not in the list before `start_recording`", not by session id, because both recordings share it. Recommended, because a 10 s restart stall is bad for a demo. (Task 10: that shared session is what lets a new recording capture a dead node's unrecorded tail, so the journal uses an exclusive publication and a session-scoped recording instead. See [Implementation notes](#implementation-notes-task-10).)
   4. When a publication closes cleanly, its recording gets a stop position within under a second.
 - **Docker.** The compose file and Java image from the spike worked unchanged apart from `AERON_VERSION`. Java flags used: the ones in `docker/aeron/Dockerfile` (IPC dir `/dev/shm/aeron`, archive dir `/data/archive`, UDP control `localhost:8010`, recording events disabled). Docker Desktop `shm_size: 512m` was enough. `depends_on` only waits for container start, so keep the client retry loops.
-- **Corrections this spike makes elsewhere.**
-  - The Sequencer section says the log is published to "stream 20". It must be 1002 (stream 20 is Archive's control response stream).
-  - The Task 10 plan code must change in these ways: drop `"precompile"` from the `rusteron-archive` features; use `aeron:ipc` control channels instead of the UDP endpoints; use the calls above in place of `Handlers::no_*_handler()`, `poll_once`, `offer(bytes, handler)` returning `i64`, `AeronArchiveReplayParams::new(0, ...)`, and the `list_recordings_for_uri` closure form; replay each recording from its `start_position()`; skip a recording only when `stop <= start`, and use `get_recording_position` when it is still active (`-1`).
+- **Corrections this spike made elsewhere (applied).** The log stream is 1002 (stream 20 is the Archive's control response stream). Task 10 follows the calls above, not the plan's first guesses: no `precompile` feature, `aeron:ipc` control channels, the `_fn` closure variants, replay of each recording from its own `start_position()`. Replay later changed again: it stops active recordings first instead of reading an active one (see [Implementation notes](#implementation-notes-task-10)).
 
 ### Resolved open items
 

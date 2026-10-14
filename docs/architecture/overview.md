@@ -18,15 +18,15 @@ flowchart LR
 |---|---|---|---|
 | Domain | `rfq-domain` | Value objects (`Amount`, `Price`, ids), `Ledger`, entities (`Request`, `Quote`, `Contract`, `Position`), `Command`/`Event`, `Engine` (the deterministic state machine and its invariants) | Any I/O, async, clock, transport or serialization *format*. `serde` derives only; `bincode` is used solely for `state_hash` |
 | Application | `rfq-app` | **Ports** (`Journal`, `Transport` traits), **protocol DTOs** (`ClientCommand`, `EventBatch`), `Sequencer`, `Node` service (write-ahead loop), `NodeError` (`thiserror`) | Concrete adapters, bincode, Aeron |
-| Infrastructure | `rfq-infra` | **Adapters**: `codec` (versioned bincode), `FileJournal`, `MemJournal`, `MemTransport`, and (feature `aeron`) `AeronTransport` and `ArchiveJournal` | Binaries |
+| Infrastructure | `rfq-infra` | **Adapters**: `codec` (versioned bincode), `FileJournal`, `MemJournal`, `MemTransport`, and (feature `aeron`) `AeronTransport` and `ArchiveJournal`. Also the Aeron-path pieces that need no Aeron and so are always built and tested: fragment `Reassembler`, egress `split_batch` | Binaries |
 | Interface / composition | `rfq-node`, `rfq-demo` | `main`: config from env, wire adapters into `Node`, run. `anyhow` lives only here | — |
-| Test support | `rfq-testkit` | `Harness`, well-known accounts, scripted scenarios (dev-dependency of the others) | — |
+| Test support | `rfq-testkit` | `Harness`, well-known accounts, scripted scenarios and `demo_config()`. A dev-dependency of the domain and infra tests; `rfq-node` and `rfq-demo` depend on it normally, for the demo genesis and the scenarios | — |
 
 Rules:
 - **Ports carry typed values, not bytes.** `Transport` yields `ClientCommand` and accepts `EventBatch`; decoding and malformed-message handling belong to the adapter. Because the application can't even express a client-sent `Tick` or `Genesis`, injecting one is impossible by construction.
 - **Errors:** library crates use `thiserror` enums. Ports return `Result<_, BoxError>`, where `BoxError = Box<dyn Error + Send + Sync>`, so the application isn't generic over adapter error types. Binaries use `anyhow`.
 - **The risky dependency is isolated:** `rusteron` is behind `rfq-infra`'s `aeron` feature, so `cargo test` for domain/app/infra never builds Aeron.
-- **Workspace hygiene:** `[workspace.package]` (edition 2024, version, license), `[workspace.dependencies]`, `rust-toolchain.toml`, `rustfmt.toml`, `clippy.toml`, `deny.toml`, `.github/workflows/ci.yml`.
+- **Workspace hygiene:** `[workspace.package]` (edition 2024, version, `rust-version`, license), `[workspace.dependencies]`, `rust-toolchain.toml`, `rustfmt.toml`, `clippy.toml`, `deny.toml`, `.github/workflows/ci.yml`, `LICENSE` (MIT). Every crate is `publish = false`.
 
 ## 1. Shape
 
@@ -40,24 +40,31 @@ flowchart TB
     O[Oracle / arbiter adapter]
     OP[Operator / mock chain]
   end
+  subgraph NODE[rfq-node process]
+    SEQ[Sequencer<br/>stamps seq + time]
+    ENG[RFQ engine<br/>apply seq,time,cmd → events]
+  end
   R & M & O & OP -->|ClientCommand| ING[[Aeron ingress stream 1001]]
-  ING --> SEQ[Sequencer<br/>stamps seq + time]
+  ING --> SEQ
   SEQ -->|SequencedCommand| LOG[[Aeron log stream 1002]]
   LOG -->|recorded| ARC[(Aeron Archive)]
-  LOG --> ENG[RFQ engine<br/>apply seq,time,cmd → events]
+  ARC -. "recorded: the engine may apply" .-> ENG
   ENG -->|EventBatch| EGR[[Aeron egress stream 1003]]
   EGR --> R & M & O & OP
-  ARC -. replay on restart .-> ENG
+  ARC -. "replay on restart: stream 1004" .-> ENG
 ```
 
-| Component | Crate | Responsibility | Depends on |
+| Component | Where | Responsibility | Depends on |
 |---|---|---|---|
-| **Engine** | `rfq-core` | Pure state machine: ledger, requests, quotes, contracts, timers. No I/O, no clock. | nothing |
-| **Codec** | `rfq-core::codec` | Versioned binary encoding of commands/events (`serde` + `bincode`). | engine types |
-| **Sequencer** | `rfq-node` | Reads ingress, assigns `seq` (monotonic) and `time` (monotonic, from wall clock), publishes to log stream, emits `Tick` when idle. | Aeron client |
-| **Journal** | `rfq-node` | Trait over the durable log. `ArchiveJournal` = Aeron Archive recording of stream 20. | Aeron Archive client |
-| **Node runtime** | `rfq-node` | Startup replay → live loop: sequence → wait for record → apply → publish events. | all above |
-| **Demo client** | `rfq-demo` | Runs scripted scenarios over Aeron, prints events, asserts outcomes. | codec, Aeron client |
+| **Engine** | `rfq-domain::Engine` | Pure state machine: ledger, requests, quotes, contracts, timers. No I/O, no clock. | nothing |
+| **Sequencer** | `rfq-app::Sequencer` | Stamps each command with a consecutive `seq` and a monotonic `time` (wall clock, clamped, resumed from the journal). Pure, no I/O. | engine types |
+| **Node runtime** | `rfq-app::Node` | Startup replay, then the live loop: poll → sequence → append → wait durable → apply → publish. Sequences `Resume` after a restart and `Tick` when idle with a due timer. Latches `NodeError::Halted` on any port failure. | the ports |
+| **Ports** | `rfq-app::{Journal, Transport}` | Traits over the durable log and over client ingress / event egress, carrying typed values. | engine types |
+| **Codec** | `rfq-infra::codec` | Versioned binary encoding of commands, events and journal records (`serde` + `bincode`). Size limit only at untrusted ingress. | engine and protocol types |
+| **Journal adapters** | `rfq-infra::journal`, `rfq-infra::aeron` | `ArchiveJournal` = Aeron Archive recordings of stream 1002; `FileJournal`; `MemJournal` | Aeron Archive client (`aeron` feature) |
+| **Transport adapters** | `rfq-infra::transport`, `rfq-infra::aeron` | `AeronTransport` = ingress 1001, egress 1003; `MemTransport` | Aeron client (`aeron` feature) |
+| **Composition root** | `rfq-node` | Reads `AERON_DIR`, `RFQ_JOURNAL`, `RFQ_HASH_EVERY_BATCH`; wires an Aeron transport and a journal into `Node`; runs the loop. | all of the above |
+| **Demo client** | `rfq-demo` | Runs the scripted scenarios over Aeron as an ordinary client and checks the events it gets back. | codec, Aeron client, testkit |
 
 ## 2. The engine boundary (the one interface that matters)
 
@@ -80,7 +87,7 @@ Everything outside this line (Aeron, Docker, Archive, Cluster later) is plumbing
 ## 3. Determinism rules
 
 1. Engine never reads a clock; `time` comes from the `SequencedCommand`.
-2. Before applying any command, the engine fires all timers with `deadline <= time` (in `(deadline, key)` order).
+2. Before applying any command, the engine fires all timers with `deadline <= time` (in `(deadline, key)` order). The one exception is `Resume`, which acts first so that downtime can't eat a dispute window ([engine.md §6.3](../specs/engine.md)).
 3. No randomness. IDs are derived from `seq` (`RequestId(seq)`, `QuoteId(seq)`).
 4. `BTreeMap`/`BTreeSet` for all iterated state.
 5. Genesis config (roles, limits) is the first log entry, so replay uses identical config.
@@ -91,10 +98,10 @@ Everything outside this line (Aeron, Docker, Archive, Cluster later) is plumbing
 sequenceDiagram
   participant C as Client
   participant S as Sequencer
-  participant L as Log stream 20
+  participant L as Log stream 1002
   participant A as Archive
   participant E as Engine
-  participant G as Egress 30
+  participant G as Egress stream 1003
   C->>S: Command(actor, nonce, ...)
   S->>L: SequencedCommand(seq=n, time=t)
   L->>A: recorded
@@ -105,13 +112,13 @@ sequenceDiagram
   G-->>C: events
 ```
 
-**Write-ahead rule:** no event is published before its command is durably recorded. If the engine crashes:
+**Write-ahead rule:** nothing is applied or published before its command is durably recorded. A batch (up to `MAX_BATCH` client commands) shares one durability wait; the whole batch is applied before any of it is published. If the engine crashes:
 
 | Crash point | Effect | Recovery |
 |---|---|---|
 | Before log publish | Command never happened. | Client retries with same nonce. |
 | After record, before apply | Command is in the log. | Replay applies it. |
-| After apply, before egress | State not persisted anyway (memory). | Replay re-derives state; events re-published from replay position on reconnect; consumers dedupe by `seq`. |
+| After apply, before egress | Memory is lost; the journal is not. | Replay re-derives the state with egress **suppressed**, so a batch that was not published is not re-published. Its events are derivable from the journal, and consumers reconcile from state or the log (`EventBatch.origin` matches a client's own command). |
 
 ## 5. Deployment (Docker Compose)
 
@@ -125,9 +132,9 @@ flowchart LR
   AE --- VOL[(archive volume)]
 ```
 
-- `aeron`: `eclipse-temurin` JRE + pinned `aeron-all` jar; runs media driver + archive; `ipc: shareable`.
-- `engine`, `demo`: Rust images; `ipc: "service:aeron"` so all share `/dev/shm/aeron`. All channels are `aeron:ipc`.
-- Archive data on a named volume → survives `docker compose restart engine` (used by the crash-recovery demo).
+- `aeron`: `eclipse-temurin:21-jre` and the pinned `aeron-all` 1.53.3 jar; runs the media driver and the Archive; `ipc: shareable`, `shm_size: 512m`.
+- `engine`, `demo`: Rust images from `docker/rust.Dockerfile` (`--features aeron`, `--locked`); `ipc: "service:aeron"` so all share `/dev/shm/aeron`; `init: true`. All channels are `aeron:ipc`. The `demo` service sits in compose profile `demo` and runs on demand (`docker compose run --rm demo [scenario]`).
+- Archive data is on the named volume `archive`, so it survives the engine being killed and restarted. `./scripts/demo.sh` does exactly that: it runs the six scenarios, `SIGKILL`s the engine, restarts it, and checks that the replayed state hash equals the last hash the engine logged before the kill (`RECOVERY OK`).
 
 ## 6. Production path (not built)
 
@@ -188,7 +195,9 @@ Each worker reads egress events and writes commands back to ingress. It's just a
 
 ## 8. Scaling
 
-- **Measured:** `Engine::apply` replays a 100k-command log of full RFQ rounds (request, two quotes, tick, accept; 20,000 rounds, all filled) at **~3.7 million commands/s** on an Apple M4 Max Mac (single thread, release build, `overflow-checks` on), about 270 ns per command. `state_hash` over that final state (20k requests, 40k quotes) takes **~11.9 ms**: it hashes the whole state, so it is for snapshots and replay checks, not for every command. Run `cargo bench -p rfq-domain` to reproduce. One engine therefore handles far more than RFQ load (commands are O(log n), no I/O).
+- **Measured (engine only):** `cargo bench -p rfq-domain` replays a 100,005-command log through `Engine::apply` at **~3.7 million commands/s**, about 270 ns per command. Machine: Apple M4 Max, macOS 27.0.1, rustc 1.99.0, bench profile (release with `overflow-checks` on), one thread. `state_hash` over the final state (20,000 requests, 40,000 quotes) takes **~11.9 ms**: it hashes the whole state, so it is for snapshots and replay checks, not for every command.
+- **What that number is not.** The workload is 20,000 sequential full RFQ rounds (request, two quotes, tick, accept; all filled) on 3 funded accounts and 1 contract, one request in flight at a time. It is the engine alone: no codec, no fsync or Archive write, no Aeron. Both runs were taken while other builds kept the machine at load average 8 to 12, so read the figure as a rough order of magnitude (the two runs agreed within 1%). End-to-end throughput and latency over Aeron and the Archive were not measured; the durability wait, not the engine, is where that limit is expected to be.
+- **Scaling claim.** Engine state is in `BTreeMap`/`BTreeSet`s (accounts, requests, quotes, positions, and the timer set), so a lookup or insert touches O(log n) entries. The benchmark does not test how that holds for much larger state than the one log above.
 - Built in now: a timer index (`BTreeSet<(Timestamp, TimerKey)>`), ticks only when a timer is due, and events emitted once (gateways fan them out).
 - Designed but not built: pruning terminal objects from memory, and snapshots.
 - Beyond one engine: **shard by contract group**. Each shard holds its own sub-balance per account; cross-shard transfers are two-step with an `in_transit` bucket. Multi-leg requests must stay within one shard — cross-shard atomicity would need 2PC, which is exactly where capital leaks.

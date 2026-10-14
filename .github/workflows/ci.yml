@@ -23,10 +23,12 @@ jobs:
           toolchain: 1.99.0
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+      # `--locked`: Cargo.lock is the audited dependency set, so CI fails instead of silently
+      # re-resolving it. `cargo fmt` has no `--locked` flag.
       - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
-      - run: cargo bench -p rfq-domain --no-run
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - run: cargo test --locked --workspace
+      - run: cargo bench --locked -p rfq-domain --no-run
 
   deny:
     runs-on: ubuntu-latest
@@ -35,10 +37,12 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
 
   # The only CI coverage of the `aeron` feature: the Dockerfile installs the build tools and builds
-  # rfq-node with `--features aeron` (cold build takes several minutes).
+  # each binary with `--features aeron --locked` (a cold build takes several minutes). Both binaries
+  # are built, so rfq-demo's Aeron code is compiled too.
   docker-aeron:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - run: docker build -f docker/rust.Dockerfile --build-arg BIN=rfq-node .
+      - run: docker build -f docker/rust.Dockerfile --build-arg BIN=rfq-demo .

@@ -172,3 +172,10 @@ Ruled 2026-10-14 (Gate A). FIX = spec and task code/tests changed; DOC = spec wo
 - #23 — ACCEPT — Production: settlement in bounded batches or per-position `Claim`.
 - #24 — ACCEPT — Production: operator `HaltContract`; today mid-life ambiguity is resolved `Invalid` at resolution.
 - #25 — DOC — Egress, Archive and gateways are venue-operated and participants see only audience-filtered sessions; production: encrypted or commit-reveal quotes.
+
+## Corrections after implementation
+
+The decisions above were ruled before the code existed. Two points in this review are out of date or incomplete against the final code:
+
+- **Crashing node, "F3, F4 and F5 are sound … consumers deduplicating by `seq`".** Replay suppresses egress, so a batch whose publish failed is not re-published after a restart. Events are derivable from the journal, and consumers reconcile from state or the log. See [failure-modes.md](../specs/failure-modes.md) F5.
+- **#22, `ListContract` validation (incomplete).** Besides the oracle role check and a non-zero window, `ListContract` also requires `trading_close + dispute_window < resolution_deadline`, so that a proposal can always be made in time ([engine.md §5](../specs/engine.md)).

@@ -1,6 +1,6 @@
 # RFC 0001 — RFQ Matching & Settlement Engine
 
-- **Status:** Accepted; Gate A spec review applied 2026-10-14 ([decisions](../reviews/spec-review.md#decisions))
+- **Status:** Accepted and implemented; Gate A spec review applied 2026-10-14 ([decisions](../reviews/spec-review.md#decisions))
 - **Date:** 2026-10-13
 - **Stack:** Rust, Aeron + Aeron Archive (via `rusteron`), Docker Compose
 
@@ -61,6 +61,6 @@ UI, auth/KYC, real chain or money movement, pricing/risk logic, fees, Aeron Clus
 
 | Risk | Mitigation |
 |---|---|
-| `rusteron` + Java Archive interop on Apple Silicon/Docker | Task 0 spike. Fallback: file journal behind the same `Journal` trait. |
-| Aeron version mismatch (C client vs Java jar) | Pin jar version to the Aeron version bundled by `rusteron`. |
+| `rusteron` + Java Archive interop on Apple Silicon/Docker | Task 0 spike. Fallback: file journal behind the same `Journal` trait. **Outcome:** the spike passed ([transport-aeron.md](../specs/transport-aeron.md#verified-api-task-0)); `FileJournal` is kept as the fallback behind the same trait. |
+| Aeron version mismatch (C client vs Java jar) | Pin jar version to the Aeron version bundled by `rusteron`. **Outcome:** `rusteron-archive =0.2.11` bundles Aeron C 1.53.3, and `docker/aeron/Dockerfile` pins `aeron-all` 1.53.3. |
 | Time budget (~6 h) | Pure engine + tests first; Aeron adapter second; docs last. |

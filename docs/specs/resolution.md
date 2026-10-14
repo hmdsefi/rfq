@@ -15,7 +15,7 @@ Settled funds go to `free` and are immediately withdrawable.
 ## Lifecycle (mechanics)
 
 1. **Trading → Closed** at `trading_close` (clock). No new requests can outlive this (submit-time check: `deadline + ACCEPT_WINDOW < trading_close`).
-2. **Closed → Proposed:** the contract's oracle sends `ProposeOutcome{Yes|No|Invalid}`. It is rejected (`InvalidState`) unless `now + dispute_window < resolution_deadline`, so the window always ends before the hard stop. A dispute timer is armed at `dispute_until = now + dispute_window`.
+2. **Closed → Proposed:** the contract's oracle sends `ProposeOutcome{Yes|No|Invalid}`. It is rejected (`InvalidState`) unless `now + dispute_window < resolution_deadline`, so the window always ends before the hard stop. `ListContract` enforces the same room at listing (`trading_close + dispute_window < resolution_deadline`), so a proposal made at `trading_close` always fits. A dispute timer is armed at `dispute_until = now + dispute_window`.
 3. **Proposed → Final(proposed)** when the dispute timer fires with no dispute. The timer is deadline-matched: it finalizes only if it fires at or after the current `dispute_until`.
 4. **Proposed → Disputed:** anyone sends `Dispute` before `dispute_until`, holding `DISPUTE_BOND`. One dispute per contract; it freezes the proposal.
 5. **Disputed → Final(ruling):** the arbiter sends `Rule{outcome}`.
@@ -23,7 +23,7 @@ Settled funds go to `free` and are immediately withdrawable.
    - ruling = proposal ⇒ bond forfeited to the treasury account (conservation holds: it moves account-to-account).
 6. **Hard stop** at `resolution_deadline`. A timeout never turns a proposal into `Invalid`:
    - `Closed` (the oracle never proposed) ⇒ `Final(Invalid)`.
-   - `Disputed` (the arbiter never ruled) ⇒ `Final(proposed)`, bond returned: the arbiter failed, not the disputer.
+   - `Disputed` (the arbiter never ruled) ⇒ `Final(proposed)`, bond returned: the arbiter failed, not the disputer. No event announces the returned bond (spec gap, [engine.md §7](engine.md)).
    - `Proposed` can't reach it: step 2 and the `Resume` cap keep `dispute_until < resolution_deadline`.
 
 ## Disputed

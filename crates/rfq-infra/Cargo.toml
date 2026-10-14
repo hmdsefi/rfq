@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+publish = false
 
 [features]
 # The Aeron transport and Archive journal. Off by default: building rusteron needs cmake >= 3.30,
