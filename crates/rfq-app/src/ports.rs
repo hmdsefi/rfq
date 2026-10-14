@@ -32,8 +32,10 @@ pub trait Journal {
 /// Client ingress and event egress.
 pub trait Transport {
     /// Hands up to `max` client commands to `sink`, in arrival order, without blocking. Bytes that
-    /// do not decode to a [`ClientCommand`] are dropped by the adapter and never reach `sink`.
-    fn poll(&mut self, max: usize, sink: &mut dyn FnMut(ClientCommand));
+    /// do not decode to a [`ClientCommand`] are dropped by the adapter and never reach `sink`; a
+    /// bad message is not an error. `Err` means the transport itself failed (for example its
+    /// ingress subscription closed), which the node treats as fatal.
+    fn poll(&mut self, max: usize, sink: &mut dyn FnMut(ClientCommand)) -> Result<(), BoxError>;
 
     /// Publishes one batch. The node calls this in `seq` order, and only after the batch's command
     /// is durable in the journal (write-ahead rule).

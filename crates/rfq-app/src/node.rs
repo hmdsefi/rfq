@@ -18,6 +18,9 @@ pub struct Node<J, T> {
     sequencer: Sequencer,
     /// Set when `start` replayed a non-empty journal: the first `poll` sequences `Resume`.
     resume_pending: bool,
+    /// Latched by the first failed `poll`. A failure can leave the sequencer ahead of the journal
+    /// or the journal ahead of the engine, so continuing could diverge from replay.
+    halted: bool,
 }
 
 impl<J: Journal, T: Transport> Node<J, T> {
@@ -49,6 +52,7 @@ impl<J: Journal, T: Transport> Node<J, T> {
             transport,
             sequencer,
             resume_pending,
+            halted: false,
         })
     }
 
@@ -63,17 +67,29 @@ impl<J: Journal, T: Transport> Node<J, T> {
     /// 4. Appends the batch, waits once for it to be durable, applies it, then publishes one
     ///    `EventBatch` per command that has an origin or events.
     ///
-    /// Any `Err` is fatal for this node: drop it and [`start`](Node::start) again from the journal.
+    /// Any `Err` is fatal for this node: every later call returns [`NodeError::Halted`] without
+    /// touching a port. Drop the node and [`start`](Node::start) again from the journal.
     pub fn poll(&mut self, wall_ms: Timestamp) -> Result<usize, NodeError> {
+        if self.halted {
+            return Err(NodeError::Halted);
+        }
+        let result = self.step(wall_ms);
+        self.halted = result.is_err();
+        result
+    }
+
+    fn step(&mut self, wall_ms: Timestamp) -> Result<usize, NodeError> {
         let mut batch: Vec<SequencedCommand> = Vec::new();
         if std::mem::take(&mut self.resume_pending) {
             // Stamped with the live clock, so the engine's `resume_grace` counts from the restart.
             batch.push(self.sequencer.stamp(wall_ms, Command::Resume));
         }
         let sequencer = &mut self.sequencer;
-        self.transport.poll(MAX_BATCH, &mut |c: ClientCommand| {
-            batch.push(sequencer.stamp(wall_ms, c.into_command()));
-        });
+        self.transport
+            .poll(MAX_BATCH, &mut |c: ClientCommand| {
+                batch.push(sequencer.stamp(wall_ms, c.into_command()));
+            })
+            .map_err(NodeError::Transport)?;
         if batch.is_empty() && self.engine.next_timer().is_some_and(|t| t <= wall_ms) {
             batch.push(self.sequencer.stamp(wall_ms, Command::Tick));
         }

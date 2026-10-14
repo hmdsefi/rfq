@@ -12,9 +12,10 @@ pub struct MemTransport {
 }
 
 impl Transport for MemTransport {
-    fn poll(&mut self, max: usize, sink: &mut dyn FnMut(ClientCommand)) {
+    fn poll(&mut self, max: usize, sink: &mut dyn FnMut(ClientCommand)) -> Result<(), BoxError> {
         let n = max.min(self.ingress.len());
         self.ingress.drain(..n).for_each(sink);
+        Ok(())
     }
 
     fn publish(&mut self, batch: &EventBatch) -> Result<(), BoxError> {

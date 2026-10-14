@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use rfq_app::{BoxError, ClientCommand, EventBatch, Journal, Node, NodeError, Transport};
 use rfq_domain::*;
-use rfq_infra::journal::MemJournal;
+use rfq_infra::journal::{FileJournal, MemJournal};
 use rfq_infra::transport::MemTransport;
 use rfq_testkit::{accounts::*, dollars, genesis};
 
@@ -107,14 +107,74 @@ fn ticks_only_when_a_timer_is_due() {
     assert_eq!(node.poll(10_000).unwrap(), 1, "tick at trading_close");
 }
 
+#[test]
+fn clock_never_goes_back_across_a_restart() {
+    let mut t = MemTransport::default();
+    t.ingress.push_back(deposit(1));
+    let mut node = Node::start(MemJournal::default(), t, genesis(Config::default())).unwrap();
+    node.poll(5_000).unwrap();
+    let (journal, mut t) = node.into_parts();
+    t.ingress.push_back(deposit(2));
+    let mut node = Node::start(journal, t, genesis(Config::default())).unwrap();
+    assert_eq!(node.poll(1_000).unwrap(), 2, "Resume, then the deposit");
+    let (journal, _) = node.into_parts();
+    let times: Vec<_> = journal.entries()[2..].iter().map(|sc| sc.time).collect();
+    assert_eq!(
+        times,
+        vec![5_000, 5_000],
+        "wall clock behind the journal: time is clamped"
+    );
+}
+
+#[test]
+fn restart_from_a_file_journal_reaches_the_same_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("log");
+    let mut t = MemTransport::default();
+    t.ingress.extend([deposit(1), deposit(2)]);
+    let mut node = Node::start(FileJournal::open(&path).unwrap(), t, genesis(Config::default())).unwrap();
+    node.poll(5_000).unwrap();
+    let hash = node.state_hash();
+    drop(node);
+
+    let restarted = Node::start(
+        FileJournal::open(&path).unwrap(),
+        MemTransport::default(),
+        genesis(Config::default()),
+    )
+    .unwrap();
+    assert_eq!(restarted.state_hash(), hash);
+    assert_eq!(restarted.engine().last_seq(), 3);
+    drop(restarted);
+
+    let mut recorded = Vec::new();
+    FileJournal::open(&path)
+        .unwrap()
+        .replay(&mut |sc| recorded.push((sc.seq, matches!(sc.cmd, Command::Genesis(_)))))
+        .unwrap();
+    assert_eq!(
+        recorded,
+        vec![(1, true), (2, false), (3, false)],
+        "genesis not rewritten"
+    );
+}
+
 // ---- Write-ahead rule (added beyond the brief): spies record the order of port calls. ----
 
 type CallLog = Rc<RefCell<Vec<String>>>;
 
+/// Which port call fails.
+#[derive(Clone, Copy, Default)]
+struct Fail {
+    durable: bool,
+    poll: bool,
+    publish: bool,
+}
+
 struct SpyJournal {
     inner: MemJournal,
     log: CallLog,
-    fail_durable: bool,
+    fail: Fail,
 }
 
 impl Journal for SpyJournal {
@@ -124,7 +184,7 @@ impl Journal for SpyJournal {
     }
     fn wait_durable(&mut self, pos: u64) -> Result<(), BoxError> {
         self.log.borrow_mut().push(format!("durable {pos}"));
-        if self.fail_durable {
+        if self.fail.durable {
             return Err("fsync failed".into());
         }
         self.inner.wait_durable(pos)
@@ -137,16 +197,20 @@ impl Journal for SpyJournal {
 struct SpyTransport {
     inner: MemTransport,
     log: CallLog,
-    fail_publish: bool,
+    fail: Fail,
 }
 
 impl Transport for SpyTransport {
-    fn poll(&mut self, max: usize, sink: &mut dyn FnMut(ClientCommand)) {
-        self.inner.poll(max, sink);
+    fn poll(&mut self, max: usize, sink: &mut dyn FnMut(ClientCommand)) -> Result<(), BoxError> {
+        self.log.borrow_mut().push("poll".into());
+        if self.fail.poll {
+            return Err("ingress closed".into());
+        }
+        self.inner.poll(max, sink)
     }
     fn publish(&mut self, batch: &EventBatch) -> Result<(), BoxError> {
         self.log.borrow_mut().push(format!("publish {}", batch.seq));
-        if self.fail_publish {
+        if self.fail.publish {
             return Err("egress closed".into());
         }
         self.inner.publish(batch)
@@ -165,30 +229,32 @@ fn journal_with_genesis() -> MemJournal {
     j
 }
 
-fn spies(fail_durable: bool, fail_publish: bool) -> (Node<SpyJournal, SpyTransport>, CallLog) {
+/// A restarted node (so its first poll sequences `Resume`) with two deposits waiting on ingress.
+fn spies(fail: Fail) -> (Node<SpyJournal, SpyTransport>, CallLog) {
     let log = CallLog::default();
     let mut t = MemTransport::default();
     t.ingress.extend([deposit(1), deposit(2)]);
     let j = SpyJournal {
         inner: journal_with_genesis(),
         log: log.clone(),
-        fail_durable,
+        fail,
     };
     let t = SpyTransport {
         inner: t,
         log: log.clone(),
-        fail_publish,
+        fail,
     };
     (Node::start(j, t, genesis(Config::default())).unwrap(), log)
 }
 
 #[test]
 fn whole_batch_is_durable_before_anything_is_published() {
-    let (mut node, log) = spies(false, false);
+    let (mut node, log) = spies(Fail::default());
     assert_eq!(node.poll(5_000).unwrap(), 3, "Resume and two deposits");
     assert_eq!(
         *log.borrow(),
         [
+            "poll",
             "append 2",
             "append 3",
             "append 4",
@@ -202,7 +268,10 @@ fn whole_batch_is_durable_before_anything_is_published() {
 
 #[test]
 fn failed_durability_applies_and_publishes_nothing() {
-    let (mut node, log) = spies(true, false);
+    let (mut node, log) = spies(Fail {
+        durable: true,
+        ..Fail::default()
+    });
     assert!(matches!(node.poll(5_000), Err(NodeError::Journal(_))));
     assert_eq!(node.engine().last_seq(), 1, "nothing applied");
     assert!(
@@ -213,7 +282,10 @@ fn failed_durability_applies_and_publishes_nothing() {
 
 #[test]
 fn failed_publish_still_applies_the_durable_batch() {
-    let (mut node, _) = spies(false, true);
+    let (mut node, _) = spies(Fail {
+        publish: true,
+        ..Fail::default()
+    });
     assert!(matches!(node.poll(5_000), Err(NodeError::Transport(_))));
     assert_eq!(
         node.engine().last_seq(),
@@ -221,4 +293,39 @@ fn failed_publish_still_applies_the_durable_batch() {
         "in-memory state matches the journal even though egress failed"
     );
     assert_eq!(node.engine().balance(ALICE).free, dollars(10));
+}
+
+#[test]
+fn failed_ingress_poll_is_a_transport_error_and_logs_nothing() {
+    let (mut node, log) = spies(Fail {
+        poll: true,
+        ..Fail::default()
+    });
+    assert!(matches!(node.poll(5_000), Err(NodeError::Transport(_))));
+    assert_eq!(*log.borrow(), ["poll"], "nothing appended, not even Resume");
+    assert!(matches!(node.poll(6_000), Err(NodeError::Halted)));
+    assert_eq!(*log.borrow(), ["poll"], "a halted node touches no port");
+}
+
+#[test]
+fn poll_after_failure_is_refused() {
+    let (mut node, log) = spies(Fail {
+        durable: true,
+        ..Fail::default()
+    });
+    assert!(matches!(node.poll(5_000), Err(NodeError::Journal(_))));
+    let calls = log.borrow().len();
+    assert!(matches!(node.poll(6_000), Err(NodeError::Halted)));
+    assert!(
+        matches!(node.poll(7_000), Err(NodeError::Halted)),
+        "the latch holds"
+    );
+    assert_eq!(log.borrow().len(), calls, "a halted node touches no port");
+    let (journal, transport) = node.into_parts();
+    assert_eq!(
+        journal.inner.entries().len(),
+        4,
+        "journal unchanged since the failure"
+    );
+    assert!(transport.inner.egress.is_empty(), "nothing published");
 }
