@@ -45,7 +45,13 @@ engine_running() {
   [ -n "$id" ] && [ "$(docker inspect -f '{{.State.Running}}' "$id")" = true ]
 }
 
-# Waits until the engine has logged its <n>th `replayed` line; fails at once if it exits.
+# How many times Docker has restarted the engine container by itself (`restart: on-failure:3`). It
+# stays 0 across a manual `docker compose kill` and `start`.
+engine_restarts() { docker inspect -f '{{.RestartCount}}' "$(docker compose ps -aq engine)"; }
+
+# Waits until the engine has logged its <n>th `replayed` line; fails at once if its container is not
+# running (a manual stop, or the retry cap reached). A container in restart back-off still counts as
+# running, so an automatic restart does not fail this: the caller checks `engine_restarts`.
 wait_started() {
   local n=$1 deadline=$((SECONDS + timeout))
   until [ "$(starts)" -ge "$n" ]; do
@@ -88,6 +94,10 @@ passed=${summary#passed }
 
 step "Crash: SIGKILL the engine once it is idle, then restart it"
 wait_idle
+# A halt after the scenarios passed would have been restarted unseen, and the replay that follows
+# would not be the one this step provokes: fail loudly instead.
+restarts=$(engine_restarts)
+[ "$restarts" = 0 ] || fail "the engine restarted by itself $restarts time(s) before the deliberate crash"
 started=$(starts)
 docker compose kill -s SIGKILL engine
 # Read after the kill: the dead process can log nothing more.
