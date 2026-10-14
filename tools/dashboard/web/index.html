@@ -275,12 +275,24 @@ a.idlink, button.idlink { color: var(--accent); text-decoration: underline; text
 .check-bad { color: var(--bad); font-weight: 600; }
 /* Deliverable panels. */
 .dtable tr.dgroup th { padding-top: 14px; color: var(--ink); font-size: 13px; }
-.dtable col.c-id { width: 76px; } .dtable col.c-what { width: 17%; } .dtable col.c-test { width: 31%; } .dtable col.c-run { width: 84px; }
+.dtable col.c-id { width: 76px; } .dtable col.c-what { width: 17%; } .dtable col.c-test { width: 31%; } .dtable col.c-run { width: 128px; }
 .dtable td.run { white-space: nowrap; text-align: right; }
 .sm-start { fill: var(--ink-3); }
 .seam .item, .steps3 .item { align-content: start; }
 .seam code { overflow-wrap: anywhere; }
 .rules { margin: 12px 0 0; padding-left: 20px; display: grid; gap: 3px; font-size: 13px; color: var(--ink-2); }
+/* Narrow screens: one column that never grows past the viewport, and a top bar that wraps. */
+@media (max-width: 1100px) { .app, .stage { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 720px) {
+  .topbar { padding: 10px 16px; position: static; } /* a wrapped bar is too tall to stay pinned */
+  .scenario { grid-template-columns: minmax(0, 1fr); }
+  .progress { text-align: left; }
+  .topbar .group, .health, .health dl { flex-wrap: wrap; }
+  #preset { min-width: 0; max-width: 100%; }
+  .contract, .machines { grid-template-columns: minmax(0, 1fr); }
+  .item-actions .btn { white-space: normal; }
+  form.form-row { grid-template-columns: 1fr 1fr !important; } /* the request form sets five columns inline */
+}
 </style>
 </head>
 <body>
@@ -325,7 +337,26 @@ a.idlink, button.idlink { color: var(--accent); text-decoration: underline; text
     </div>
 
     <!-- Ledger and deliverable panels: filled by renderLedger and renderPanels -->
-    <section class="panel ledger" id="ledger" aria-labelledby="ledger-h"></section>
+    <section class="panel ledger" id="ledger" aria-labelledby="ledger-h">
+      <div class="panel-head">
+        <h2 id="ledger-h">Ledger</h2>
+        <div style="display:flex;gap:14px;flex-wrap:wrap">
+          <span class="key"><i style="background:var(--free)"></i>Free</span>
+          <span class="key"><i class="seg reserved"></i>Reserved (held, can be released)</span>
+          <span class="key"><i style="background:var(--escrow)"></i>Escrowed (locked to the contract)</span>
+        </div>
+      </div>
+      <div id="ledger-table"></div>
+      <div class="ledger-foot">
+        <span id="ledger-inv"></span>
+        <span style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+          <!-- One persistent live region: only its text changes, so the result is announced once. -->
+          <span id="replay-result" role="status" aria-live="polite"></span>
+          <button class="btn btn-sm" type="button" id="replay-check" data-action="replay" title="Rebuild the state from the command log in a fresh engine and compare state hashes">Replay check</button>
+        </span>
+      </div>
+      <p id="ledger-note" class="muted" style="font-size:13px;padding:0 16px 10px" hidden>Only your own account is shown. The ledger total is shown to admin.</p>
+    </section>
     <section class="panel" id="panels" aria-label="Deliverables"></section>
   </main>
 
@@ -495,12 +526,15 @@ function select(kind, id) {
 
 /**
  * Once per engine response. The ledger's delta baseline is the snapshot before the last response
- * that ran commands (one step, or a whole Run to end); a view switch or a replay check runs none and
- * keeps the deltas, and a reset drops them. A replay check's result stays until the next command.
+ * that ran commands (one step, or a whole Run to end), taken for the same viewer. A replay check
+ * runs none and keeps the deltas; a view switch or a reset drops them. A replay check's result
+ * stays until the next command.
  */
 function trackResponse() {
   const s = state.snapshot, p = prev?.snapshot;
-  if (!p || prev.mode !== state.mode || s.seq < p.seq) ui.ledgerBase = null;
+  // A baseline from another viewer's snapshot would give a partial set of deltas: drop it.
+  const sameViewer = JSON.stringify(prev?.viewer) === JSON.stringify(state.viewer);
+  if (!p || prev.mode !== state.mode || !sameViewer || s.seq < p.seq) ui.ledgerBase = null;
   else if (s.seq > p.seq) ui.ledgerBase = { seq: p.seq, total: p.total, balances: new Map(p.accounts.map((a) => [a.id, a.balance])) };
   if (state.replay) ui.replay = { ...state.replay, seq: s.seq, mode: state.mode };
   else if (ui.replay && (ui.replay.seq !== s.seq || ui.replay.mode !== state.mode)) ui.replay = null;
@@ -1350,13 +1384,13 @@ function historyItem(e, sel) {
 function renderInspector() {
   const el = document.getElementById("inspector");
   if (!selected) {
-    el.innerHTML = '<h2 id="insp-h">Inspector</h2><p class="empty">Click any request, quote or contract id to trace it.</p>';
+    el.innerHTML = '<h2 id="insp-h" tabindex="-1">Inspector</h2><p class="empty">Click any request, quote or contract id to trace it.</p>';
     return;
   }
   const { badge: b, facts } = inspectorFacts(selected);
   const items = historyOf(selected).map((e) => historyItem(e, selected)).join("");
   el.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">
-      <h2 id="insp-h">${KIND_TITLE[selected.kind] ?? "Object"} #${esc(selected.id)}</h2>
+      <h2 id="insp-h" tabindex="-1">${KIND_TITLE[selected.kind] ?? "Object"} #${esc(selected.id)}</h2>
       <span style="display:flex;gap:8px;align-items:center">${b}<button class="btn btn-quiet btn-sm" type="button" id="insp-clear" data-action="deselect">Clear</button></span>
     </div>
     <div class="item-facts">${facts}</div>
@@ -1377,7 +1411,6 @@ function deltaHtml(now, before) {
 }
 
 function renderLedger() {
-  const el = document.getElementById("ledger");
   const s = state.snapshot, base = ui.ledgerBase;
   const rank = (a) => { const i = LEDGER_ORDER.indexOf(a.role); return i < 0 ? LEDGER_ORDER.length : i; };
   const sorted = [...s.accounts].sort((a, b) => rank(a) - rank(b));
@@ -1403,34 +1436,25 @@ function renderLedger() {
     ? `<tfoot><tr><td colspan="4">Ledger total</td><td>${fmtUsd(s.total)}${deltaHtml(s.total, base?.total)}</td><td class="muted" style="text-align:left;font-weight:400">changes only on Deposit/Withdraw (I1)</td></tr></tfoot>`
     : "";
   const inv = s.invariants.ok
-    ? `<span>${badge("I1–I5 hold", "b-good")} <span class="muted">checked after every command</span></span>`
-    : `<span>${badge("I1–I5 broken", "b-bad")} <span class="check-bad">${esc(s.invariants.error ?? "")}</span></span>`;
+    ? `${badge("I1–I5 hold", "b-good")} <span class="muted">checked after every command</span>`
+    : `${badge("I1–I5 broken", "b-bad")} <span class="check-bad">${esc(s.invariants.error ?? "")}</span>`;
   const r = ui.replay;
-  const hash = (h) => esc(String(h).slice(0, 8));
-  const result = !r ? ""
-    : r.matches ? `<span class="check-ok">Replayed ${r.commands} commands → hash ${hash(r.replayed)} = live ${hash(r.live)} ✓</span>`
-    : `<span class="check-bad">Replayed ${r.commands} commands → hash ${hash(r.replayed)} ≠ live ${hash(r.live)}: mismatch ✗</span>`;
-  el.innerHTML = `<div class="panel-head">
-      <h2 id="ledger-h">Ledger</h2>
-      <div style="display:flex;gap:14px;flex-wrap:wrap">
-        <span class="key"><i style="background:var(--free)"></i>Free</span>
-        <span class="key"><i class="seg reserved"></i>Reserved (held, can be released)</span>
-        <span class="key"><i style="background:var(--escrow)"></i>Escrowed (locked to the contract)</span>
-      </div>
-    </div>
-    <table>
+  const hash = (h) => String(h).slice(0, 8);
+  const text = !r ? ""
+    : r.matches ? `Replayed ${r.commands} commands → hash ${hash(r.replayed)} = live ${hash(r.live)} ✓`
+    : `Replayed ${r.commands} commands → hash ${hash(r.replayed)} ≠ live ${hash(r.live)}: mismatch ✗`;
+  document.getElementById("ledger-table").innerHTML = `<table>
       <thead><tr><th scope="col">Account</th><th scope="col">Free</th><th scope="col">Reserved</th><th scope="col">Escrowed</th><th scope="col">Total</th><th scope="col" class="barcol">Split</th></tr></thead>
       <tbody>${rows}</tbody>
       ${foot}
-    </table>
-    <div class="ledger-foot">
-      ${inv}
-      <span style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-        <span role="status">${result}</span>
-        <button class="btn btn-sm" type="button" id="replay-check" data-action="replay" title="Rebuild the state from the command log in a fresh engine and compare state hashes">Replay check</button>
-      </span>
-    </div>
-    ${s.total == null ? '<p class="muted" style="font-size:13px;padding:0 16px 10px">Only your own account is shown. The ledger total is shown to admin.</p>' : ""}`;
+    </table>`;
+  document.getElementById("ledger-inv").innerHTML = inv;
+  // The live region is never rebuilt: only its text and class change, and only when they differ.
+  const live = document.getElementById("replay-result");
+  const cls = !r ? "" : r.matches ? "check-ok" : "check-bad";
+  if (live.textContent !== text) live.textContent = text;
+  if (live.className !== cls) live.className = cls;
+  document.getElementById("ledger-note").hidden = s.total != null;
 }
 
 // ---- Deliverables: D1 state machines -----------------------------------------------------------
@@ -1450,7 +1474,7 @@ const MACHINES = [
       ["present", "M160 102 H238", [[166, 84, "deadline"], [166, 96, "(clock)"]]],
       ["accept", "M340 102 H428", [[346, 84, "Accept"], [346, 96, "(requester)"]]],
       ["cancel", "M120 86 V42", [[127, 54, "Cancel"], [127, 66, "(requester)"]]],
-      ["expire", "M120 118 V166", [[127, 138, "deadline, a leg"], [127, 150, "unquoted (clock)"]]],
+      ["expire", "M120 118 V166", [[127, 138, "deadline, a leg has"], [127, 150, "no eligible quote (clock)"]]],
       ["reject", "M290 118 V166", [[297, 138, "Reject (requester)"], [297, 150, "or accept_by (clock)"]]],
     ],
   },
@@ -1610,33 +1634,40 @@ function multiLegPanel() {
     </ol>`;
 }
 
-/** A Run button that resets to a preset from the catalogue; none if the catalogue lacks it. */
-function runButton(presetName, where) {
+/**
+ * A button that resets to a preset from the catalogue; none if the catalogue lacks it. "Run" when the
+ * preset demonstrates the row; "Related preset" when it only shows the situation around it.
+ */
+function runButton(presetName, where, related = false) {
   const p = presets.find((x) => x.name === presetName);
   if (!p) return null;
-  return `<button class="btn btn-sm" type="button" data-action="run-preset" data-preset="${esc(p.name)}" data-key="run-${where}" title="Reset to ${esc(p.name)}: ${esc(p.summary)}">Run<span class="sr-only"> ${esc(p.name)}</span></button>`;
+  const label = related ? "Related preset" : "Run";
+  const title = `${related ? "Related, not the race itself. " : ""}Reset to ${p.name}: ${p.summary}`;
+  return `<button class="btn btn-sm" type="button" data-action="run-preset" data-preset="${esc(p.name)}" data-key="run-${esc(where)}" title="${esc(title)}">${label}<span class="sr-only"> ${esc(p.name)}</span></button>`;
 }
-const runCell = (presetName, where, fallback) => `<td class="run">${runButton(presetName, where) ?? `<span class="muted">${fallback}</span>`}</td>`;
+const runCell = (presetName, where, fallback, related) =>
+  `<td class="run">${runButton(presetName, where, related) ?? `<span class="muted">${fallback}</span>`}</td>`;
 
-// failure-modes.md, transcribed: [id, race or failure, handling, tests, preset that demonstrates it].
+// failure-modes.md, transcribed: [id, race or failure, handling, tests, preset, options]. The preset
+// demonstrates the row unless `related` says it only shows the situation; `note` follows the tests.
 const FAILURES = [
   ["Races", [
     ["R1", "Cancel vs response deadline", "Before the deadline the cancel removes the quote; at or after it, the quote is Selected (firm): InvalidState.", ["cancel_before_deadline_removes_quote", "cancel_after_selection_rejected"], "mm_cannot_withdraw_after_selection"],
-    ["R2", "Accept vs accept_by", "At or after accept_by, the accept runs after the lapse timer: rejected.", ["accept_after_window_rejected_without_tick"], "requester_lapses"],
-    ["R3", "Quote vs response deadline", "At or after the deadline, the quote finds the request Presented or Expired.", ["quote_after_deadline_rejected"], "no_quotes_expire"],
+    ["R2", "Accept vs accept_by", "At or after accept_by, the accept runs after the lapse timer: rejected.", ["accept_after_window_rejected_without_tick"], "requester_lapses", { related: true }],
+    ["R3", "Quote vs response deadline", "At or after the deadline, the quote finds the request Presented or Expired.", ["quote_after_deadline_rejected"], "no_quotes_expire", { related: true }],
     ["R4", "Quote expiry vs selection", "Eligible quotes are firm through the accept window; expiry is clamped to it.", ["short_expiry_not_selected", "selected_quote_expiring_at_accept_by_is_left_to_the_lapse"]],
     ["R5", "Double accept or reject", "The second finds the request no longer Presented: InvalidState.", ["double_accept_rejected"], "attack_double_accept"],
     ["R6", "Duplicate or skipped command", "Strict nonces: ≤ last is Duplicate, > last + 1 is NonceGap; neither consumes anything.", ["duplicate_nonce_ignored", "nonce_gap_rejected_and_not_consumed"], "attack_replayed_nonce"],
     ["R7", "Withdraw vs reservation", "Only free is withdrawable; holds leave free atomically.", ["withdraw_cannot_touch_reserved"]],
     ["R8", "Quote replace vs selection", "One command: release the old hold, hold the new.", ["replace_quote_atomic"]],
-    ["R9", "Dispute vs window end", "At or after dispute_until, the dispute runs after the window timer: InvalidState.", ["dispute_after_window_rejected", "dispute_at_the_window_end_is_too_late"], "disputed_ruled_invalid"],
+    ["R9", "Dispute vs window end", "At or after dispute_until, the dispute runs after the window timer: InvalidState.", ["dispute_after_window_rejected", "dispute_at_the_window_end_is_too_late"], "disputed_ruled_invalid", { related: true }],
   ]],
   ["Partial failures", [
     ["F1", "Funds short mid-accept", "All legs validated before any escrow; holds already cover the accept.", []],
     ["F2", "Arithmetic overflow", "checked_* gives CommandRejected; balances untouched, nonce consumed.", ["deposit_overflow_rejected"]],
     ["F3", "Crash before durable", "Nothing applied or published; a torn FileJournal tail is truncated; a retry applies once or is Duplicate.", ["failed_durability_applies_and_publishes_nothing", "file_journal_truncates_torn_tail"]],
     ["F4", "Crash before apply", "Replay applies it.", ["restart_replays_to_same_state_without_republishing"]],
-    ["F5", "Egress lost after apply", "Egress is best-effort: never re-published on replay. Exactly-once effects (withdrawals) read the journal.", ["failed_publish_still_applies_the_durable_batch", "restart_replays_to_same_state_without_republishing"]],
+    ["F5", "Egress lost after apply", "Egress is best-effort: never re-published on replay, dropped with no subscriber. Exactly-once effects (withdrawals) read the journal.", ["failed_publish_still_applies_the_durable_batch", "restart_replays_to_same_state_without_republishing"]],
     ["F6", "Replay diverges", "No clock, RNG or HashMap; replay hashes are checked in tests and in this demo.", ["replay_reproduces_state_hash"], "replay"],
     ["F7", "Oracle never answers", "Hard deadline gives Final(Invalid), full refunds.", ["oracle_silent_hard_deadline_refunds"], "oracle_silent_hard_deadline"],
     ["F8", "Arbiter never rules", "Hard deadline gives Final(proposed), bond returned (DisputeBondReturned to the disputer).", ["arbiter_silent_hard_deadline_returns_bond", "hard_deadline_announces_the_returned_bond_to_the_disputer"]],
@@ -1644,29 +1675,31 @@ const FAILURES = [
     ["F10", "Clock behind the log", "Time is max(wall, last_time), resumed from the journal.", ["sequencer_time_is_monotonic", "clock_never_goes_back_across_a_restart"]],
     ["F11", "A port fails", "The node latches Halted; restart replays. FileJournal poisons itself.", ["poll_after_failure_is_refused", "write_failure_poisons_the_handle"]],
     ["F12", "Replayed seq gap or duplicate", "Node::start refuses to start.", ["replay_refuses_a_duplicate_seq", "replay_refuses_a_gap"]],
-    ["F13", "Aeron crashes", "Per-session recordings; redelivered ingress is Duplicate if durable, else applied once.", ["archive_journal_replays_every_recording_across_restarts_and_crashes"]],
+    ["F13", "Aeron crashes", "Per-session recordings; redelivered ingress is Duplicate if durable, else applied once.", ["archive_journal_replays_every_recording_across_restarts_and_crashes"], null, { note: "(Docker, <code>#[ignore]</code>d)" }],
     ["F14", "Live stall or clock jump", "A poll gap over STALL_GAP_MS (1 s) sequences Resume first, as F9. Residual: downtime past resolution_deadline − dispute_window ends Invalid.", ["a_stall_cannot_eat_a_dispute_window", "a_stall_longer_than_the_gap_sequences_resume_before_the_batch"]],
     ["F15", "Egress subscriber stops polling", "5 s of tethered back-pressure halts the node, and again after each restart. Residual: subscribers must be venue-operated.", []],
   ]],
   // The brief's accept-echo attack has no R/F row; these come from adversarial.md's attacker table.
   ["Attacks with a preset (adversarial.md)", [
-    ["Requester", "Accept a different price than shown", "Accept must echo quote ids and prices; a mismatch is rejected.", ["accept_must_echo_exact_selection"], "attack_accept_wrong_price"],
-    ["MM", "Probe the sealed limit with quotes", "SubmitQuote doesn't check the limit; selection drops over-limit quotes and QuoteLost doesn't say why.", ["over_limit_quote_accepted_but_never_selected"], "attack_over_limit_quote"],
-    ["Either", "Self-trade", "mm ≠ requester, else rejected (SelfTrade).", ["quote_validation"], "attack_self_trade"],
+    ["", "Requester: accept a different price than shown", "Accept must echo quote ids and prices; a mismatch is rejected.", ["accept_must_echo_exact_selection"], "attack_accept_wrong_price"],
+    ["", "MM: probe the sealed limit with quotes", "SubmitQuote doesn't check the limit; selection drops over-limit quotes and QuoteLost doesn't say why.", ["over_limit_quote_accepted_but_never_selected"], "attack_over_limit_quote"],
+    ["", "Either side: self-trade", "mm ≠ requester, else rejected (SelfTrade).", ["quote_validation"], "attack_self_trade"],
   ]],
 ];
 
 function d3Panel() {
   const body = FAILURES.map(([group, rows]) => `<tbody>
-      <tr class="dgroup"><th scope="colgroup" colspan="5">${esc(group)}</th></tr>
-      ${rows.map(([id, what, how, tests, preset]) => {
+      <tr class="dgroup"><th scope="rowgroup" colspan="5">${esc(group)}</th></tr>
+      ${rows.map(([id, what, how, tests, preset, opts = {}]) => {
         const run = preset === "replay"
           ? `<td class="run"><button class="btn btn-sm" type="button" data-action="replay" data-key="run-f6" title="Replay this run's command log in a fresh engine">Replay check</button></td>`
-          : runCell(preset, id, tests.length ? "test only" : "—");
-        return `<tr><td>${esc(id)}</td><td>${esc(what)}</td><td>${esc(how)}</td><td>${tests.length ? tests.map((t) => `<code>${esc(t)}</code>`).join("<br>") : '<span class="muted">—</span>'}</td>${run}</tr>`;
+          : runCell(preset, id || preset, tests.length ? "test only" : "—", opts.related);
+        const testCell = tests.length ? tests.map((t) => `<code>${esc(t)}</code>`).join("<br>") : '<span class="muted">—</span>';
+        // opts.note is a literal from this table (it carries markup), never engine data.
+        return `<tr><td>${esc(id)}</td><td>${esc(what)}</td><td>${esc(how)}</td><td>${testCell}${opts.note ? ` <span class="muted">${opts.note}</span>` : ""}</td>${run}</tr>`;
       }).join("")}
     </tbody>`).join("");
-  return `<div style="overflow-x:auto"><table class="dtable">
+  return `<div style="overflow-x:auto;position:relative"><table class="dtable">
       <colgroup><col class="c-id"><col class="c-what"><col><col class="c-test"><col class="c-run"></colgroup>
       <thead><tr><th scope="col">#</th><th scope="col">Race or failure</th><th scope="col">Handling</th><th scope="col">Test</th><th scope="col"><span class="sr-only">Run</span></th></tr></thead>
       ${body}
@@ -1682,7 +1715,7 @@ function d4Panel() {
     ["Oracle silent", "Nobody proposes by the hard deadline.", "Final INVALID at the hard deadline: each side gets its own lock back, in that command.", "oracle_silent_hard_deadline"],
     ["Unruled dispute", "The arbiter never rules by the hard deadline.", "Final with the proposed outcome, bond returned to the disputer; positions settle in that command.", null, "arbiter_silent_hard_deadline_returns_bond"],
   ];
-  return `<div style="overflow-x:auto"><table class="dtable">
+  return `<div style="overflow-x:auto;position:relative"><table class="dtable">
       <thead><tr><th scope="col">Path</th><th scope="col">What happens</th><th scope="col">Funds</th><th scope="col"><span class="sr-only">Run</span></th></tr></thead>
       <tbody>${rows.map(([path, what, funds, preset, test], i) => `<tr><td>${esc(path)}</td>`
         + `<td>${esc(what)}${test ? `<br><span class="muted">Test:</span> <code>${esc(test)}</code>` : ""}</td><td>${esc(funds)}</td>`
@@ -1802,7 +1835,10 @@ app.addEventListener("click", (e) => {
   if (!state) return;
   switch (d.action) {
     case "select": return select(d.kind, n("id"));
-    case "deselect": selected = null; return render();
+    case "deselect":
+      selected = null;
+      render();
+      return document.getElementById("insp-h")?.focus(); // Clear is gone: keep focus in the inspector
     case "toggle-row": ui.rows.set(n("seq"), b.getAttribute("aria-expanded") !== "true"); return render();
     case "reveal-row": return revealRow(n("seq"));
     case "filter": ui.filter = d.filter; ui.logPinned = true; return render();
