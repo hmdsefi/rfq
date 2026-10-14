@@ -29,6 +29,8 @@ pub enum FileJournalError {
     Corrupt { offset: u64, error: CodecError },
     #[error("journal record of {0} bytes does not fit the u32 length prefix")]
     TooLarge(usize),
+    #[error("journal handle poisoned by an earlier I/O failure; reopen it")]
+    Poisoned,
 }
 
 #[derive(Debug)]
@@ -38,6 +40,10 @@ pub struct FileJournal {
     end: u64,
     /// Everything before this offset has been fsynced by this handle.
     synced: u64,
+    /// Latched by the first I/O failure. After a failed write the file may end in a partial
+    /// record, and after a failed fsync the kernel may have dropped the dirty pages, so a retry
+    /// could report success for data that is gone. Reopening rescans and truncates.
+    poisoned: bool,
 }
 
 impl FileJournal {
@@ -59,6 +65,7 @@ impl FileJournal {
             file,
             end: 0,
             synced: 0,
+            poisoned: false,
         };
         j.scan(&mut |_| {})?;
         Ok(j)
@@ -79,6 +86,8 @@ impl FileJournal {
         if !rest.is_empty() {
             tracing::warn!(good, dropped = rest.len(), "truncating torn journal tail");
             self.file.set_len(good)?;
+            // Make the truncation durable before anything is appended after it.
+            self.file.sync_all()?;
         }
         self.end = good;
         self.file.seek(SeekFrom::Start(good))?;
@@ -104,21 +113,35 @@ impl FileJournal {
         }
         Ok(())
     }
+
+    /// Runs `op` unless the handle is poisoned, and poisons it if `op` fails with an I/O error.
+    fn guarded<R>(
+        &mut self,
+        op: impl FnOnce(&mut Self) -> Result<R, FileJournalError>,
+    ) -> Result<R, FileJournalError> {
+        if self.poisoned {
+            return Err(FileJournalError::Poisoned);
+        }
+        let result = op(self);
+        self.poisoned = matches!(result, Err(FileJournalError::Io(_)));
+        result
+    }
 }
 
 impl Journal for FileJournal {
-    /// The position is the byte offset just past the new record. After an `Err` the file may end
-    /// in a partial record: stop using this handle (reopening truncates it).
+    /// The position is the byte offset just past the new record. An I/O failure here, in
+    /// `wait_durable` or in `replay` poisons the handle: every later call returns
+    /// [`FileJournalError::Poisoned`] (reopening truncates any partial record).
     fn append(&mut self, sc: &SequencedCommand) -> Result<u64, BoxError> {
-        Ok(self.write_record(sc)?)
+        Ok(self.guarded(|j| j.write_record(sc))?)
     }
 
     fn wait_durable(&mut self, pos: u64) -> Result<(), BoxError> {
-        Ok(self.sync_to(pos)?)
+        Ok(self.guarded(|j| j.sync_to(pos))?)
     }
 
     fn replay(&mut self, f: &mut dyn FnMut(SequencedCommand)) -> Result<(), BoxError> {
-        Ok(self.scan(f)?)
+        Ok(self.guarded(|j| j.scan(f))?)
     }
 }
 
@@ -209,5 +232,124 @@ mod tests {
             .replay(&mut |sc| seen.push(sc.seq))
             .unwrap();
         assert_eq!(seen, vec![1]);
+    }
+
+    /// Three ticks, each durably appended. Returns the end offset after each record.
+    fn three_records(path: &Path) -> Vec<u64> {
+        let mut j = FileJournal::open(path).unwrap();
+        let mut s = Sequencer::resume(0, 0);
+        (0..3)
+            .map(|_| {
+                let pos = j.append(&s.stamp(1, Command::Tick)).unwrap();
+                j.wait_durable(pos).unwrap();
+                pos
+            })
+            .collect()
+    }
+
+    fn replayed(path: &Path) -> Vec<u64> {
+        let mut seen = Vec::new();
+        FileJournal::open(path)
+            .unwrap()
+            .replay(&mut |sc| seen.push(sc.seq))
+            .unwrap();
+        seen
+    }
+
+    fn append_raw(path: &Path, bytes: &[u8]) {
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(path)
+            .unwrap()
+            .write_all(bytes)
+            .unwrap();
+    }
+
+    fn file_len(path: &Path) -> u64 {
+        std::fs::metadata(path).unwrap().len()
+    }
+
+    #[test]
+    fn full_header_with_truncated_body_is_torn() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log");
+        let ends = three_records(&path);
+        let mut rec = 100u32.to_le_bytes().to_vec();
+        rec.extend(0u32.to_le_bytes());
+        rec.extend([1; 10]); // 10 of the 100 promised body bytes
+        append_raw(&path, &rec);
+        assert_eq!(replayed(&path), vec![1, 2, 3]);
+        assert_eq!(file_len(&path), ends[2], "torn tail truncated");
+    }
+
+    #[test]
+    fn checksum_mismatch_truncates_from_that_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log");
+        let ends = three_records(&path);
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes[usize::try_from(ends[1]).unwrap() - 1] ^= 0xff; // last body byte of record 2
+        std::fs::write(&path, &bytes).unwrap();
+        assert_eq!(replayed(&path), vec![1]);
+        assert_eq!(file_len(&path), ends[0], "truncated at the bad record");
+    }
+
+    #[test]
+    fn checksum_valid_record_that_does_not_decode_is_corrupt() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log");
+        let ends = three_records(&path);
+        let body = [9u8, 1, 2]; // unsupported codec version
+        let mut rec = 3u32.to_le_bytes().to_vec();
+        rec.extend(crc32fast::hash(&body).to_le_bytes());
+        rec.extend(body);
+        append_raw(&path, &rec);
+        match FileJournal::open(&path) {
+            Err(FileJournalError::Corrupt {
+                offset,
+                error: CodecError::UnsupportedVersion(9),
+            }) => assert_eq!(offset, ends[2]),
+            other => panic!("expected Corrupt, got {other:?}"),
+        }
+        assert_eq!(
+            file_len(&path),
+            ends[2] + 11,
+            "a corrupt journal is never truncated"
+        );
+    }
+
+    #[test]
+    fn write_failure_poisons_the_handle() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log");
+        drop(FileJournal::open(&path).unwrap());
+        // Inject a write failure: a handle over a read-only descriptor.
+        let file = OpenOptions::new().read(true).open(&path).unwrap();
+        let mut j = FileJournal {
+            file,
+            end: 0,
+            synced: 0,
+            poisoned: false,
+        };
+        let mut s = Sequencer::resume(0, 0);
+        let first = j.append(&s.stamp(1, Command::Tick)).unwrap_err();
+        assert!(matches!(
+            first.downcast_ref::<FileJournalError>(),
+            Some(FileJournalError::Io(_))
+        ));
+        let later = [
+            j.append(&s.stamp(2, Command::Tick)).unwrap_err(),
+            j.wait_durable(1).unwrap_err(),
+            j.replay(&mut |_| {}).unwrap_err(),
+        ];
+        for err in later {
+            assert!(
+                matches!(
+                    err.downcast_ref::<FileJournalError>(),
+                    Some(FileJournalError::Poisoned)
+                ),
+                "{err}"
+            );
+        }
     }
 }
