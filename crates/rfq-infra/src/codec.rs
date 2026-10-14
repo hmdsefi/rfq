@@ -1,13 +1,21 @@
-//! Wire format: one version byte, then bincode (fixint, little-endian, size-limited).
+//! Wire format: one version byte, then bincode (fixint, little-endian, trailing bytes rejected).
 //!
 //! Adapter-layer concern. The application layer only sees typed values (`ClientCommand`,
 //! `EventBatch`); this module is where bytes become those values and back.
+//!
+//! Size policy: limits apply only at the untrusted ingress boundary ([`decode_ingress`] enforces
+//! [`MAX_INGRESS`]). Data the node itself produces (journal records, egress batches) is never
+//! size-limited by the codec, so [`encode`] cannot fail, and the trusted [`decode`] has no limit.
+//! (bincode 1.3's `Options::deserialize` over a slice ignores `with_limit`, so a limit configured
+//! there would not be enforced anyway; the explicit length check is the honest mechanism.)
 use bincode::Options;
 use rfq_app::ClientCommand;
 use serde::{Serialize, de::DeserializeOwned};
 
 pub const VERSION: u8 = 1;
-pub const MAX_MESSAGE: u64 = 64 * 1024;
+
+/// Largest ingress message (version byte included) the node will even try to decode.
+pub const MAX_INGRESS: usize = 64 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum CodecError {
@@ -19,19 +27,27 @@ pub enum CodecError {
     Malformed(String),
 }
 
+/// Shared by `encode` and `decode`. `DefaultOptions` rejects trailing bytes on decode.
 fn opts() -> impl Options {
     bincode::DefaultOptions::new()
         .with_fixint_encoding()
         .with_little_endian()
-        .with_limit(MAX_MESSAGE)
 }
 
+/// Infallible: serializing an in-memory value with no size limit cannot fail (the domain types
+/// have no custom `Serialize` impls and no unsized sequences).
 pub fn encode<T: Serialize>(value: &T) -> Vec<u8> {
     let mut bytes = vec![VERSION];
-    bytes.extend(opts().serialize(value).expect("message fits MAX_MESSAGE"));
+    bytes.extend(
+        opts()
+            .serialize(value)
+            .expect("in-memory serialization cannot fail"),
+    );
     bytes
 }
 
+/// Trusted decoder (journal replay, egress): no size limit. Untrusted input must go through
+/// [`decode_ingress`].
 pub fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, CodecError> {
     match bytes.split_first() {
         None => Err(CodecError::Empty),
@@ -42,9 +58,17 @@ pub fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, CodecError> {
     }
 }
 
-/// Decode one ingress message. Anything that is not a well-formed `ClientCommand` is logged and
-/// dropped: a hostile or buggy client must never be able to stop the node.
+/// Decode one ingress message. Oversized or malformed input is logged and dropped: a hostile or
+/// buggy client must never be able to stop the node.
 pub fn decode_ingress(bytes: &[u8]) -> Option<ClientCommand> {
+    if bytes.len() > MAX_INGRESS {
+        tracing::warn!(
+            len = bytes.len(),
+            max = MAX_INGRESS,
+            "dropping oversized ingress message"
+        );
+        return None;
+    }
     match decode(bytes) {
         Ok(cmd) => Some(cmd),
         Err(error) => {
@@ -57,7 +81,7 @@ pub fn decode_ingress(bytes: &[u8]) -> Option<ClientCommand> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rfq_domain::{AccountId, Action, Command, Config, Genesis};
+    use rfq_domain::{AccountId, Action, Command, Config, ContractId, Genesis};
 
     const ALICE: AccountId = AccountId(10);
 
@@ -86,8 +110,24 @@ mod tests {
         );
     }
 
+    /// A `ClientCommand` whose encoding is far above `MAX_INGRESS`.
+    fn big_command() -> ClientCommand {
+        ClientCommand {
+            actor: ALICE,
+            nonce: 1,
+            action: Action::ListContract {
+                id: ContractId(1),
+                description: "x".repeat(100_000),
+                oracle: AccountId(4),
+                trading_close: 1,
+                resolution_deadline: 2,
+                dispute_window: 3,
+            },
+        }
+    }
+
     #[test]
-    fn decode_rejects_oversized() {
+    fn forged_length_prefix_does_not_allocate() {
         // A Vec<LegSpec> length prefix claiming 2^40 elements must not allocate.
         let mut bytes = vec![VERSION];
         bytes.extend(10u64.to_le_bytes()); // actor
@@ -98,6 +138,22 @@ mod tests {
             decode::<ClientCommand>(&bytes),
             Err(CodecError::Malformed(_))
         ));
+    }
+
+    #[test]
+    fn oversized_ingress_is_dropped() {
+        let cmd = big_command();
+        let bytes = encode(&cmd);
+        assert!(bytes.len() > MAX_INGRESS);
+        assert!(decode_ingress(&bytes).is_none());
+        // The trusted decoder (journal, egress) has no size limit and reads the same bytes fine.
+        assert_eq!(decode::<ClientCommand>(&bytes).unwrap(), cmd);
+    }
+
+    #[test]
+    fn encode_large_value_does_not_panic() {
+        let cmd = big_command();
+        assert_eq!(decode::<ClientCommand>(&encode(&cmd)).unwrap(), cmd);
     }
 
     #[test]
@@ -126,10 +182,9 @@ mod tests {
             config: Config::default(),
         };
         for system in [Command::Tick, Command::Resume, Command::Genesis(genesis)] {
-            let decoded = decode_ingress(&encode(&system));
             assert!(
-                decoded.is_none() || matches!(decoded.unwrap().into_command(), Command::User { .. }),
-                "system command {system:?} crossed ingress as a non-User command"
+                decode_ingress(&encode(&system)).is_none(),
+                "system command {system:?} crossed ingress"
             );
         }
     }
