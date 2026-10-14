@@ -42,8 +42,12 @@ The filter applies the engine's own `audience` field, which is how sealing works
 For a viewer who isn't the owner:
 - a request shows only its public fields (contract, side, qty, deadline) and a coarse state, `open` or `closed`;
 - quotes, balances and positions show only the viewer's own;
-- contracts are public;
+- a position's counterparty stays hidden until the position settles, because the engine names both holders only in `PositionSettled`;
+- contracts are public, except their list of positions, which shows only the viewer's own (fills are announced privately);
+- the next pending timer is shown to admin only, because it can be a sealed quote's expiry;
 - other parties' commands appear only through the events the viewer is allowed to see.
+
+The chosen view stays in place across a reset.
 
 ## 4. Layout (the Task D1 design refines it)
 

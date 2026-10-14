@@ -70,8 +70,9 @@ const variant = (v) => (typeof v === "string" ? v : Object.keys(v)[0]); // serde
      - **Reset** re-sends `reset` with the current mode.
      - **Take over** sends `take_over`.
    - **Verdict.** When `preset.finished`, show PASS or FAIL from `preset.verdict`, with `detail` on FAIL.
-   - **Clock.** **+100 ms** and **+1 s** send `advance`; **Next timer** sends `next_timer` and is disabled with a tooltip when `snapshot.next_timer` is null. Show `fmtT(snapshot.now)`.
-   - **View as.** Admin, Alice, Carol, MM1, MM2. Each sends `view`.
+   - **Clock.** **+100 ms** and **+1 s** send `advance`; **Next timer** sends `next_timer`. In the admin view it is disabled with a tooltip when `snapshot.next_timer` is null. Other views never receive `next_timer` (it can be a sealed quote's expiry), so there the button stays enabled and an empty clock comes back as the engine's error. Show `fmtT(snapshot.now)`.
+   - **View as.** Admin, Alice, Carol, MM1, MM2. Each sends `view`. The engine keeps the view across `reset`, so the switch stays as the presenter left it.
+   - **New rows.** Highlight the rows whose seq is in `new_seqs`. After `reset`, `new_seqs` is empty, so nothing is highlighted. `new_seqs` may name seqs the current viewer can't see; ignore those.
    - **Health chip.** `seq`, the first 8 hex digits of `state_hash`, and I1–I5 (OK, or BROKEN with `invariants.error` in a tooltip).
    - **Label.** Show "Demo aid — not part of the engine" (exact text).
 4. **Market makers lane.** One card per MM (MM1, MM2). In a non-admin view, show only the viewer's own card, if they're an MM.
