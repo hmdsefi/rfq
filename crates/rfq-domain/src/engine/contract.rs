@@ -202,12 +202,18 @@ impl Engine {
         let outcome = match c.state {
             ContractState::Final(_) => return,
             ContractState::Disputed { proposed } => {
-                let hold = c
-                    .dispute
-                    .as_mut()
-                    .and_then(|d| d.hold.take())
-                    .expect("disputed contract holds a bond");
-                self.ledger.release(hold).expect("dispute bond hold exists");
+                let dispute = c.dispute.as_mut().expect("disputed contract has a dispute");
+                let disputer = dispute.disputer;
+                let hold = dispute.hold.take().expect("disputed contract holds a bond");
+                let amount = self.ledger.release(hold).expect("dispute bond hold exists");
+                out.push(Emitted::to(
+                    disputer,
+                    Event::DisputeBondReturned {
+                        contract: id,
+                        disputer,
+                        amount,
+                    },
+                ));
                 proposed
             }
             // Unreachable: `propose_outcome` and `on_resume` keep `dispute_until < resolution_deadline`,

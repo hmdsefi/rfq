@@ -90,6 +90,7 @@ impl Scope {
             | Event::OutcomeProposed { contract: c, .. }
             | Event::Disputed { contract: c, .. }
             | Event::Ruled { contract: c, .. }
+            | Event::DisputeBondReturned { contract: c, .. }
             | Event::ContractFinalized { contract: c, .. } => *c == contract,
             Event::RequestOpened { request, .. }
             | Event::RequestCancelled { request }

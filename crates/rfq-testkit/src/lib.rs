@@ -57,6 +57,7 @@ pub fn names(events: &[Emitted]) -> Vec<&'static str> {
 /// Sealed bids: every `Quote*` event goes only to that quote's MM, and `RequestPresented` /
 /// `RequestFilled` go only to the requester. The request-level events that open or end a request
 /// without a fill (`RequestOpened`, `Cancelled`, `Expired`, `Rejected`) are public.
+/// `DisputeBondReturned` goes only to its disputer.
 ///
 /// Call it with the engine *after* the command that produced `out`: quotes and requests are never
 /// removed, so their owners can always be looked up.
@@ -105,6 +106,14 @@ pub fn assert_sealed(h: &Harness, out: &[Emitted]) {
                 | Event::RequestRejected { .. }
         ) {
             assert_eq!(e.audience, Audience::Public, "{:?} is request-level", e.event);
+        }
+        if let Event::DisputeBondReturned { disputer, .. } = e.event {
+            assert_eq!(
+                e.audience,
+                Audience::Account(disputer),
+                "{:?} must reach only the disputer",
+                e.event
+            );
         }
     }
 }

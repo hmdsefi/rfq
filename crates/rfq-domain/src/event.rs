@@ -128,6 +128,14 @@ pub enum Event {
         no_holder: AccountId,
         no_payout: Amount,
     },
+    /// The hard deadline finalized a dispute the arbiter never ruled on, and returned the bond to
+    /// the disputer. Sent to the disputer only. Not a `Ruled`: nobody ruled, the proposal stands.
+    /// (Last variant, so the earlier variants keep their wire discriminants.)
+    DisputeBondReturned {
+        contract: ContractId,
+        disputer: AccountId,
+        amount: Amount,
+    },
 }
 
 impl Event {
@@ -158,6 +166,7 @@ impl Event {
             Event::Ruled { .. } => "Ruled",
             Event::ContractFinalized { .. } => "ContractFinalized",
             Event::PositionSettled { .. } => "PositionSettled",
+            Event::DisputeBondReturned { .. } => "DisputeBondReturned",
         }
     }
 }
@@ -279,8 +288,13 @@ mod tests {
                 no_holder: a,
                 no_payout: 0,
             },
+            Event::DisputeBondReturned {
+                contract: c,
+                disputer: a,
+                amount: 1,
+            },
         ];
-        assert_eq!(events.len(), 25);
+        assert_eq!(events.len(), 26);
         for e in &events {
             let debug = format!("{e:?}");
             let variant = debug.split([' ', '(', '{']).next().unwrap();

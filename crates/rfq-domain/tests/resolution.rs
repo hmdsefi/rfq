@@ -323,7 +323,7 @@ fn arbiter_silent_hard_deadline_returns_bond() {
     );
     h.user(CAROL, Action::Dispute { contract: c });
     let out = h.tick(HARD);
-    assert_eq!(names(&out)[0], "ContractFinalized");
+    assert_eq!(names(&out)[..2], ["DisputeBondReturned", "ContractFinalized"]);
     // A timeout never turns a proposal into Invalid: the proposal stands, the bond comes back.
     assert_eq!(
         h.engine.contract(c).unwrap().state,
@@ -331,6 +331,42 @@ fn arbiter_silent_hard_deadline_returns_bond() {
     );
     assert_eq!(free(&h, ALICE), dollars(1_400));
     assert_eq!(free(&h, MM2), dollars(600));
+    assert_eq!(free(&h, CAROL), dollars(1_000));
+}
+
+/// The bond moves back to `free` with an event, so the disputer learns it from egress. It is not a
+/// `Ruled`: nobody ruled, and the proposal stands.
+#[test]
+fn hard_deadline_announces_the_returned_bond_to_the_disputer() {
+    let (mut h, c) = filled();
+    h.user(
+        ORACLE,
+        Action::ProposeOutcome {
+            contract: c,
+            outcome: Outcome::Yes,
+        },
+    );
+    h.user(CAROL, Action::Dispute { contract: c });
+    assert_eq!(free(&h, CAROL), dollars(900), "bond held");
+    let out = h.tick(HARD);
+    let returned: Vec<_> = out
+        .iter()
+        .filter(|e| e.event.name() == "DisputeBondReturned")
+        .collect();
+    assert_eq!(
+        returned,
+        [&Emitted::to(
+            CAROL,
+            Event::DisputeBondReturned {
+                contract: c,
+                disputer: CAROL,
+                amount: dollars(100),
+            }
+        )],
+        "once, to the disputer only, with the bond amount"
+    );
+    assert!(!names(&out).contains(&"Ruled"), "nobody ruled");
+    assert_sealed(&h, &out);
     assert_eq!(free(&h, CAROL), dollars(1_000));
 }
 

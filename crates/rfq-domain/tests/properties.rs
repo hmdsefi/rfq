@@ -417,6 +417,26 @@ fn check_run(run: &Run) -> Result<(), TestCaseError> {
         h.engine.balance(TREASURY).free,
         if forfeited { dollars(100) } else { 0 }
     );
+    // A dispute nobody ruled on ends at the hard deadline, which returns the bond and tells only
+    // the disputer.
+    let disputer = events.iter().find_map(|e| match e.event {
+        Event::Disputed { disputer, .. } => Some(disputer),
+        _ => None,
+    });
+    let returned: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e.event {
+            Event::DisputeBondReturned { disputer, amount, .. } => Some((e.audience, disputer, amount)),
+            _ => None,
+        })
+        .collect();
+    match (disputer, ruled) {
+        (Some(d), None) => prop_assert_eq!(
+            returned,
+            vec![(Audience::Account(d), d, demo_config().dispute_bond)]
+        ),
+        _ => prop_assert!(returned.is_empty(), "{:?}", returned),
+    }
 
     // Each position pays exactly what the final outcome says, and is announced to both holders.
     let mut settled = 0;
@@ -554,6 +574,7 @@ fn directed_streams_reach_every_lifecycle_path() {
         "OutcomeProposed",
         "Disputed",
         "Ruled",
+        "DisputeBondReturned",
         "ContractFinalized",
         "PositionSettled",
     ] {
