@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RFQ Engine Dashboard</title>
+</head>
+<body>
+<p>Demo aid — not part of the engine.</p>
+<pre id="out">loading…</pre>
+<script>/*__RUNTIME_JS__*/</script>
+<script>
+const WASM_BASE64 = "__WASM_BASE64__";
+(async () => {
+  const bytes = Uint8Array.from(atob(WASM_BASE64), (c) => c.charCodeAt(0));
+  const engine = await createEngine(bytes);
+  const out = engine.call({ op: "state" });
+  document.getElementById("out").textContent =
+    `seq ${out.snapshot.seq} · hash ${out.snapshot.state_hash.slice(0, 12)} · invariants ${out.snapshot.invariants.ok ? "ok" : "BROKEN"}`;
+})().catch((e) => { document.getElementById("out").textContent = `failed to start: ${e}`; });
+</script>
+</body>
+</html>
