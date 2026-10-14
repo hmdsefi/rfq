@@ -26,8 +26,9 @@ pub struct Node<J, T> {
     journal: J,
     transport: T,
     sequencer: Sequencer,
-    /// Set when `start` replayed a non-empty journal, or when a poll comes more than
-    /// [`STALL_GAP_MS`] after the previous one: that poll sequences `Resume` first.
+    /// Set when `start` replayed a non-empty journal; the first poll takes it and sequences
+    /// `Resume` first. A stall never sets it: `step` derives a local `stalled` flag from
+    /// `last_poll_wall` and ORs it in, so a stall can add a `Resume` without touching this field.
     resume_pending: bool,
     /// The wall clock of the previous poll (`None` before the first). Not `engine.now()`: idle
     /// polls log nothing, so the engine's clock legitimately falls behind the wall clock.
