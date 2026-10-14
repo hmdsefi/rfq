@@ -15,12 +15,21 @@ services:
     ipc: shareable
     shm_size: 512m
     volumes: [archive:/data/archive]
+    # If the driver process dies it comes back with its journal (the `archive` volume). The engine
+    # then halts on the dead driver, and its own restart policy replays from the recovered Archive.
+    restart: on-failure
 
   engine:
     build: { context: ., dockerfile: docker/rust.Dockerfile, args: { BIN: rfq-node } }
     ipc: "service:aeron"
     # An init process as PID 1, so SIGTERM stops the node at once (`docker compose stop`).
     init: true
+    # A halted node (any port failure, see `Node::poll`) exits with status 1. This brings it back, and
+    # it replays the journal. A journal it cannot replay fails every start, so the restarts repeat
+    # (with Docker's growing back-off) until someone reads the log. `docker compose kill` counts as
+    # a manual stop that the policy ignores, so scripts/demo.sh's SIGKILL and its own `start` do not
+    # race with a restart.
+    restart: on-failure
     environment:
       RFQ_JOURNAL: archive
       # Logs `applied seq=<n> hash=<state hash>` after every batch: scripts/demo.sh compares the
