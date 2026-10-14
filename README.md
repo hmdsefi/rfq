@@ -59,7 +59,19 @@ docker compose run --rm demo [scenario]     # run all scenarios again, or just o
 docker compose --profile demo down -v       # stop everything and delete the Archive volume
 ```
 
-`RFQ_DEMO_TIMEOUT` (seconds, default 120) is how long the script waits for the engine at each step. Docker Compose details are in [transport-aeron.md](docs/specs/transport-aeron.md#docker-compose). Without the `aeron` feature, `rfq-node` and `rfq-demo` only print that Aeron is missing and exit with status 2.
+`RFQ_DEMO_TIMEOUT` (seconds, default 120) is how long the script waits for the engine at each step. Docker Compose details are in [transport-aeron.md](docs/specs/transport-aeron.md#docker-compose). Without the `aeron` feature, `rfq-node`, `rfq-demo` and `rfq-gateway` only print that Aeron is missing and exit with status 2.
+
+### Gateway (WebSocket)
+
+`rfq-gateway` is the client edge ([gateway.md](docs/specs/gateway.md)): JSON over a WebSocket on `ws://127.0.0.1:8080`, published on the host's loopback only. It puts each client's commands on ingress with the actor's next nonce, and sends every egress batch back, filtered for the connection's view (`admin`, or one account), with a `result` per command and a `status` when the engine goes down or comes back. Start it next to the engine, then drive one trade through it with the smoke script (Node 22 or later):
+
+```bash
+docker compose up -d aeron engine gateway
+node scripts/gateway-smoke.mjs                # prints GATEWAY SMOKE OK
+docker compose logs -f gateway engine         # every command, result and status change
+```
+
+If port 8080 is taken on the host, set `RFQ_GATEWAY_PORT` (for example `RFQ_GATEWAY_PORT=18080 docker compose up -d gateway`) and pass the URL: `node scripts/gateway-smoke.mjs ws://127.0.0.1:18080`.
 
 ## Layout
 
@@ -72,6 +84,7 @@ Code is split into hexagonal layers, and dependencies point inward only: crate b
 | [`rfq-infra`](crates/rfq-infra) | Infrastructure | Adapters for the ports: the versioned `codec`, `FileJournal`, `MemJournal`, `MemTransport`; with feature `aeron`, `AeronTransport` and `ArchiveJournal` (Aeron Archive). |
 | [`rfq-node`](crates/rfq-node) | Composition root (binary) | Reads its configuration from the environment, wires an Aeron transport and a journal into `Node`, and runs the loop. |
 | [`rfq-demo`](crates/rfq-demo) | Client (binary) | Runs the scripted scenarios against a live node over Aeron and checks the events it gets back. |
+| [`rfq-gateway`](crates/rfq-gateway) | Client edge (library and binary) | The WebSocket gateway. The library is pure (protocol, per-viewer filter, nonce book, hub state machine); the binary adds the Aeron adapter, the WebSocket server and the hub loop. |
 | [`rfq-testkit`](crates/rfq-testkit) | Test support | The test `Harness`, well-known accounts, and the scripted scenarios (shared by the tests and the demo). |
 
 ## Where each deliverable is
