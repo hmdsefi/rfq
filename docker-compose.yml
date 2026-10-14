@@ -1,0 +1,39 @@
+# The RFQ engine on Aeron, end to end. Run it all with ./scripts/demo.sh.
+#
+#   aeron   the Java ArchivingMediaDriver: media driver + Archive (the engine's journal)
+#   engine  rfq-node: sequencer + engine, journaling to the Archive
+#   demo    rfq-demo: runs the scripted scenarios as an Aeron client (profile `demo`, run on demand:
+#           `docker compose run --rm demo [scenario]`)
+#
+# Every stream is `aeron:ipc`, so the containers share the driver's IPC namespace (`/dev/shm/aeron`),
+# not a network. See docs/specs/transport-aeron.md.
+name: rfq
+
+services:
+  aeron:
+    build: docker/aeron
+    ipc: shareable
+    shm_size: 512m
+    volumes: [archive:/data/archive]
+
+  engine:
+    build: { context: ., dockerfile: docker/rust.Dockerfile, args: { BIN: rfq-node } }
+    ipc: "service:aeron"
+    # An init process as PID 1, so SIGTERM stops the node at once (`docker compose stop`).
+    init: true
+    environment:
+      RFQ_JOURNAL: archive
+      # Logs `applied seq=<n> hash=<state hash>` after every batch: scripts/demo.sh compares the
+      # last one before a crash with the `replayed seq=<n> hash=<state hash>` after the restart.
+      RFQ_HASH_EVERY_BATCH: "1"
+    depends_on: [aeron]
+
+  demo:
+    build: { context: ., dockerfile: docker/rust.Dockerfile, args: { BIN: rfq-demo } }
+    ipc: "service:aeron"
+    init: true
+    depends_on: [engine]
+    profiles: [demo]
+
+volumes:
+  archive: {}

@@ -840,6 +840,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rfq-demo"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "rfq-app",
+ "rfq-domain",
+ "rfq-infra",
+ "rfq-testkit",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "rfq-domain"
 version = "0.1.0"
 dependencies = [

@@ -15,6 +15,9 @@ mod archive;
 mod transport;
 
 pub use archive::ArchiveJournal;
+/// The pinned `rusteron-archive`, for clients (such as `rfq-demo`) that open their own
+/// publications and subscriptions: one version pin for the whole workspace.
+pub use rusteron_archive;
 pub use rusteron_archive::Aeron;
 pub use transport::AeronTransport;
 
@@ -29,13 +32,13 @@ pub const REPLAY: i32 = 1004;
 
 /// The channel of every stream, and of the Archive control session. Containers share IPC, not a
 /// network, so a UDP `localhost` channel would never reach the Archive.
-pub(crate) const IPC: &CStr = c"aeron:ipc";
+pub const IPC: &CStr = c"aeron:ipc";
 
 /// How long to keep retrying a connection to a driver or Archive that may still be starting.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const CONNECT_BACKOFF: Duration = Duration::from_millis(250);
 /// How long the driver may take to create a publication or subscription.
-pub(crate) const RESOURCE_TIMEOUT: Duration = Duration::from_secs(10);
+pub const RESOURCE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Why an Aeron adapter call failed. The node treats every one as fatal. Each message names what
 /// failed; the cause, if any, is its `source()`.
@@ -151,7 +154,7 @@ fn chain(e: &dyn std::error::Error) -> String {
 
 /// What to do when no subscriber is connected to a publication.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Unconnected {
+pub enum Unconnected {
     /// Keep retrying (the log: the Archive's recording subscription must be there).
     Wait,
     /// Give up on this message and return `Ok(None)` (egress: events are derivable from the log).
@@ -161,7 +164,7 @@ pub(crate) enum Unconnected {
 /// Offers `bytes` through `publication` (a publication's `offer`), retrying back pressure and
 /// admin actions for up to `patience`. Returns the new stream position, or `None` if nobody
 /// subscribes and `unconnected` is [`Unconnected::Drop`].
-pub(crate) fn offer(
+pub fn offer(
     publication: impl Fn(&[u8]) -> Result<i64, AeronOfferError>,
     bytes: &[u8],
     max_message: usize,
