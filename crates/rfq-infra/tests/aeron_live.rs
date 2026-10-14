@@ -196,15 +196,30 @@ fn archive_journal_replays_every_recording_across_restarts_and_crashes() {
     let batch2 = vec![user(n + 4, Action::Withdraw { amount: 4 })];
     append_durably(&mut second, &batch2);
     log.extend(batch2);
-    // A crash: the publication is never closed, so its recording stays active.
-    std::mem::forget(second);
+    // A crash: `second` is never closed, so its publication stays open and its recording active,
+    // as when a node has died and the driver has not yet timed its client out.
 
     let mut third = ArchiveJournal::new(&aeron).unwrap();
-    assert_eq!(replay_all(&mut third), log);
+    assert_eq!(
+        replay_all(&mut third),
+        log,
+        "replay seals the dead node's recording"
+    );
     let batch3 = vec![user(n + 5, Action::Withdraw { amount: 5 })];
     append_durably(&mut third, &batch3);
     log.extend(batch3);
+    // The dead node's publication offers once more (its unrecorded tail). Its session is no
+    // longer recorded, so the offer finds no subscriber and never reaches the log. Had the two
+    // nodes shared one publication session, `third`'s recording would hold this record: a
+    // duplicate seq on the next replay.
+    let zombie = second.append(&user(n + 5, Action::Withdraw { amount: 99 }));
+    assert!(zombie.is_err(), "a dead node's write must not be recorded");
+    assert!(
+        third.replay(&mut |_| {}).is_err(),
+        "replay after append would seal our own recording"
+    );
     drop(third);
+    drop(second);
 
     let mut fourth = ArchiveJournal::new(&aeron).unwrap();
     assert_eq!(replay_all(&mut fourth), log);

@@ -7,9 +7,7 @@
 use std::ffi::CStr;
 use std::time::{Duration, Instant};
 
-use rusteron_archive::{
-    AeronArchiveError, AeronCError, AeronContext, AeronHeader, AeronOfferError, AeronPublication,
-};
+use rusteron_archive::{AeronArchiveError, AeronCError, AeronContext, AeronHeader, AeronOfferError};
 
 use crate::codec::CodecError;
 
@@ -85,6 +83,16 @@ pub enum AeronError {
     NothingAppended,
     #[error("recording {0} of the log stopped while the node was running")]
     RecordingStopped(i64),
+    #[error("recording {recording_id} starts at position {start}, but the log publication is at {position}")]
+    RecordingMisaligned {
+        recording_id: i64,
+        start: i64,
+        position: i64,
+    },
+    #[error("replay is only allowed before the first append")]
+    ReplayAfterAppend,
+    #[error("the archive control session was closed after the log recording started")]
+    ControlSessionClosed,
 }
 
 /// Connects a client to the media driver whose directory is `dir` (e.g. `/dev/shm/aeron`),
@@ -150,10 +158,11 @@ pub(crate) enum Unconnected {
     Drop,
 }
 
-/// Offers `bytes`, retrying back pressure and admin actions for up to `patience`. Returns the new
-/// stream position, or `None` if nobody subscribes and `unconnected` is [`Unconnected::Drop`].
+/// Offers `bytes` through `publication` (a publication's `offer`), retrying back pressure and
+/// admin actions for up to `patience`. Returns the new stream position, or `None` if nobody
+/// subscribes and `unconnected` is [`Unconnected::Drop`].
 pub(crate) fn offer(
-    publication: &AeronPublication,
+    publication: impl Fn(&[u8]) -> Result<i64, AeronOfferError>,
     bytes: &[u8],
     max_message: usize,
     what: &'static str,
@@ -169,7 +178,7 @@ pub(crate) fn offer(
     }
     let start = Instant::now();
     loop {
-        match publication.offer(bytes) {
+        match publication(bytes) {
             Ok(position) => return Ok(Some(position)),
             Err(AeronOfferError::NotConnected) if unconnected == Unconnected::Drop => return Ok(None),
             Err(e) if e.is_retryable() && start.elapsed() < patience => std::thread::yield_now(),

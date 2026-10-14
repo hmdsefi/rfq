@@ -3,20 +3,31 @@
 //! Each node start records the stream anew, so the log is the sequence of all recordings of
 //! stream 1002 in recording-id order. Startup replays each over `[start, stop)` onto stream 1004.
 //!
-//! Crash handling (spike-verified): a node that dies without closing its publication leaves its
-//! recording active until the driver times the dead client out (about 10 s). Replay first stops
-//! such a recording, so every recording has a final stop position and the log being replayed
-//! cannot grow while it is read; anything the dead node offered but the Archive never recorded
-//! was never durable, so it was never applied or published. The next `start_recording` would
-//! otherwise fail with `ActiveSubscription` (it still stops and retries if that happens).
+//! **One writer per driver.** The journal assumes it is the only node writing stream 1002 on this
+//! media driver and Archive: at startup it stops every recording of the stream that is still
+//! active, which would cut off a second live node.
 //!
-//! Durability is read from the recording's position counter in the driver's shared memory, not
-//! asked of the Archive (`get_recording_position`). The Archive pings each control session every
-//! second and closes it once a ping has not fitted in the response stream for its connect timeout,
-//! and the node only reads that stream during a request. After roughly nine idle minutes the
-//! pings fill it and the session is gone, so a control request in `wait_durable` would fail on
-//! the first command after an idle spell. The control session is therefore used only at startup
-//! (replay, starting the recording); closing it does not stop the recording.
+//! **Only our own bytes are recorded.** Each node writes the log through an *exclusive*
+//! publication, which has a session of its own, and records exactly that session
+//! (`aeron:ipc?session-id=<ours>`). A crashed node's publication lives on in the driver until its
+//! client times out (about 10 s), possibly holding commands it offered but the Archive never
+//! recorded. Those were never durable, so never applied or published. With a shared publication
+//! the next node would inherit that session, and its recording could capture those bytes as if
+//! they were its own (duplicate `seq`s). A session-scoped recording of an exclusive publication
+//! cannot, and before the first append the new recording must start exactly at our publication's
+//! position.
+//!
+//! **Crash handling.** A dead node's recording stays active until the driver times it out. Replay
+//! first stops every active recording (by recording id), so each has a final stop position and
+//! the log cannot grow while it is read.
+//!
+//! **Durability** is read from the recording's position counter in the driver's shared memory
+//! (the value `get_recording_position` reports), not asked of the Archive. The Archive pings each
+//! control session every second and closes it once a ping has not fitted in the response stream
+//! for its connect timeout; an unpolled session is gone after about nine idle minutes. So the
+//! control session is used only at startup (replay, starting the recording) and closed right
+//! after: closing it does not stop the recording, and an unpolled tethered response subscription
+//! could otherwise hold back the Archive's other clients.
 use std::collections::BTreeSet;
 use std::ffi::CString;
 use std::time::{Duration, Instant};
@@ -25,8 +36,8 @@ use rfq_app::{BoxError, Journal};
 use rfq_domain::SequencedCommand;
 use rusteron_archive::{
     Aeron, AeronArchive, AeronArchiveAsyncConnect, AeronArchiveContext, AeronArchiveErrorCode,
-    AeronArchiveRecordingDescriptor, AeronArchiveReplayParams, AeronCountersReader, AeronHeader,
-    AeronPublication, ChannelUri, Handlers, RecordingPos, SOURCE_LOCATION_LOCAL,
+    AeronArchiveRecordingDescriptor, AeronArchiveReplayParams, AeronCountersReader,
+    AeronExclusivePublication, AeronHeader, ChannelUri, Handlers, RecordingPos, SOURCE_LOCATION_LOCAL,
 };
 
 use super::{AeronError, IPC, LOG, REPLAY, RESOURCE_TIMEOUT, Unconnected, frame_of, offer, retry};
@@ -59,9 +70,9 @@ struct Recording {
     session: i32,
 }
 
-/// This node's own recording and the publication it records.
+/// This node's own recording and the exclusive publication it records.
 struct Log {
-    publication: AeronPublication,
+    publication: AeronExclusivePublication,
     max_message: usize,
     recording_id: i64,
     /// The recording's position counter: how far the Archive has written the log.
@@ -71,7 +82,8 @@ struct Log {
 
 pub struct ArchiveJournal {
     aeron: Aeron,
-    archive: AeronArchive,
+    /// The Archive control session: used by `replay` and to start the recording, then closed.
+    archive: Option<AeronArchive>,
     /// Started by the first `append`, after `replay` has read the earlier recordings.
     log: Option<Log>,
 }
@@ -93,16 +105,22 @@ impl ArchiveJournal {
         tracing::info!(archive_id = archive.get_archive_id(), "connected to the archive");
         Ok(ArchiveJournal {
             aeron: aeron.clone(),
-            archive,
+            archive: Some(archive),
             log: None,
         })
+    }
+
+    /// The control session, which is closed once this node's recording has started.
+    fn archive(&self) -> Result<&AeronArchive, AeronError> {
+        self.archive.as_ref().ok_or(AeronError::ControlSessionClosed)
     }
 
     /// Every recording of the log stream, in recording-id order.
     fn recordings(&self) -> Result<Vec<Recording>, AeronError> {
         let mut out = Vec::new();
         let mut count = 0;
-        self.archive.list_recordings_for_uri_fn(
+        // `aeron:ipc` matches as a fragment, so session-scoped recordings are listed too.
+        self.archive()?.list_recordings_for_uri_fn(
             &mut count,
             0,
             i32::MAX,
@@ -121,21 +139,28 @@ impl ArchiveJournal {
         Ok(out)
     }
 
-    /// Stops a recording left active by a node that crashed, then waits until every recording
-    /// has its final stop position.
+    /// Stops every recording left active by a node that crashed, then waits until each has its
+    /// final stop position.
     fn sealed_recordings(&self) -> Result<Vec<Recording>, AeronError> {
         let start = Instant::now();
         let mut stop_requested = false;
         loop {
             let all = self.recordings()?;
-            if all.iter().all(|r| r.stop != NULL_POSITION) {
+            let active: Vec<i64> = all
+                .iter()
+                .filter(|r| r.stop == NULL_POSITION)
+                .map(|r| r.id)
+                .collect();
+            if active.is_empty() {
                 return Ok(all);
             }
             if !stop_requested {
                 tracing::warn!(
                     "a log recording is still active (the last node did not stop cleanly); stopping it"
                 );
-                self.archive.try_stop_recording_channel_and_stream(IPC, LOG)?;
+                for &id in &active {
+                    self.archive()?.try_stop_recording_by_identity(id)?;
+                }
                 stop_requested = true;
             }
             if start.elapsed() > ARCHIVE_TIMEOUT {
@@ -155,11 +180,10 @@ impl ArchiveJournal {
             .position(r.start)
             .length(r.stop - r.start)
             .build()?;
-        let replay_session = self.archive.start_replay(r.id, IPC, REPLAY, &params)?;
+        let replay_session = self.archive()?.start_replay(r.id, IPC, REPLAY, &params)?;
         // Subscribe to this replay's session only, so no other replay on the stream can mix in.
         let session = image_session(replay_session);
-        let channel = CString::new(ChannelUri::add_session_id("aeron:ipc", session))
-            .expect("a channel URI built from an IPC channel and a number has no NUL byte");
+        let channel = session_channel(session);
         let subscription = self
             .aeron
             .async_add_subscription(&channel, REPLAY, Handlers::NONE, Handlers::NONE)?
@@ -230,49 +254,54 @@ impl ArchiveJournal {
         Ok(())
     }
 
-    /// This node's log: starts a new recording of the log stream and the publication it records.
+    /// This node's log, started by the first call: an exclusive publication on the log stream
+    /// and a new recording of exactly its session. Closes the control session afterwards.
     fn log(&mut self) -> Result<&Log, AeronError> {
         if self.log.is_none() {
             self.log = Some(self.start_log()?);
+            // Dropping the last handle closes the control session (the recording continues).
+            self.archive = None;
+            tracing::info!("closed the archive control session");
         }
         Ok(self.log.as_ref().expect("set above"))
     }
 
     fn start_log(&self) -> Result<Log, AeronError> {
+        let archive = self.archive()?;
         let before: BTreeSet<i64> = self.recordings()?.iter().map(|r| r.id).collect();
+        // Exclusive: a session of our own, never shared with a crashed node's publication.
+        let publication = self
+            .aeron
+            .async_add_exclusive_publication(IPC, LOG)?
+            .poll_blocking(RESOURCE_TIMEOUT)?;
+        let constants = publication.get_constants()?;
+        let (session, max_message) = (constants.session_id(), constants.max_message_length());
+        let channel = session_channel(session);
         let mut attempt = 1;
         loop {
-            match self
-                .archive
-                .start_recording(IPC, LOG, SOURCE_LOCATION_LOCAL, true)
-            {
+            match archive.start_recording(&channel, LOG, SOURCE_LOCATION_LOCAL, true) {
                 Ok(_) => break,
                 Err(e) if e.code == AeronArchiveErrorCode::ActiveSubscription && attempt < START_ATTEMPTS => {
-                    tracing::warn!("the log stream is already being recorded; stopping that recording");
-                    self.archive.stop_recording_channel_and_stream(IPC, LOG)?;
+                    tracing::warn!(
+                        session,
+                        "this log session is already being recorded; stopping that recording"
+                    );
+                    archive.stop_recording_channel_and_stream(&channel, LOG)?;
                     attempt += 1;
                 }
                 Err(e) => return Err(e.into()),
             }
         }
-        let publication = self
-            .aeron
-            .async_add_publication(IPC, LOG)?
-            .poll_blocking(RESOURCE_TIMEOUT)?;
-        let max_message = publication.get_constants()?.max_message_length();
-        // The new recording is the one not listed before. If the driver still holds a crashed
-        // node's publication, ours shares its session (and its last recording's session id).
-        let session = publication.session_id();
+        // The new recording is the one not listed before, of our session.
         let waiting = Instant::now();
-        let recording_id = loop {
+        let recording = loop {
             let new = self
                 .recordings()?
                 .into_iter()
                 .filter(|r| !before.contains(&r.id) && r.session == session)
-                .map(|r| r.id)
-                .max();
-            if let Some(id) = new {
-                break id;
+                .max_by_key(|r| r.id);
+            if let Some(r) = new {
+                break r;
             }
             if waiting.elapsed() > ARCHIVE_TIMEOUT {
                 return Err(AeronError::Timeout {
@@ -282,6 +311,17 @@ impl ArchiveJournal {
             }
             std::thread::sleep(Duration::from_millis(1));
         };
+        // Nothing has been offered yet, so a recording that starts anywhere but at our position
+        // would hold bytes that are not ours.
+        let position = publication.position();
+        if recording.start != position {
+            return Err(AeronError::RecordingMisaligned {
+                recording_id: recording.id,
+                start: recording.start,
+                position,
+            });
+        }
+        let recording_id = recording.id;
         let counters = self.aeron.counters_reader();
         let waiting = Instant::now();
         let counter_id = loop {
@@ -319,7 +359,7 @@ impl Journal for ArchiveJournal {
         let log = self.log()?;
         let bytes = encode(sc);
         let position = offer(
-            &log.publication,
+            |b| log.publication.offer(b),
             &bytes,
             log.max_message,
             "the log",
@@ -359,8 +399,12 @@ impl Journal for ArchiveJournal {
         }
     }
 
-    /// Replays every recording of the log stream in recording-id order.
+    /// Replays every recording of the log stream in recording-id order. Only before the first
+    /// `append`: afterwards it would seal this node's own live recording.
     fn replay(&mut self, f: &mut dyn FnMut(SequencedCommand)) -> Result<(), BoxError> {
+        if self.log.is_some() {
+            return Err(AeronError::ReplayAfterAppend.into());
+        }
         for r in self.sealed_recordings()? {
             if r.stop > r.start {
                 self.replay_recording(&r, f)?;
@@ -368,6 +412,12 @@ impl Journal for ArchiveJournal {
         }
         Ok(())
     }
+}
+
+/// `aeron:ipc?session-id=<session>`: the IPC channel restricted to one publication session.
+fn session_channel(session: i32) -> CString {
+    CString::new(ChannelUri::add_session_id("aeron:ipc", session))
+        .expect("a channel URI built from an IPC channel and a number has no NUL byte")
 }
 
 /// The session id of a replay's image: by Aeron's definition, the low 32 bits of the replay

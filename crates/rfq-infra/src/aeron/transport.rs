@@ -75,7 +75,7 @@ impl Transport for AeronTransport {
         for chunk in split_batch(batch, self.max_message) {
             let bytes = encode(&chunk);
             let sent = offer(
-                &self.egress,
+                |b| self.egress.offer(b),
                 &bytes,
                 self.max_message,
                 "egress",
