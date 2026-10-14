@@ -3,7 +3,7 @@
 //!
 //! Every mutation computes all of its arithmetic before the first write, so a rejected call leaves
 //! the ledger untouched. Overflow and underflow are returned as errors, never wrapped or panicked on.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -36,6 +36,10 @@ pub struct Ledger {
     next_hold: u64,
     deposited: Amount,
     withdrawn: Amount,
+    /// Accounts changed since the last `take_touched`. Output only, not state: skipped by serde,
+    /// so it never reaches `state_hash`, snapshots or the journal.
+    #[serde(skip)]
+    touched: BTreeSet<AccountId>,
 }
 
 /// Money addition. Overflow is an error, never a wrap.
@@ -65,6 +69,11 @@ impl Ledger {
         self.holds.keys().copied()
     }
 
+    /// The accounts changed since the last call, emptying the set.
+    pub fn take_touched(&mut self) -> BTreeSet<AccountId> {
+        std::mem::take(&mut self.touched)
+    }
+
     pub fn deposit(&mut self, a: AccountId, x: Amount) -> Result<(), LedgerError> {
         // free ≤ deposited, so the account total cannot overflow once the deposited total fits.
         // Both are checked anyway, so no path relies on that argument.
@@ -72,6 +81,7 @@ impl Ledger {
         let free = add(self.balance(a).free, x)?;
         self.deposited = deposited;
         self.balances.entry(a).or_default().free = free;
+        self.touched.insert(a);
         Ok(())
     }
 
@@ -81,6 +91,7 @@ impl Ledger {
         let withdrawn = add(self.withdrawn, x)?;
         b.free = free;
         self.withdrawn = withdrawn;
+        self.touched.insert(a);
         Ok(())
     }
 
@@ -100,6 +111,7 @@ impl Ledger {
                 amount: x,
             },
         );
+        self.touched.insert(a);
         Ok(id)
     }
 
@@ -115,6 +127,7 @@ impl Ledger {
         b.reserved = reserved;
         b.free = free;
         self.holds.remove(&h);
+        self.touched.insert(hold.account);
         Ok(hold.amount)
     }
 
@@ -133,6 +146,7 @@ impl Ledger {
         b.escrowed = escrowed;
         b.free = free;
         self.holds.remove(&h);
+        self.touched.insert(hold.account);
         Ok(())
     }
 
@@ -147,6 +161,7 @@ impl Ledger {
             .ok_or(LedgerError::InsufficientFunds)?;
         src.escrowed = escrowed;
         self.balances.entry(to).or_default().free = to_free;
+        self.touched.extend([from, to]);
         Ok(())
     }
 
@@ -162,6 +177,7 @@ impl Ledger {
         owner.reserved = reserved;
         self.balances.entry(to).or_default().free = to_free;
         self.holds.remove(&h);
+        self.touched.extend([hold.account, to]);
         Ok(hold.amount)
     }
 
@@ -385,5 +401,63 @@ mod tests {
         let mut l = funded(100);
         l.withdrawn = 101;
         assert!(l.check().unwrap_err().starts_with("I1"));
+    }
+
+    // The touched set (gateway.md §2.1): each mutator names the accounts it changed, a failed call none.
+
+    fn touched(l: &mut Ledger) -> Vec<AccountId> {
+        l.take_touched().into_iter().collect()
+    }
+
+    #[test]
+    fn every_mutator_touches_the_accounts_it_changes() {
+        let mut l = Ledger::default();
+        l.deposit(A, 100).unwrap();
+        assert_eq!(touched(&mut l), vec![A]);
+        assert_eq!(touched(&mut l), Vec::<AccountId>::new(), "taking empties the set");
+
+        let h = l.hold(A, 60).unwrap();
+        assert_eq!(touched(&mut l), vec![A]);
+        l.release(h).unwrap();
+        assert_eq!(touched(&mut l), vec![A]);
+
+        let h = l.hold(A, 50).unwrap();
+        l.take_touched();
+        l.escrow_from_hold(h, 30).unwrap();
+        assert_eq!(touched(&mut l), vec![A]);
+
+        l.pay_from_escrow(A, 30, B).unwrap();
+        assert_eq!(touched(&mut l), vec![A, B]);
+
+        let h = l.hold(A, 20).unwrap();
+        l.take_touched();
+        l.forfeit(h, B).unwrap();
+        assert_eq!(touched(&mut l), vec![A, B]);
+
+        l.withdraw(B, 10).unwrap();
+        assert_eq!(touched(&mut l), vec![B]);
+    }
+
+    #[test]
+    fn a_failed_mutation_touches_nothing() {
+        let mut l = funded(100);
+        l.take_touched();
+        assert!(l.hold(A, 101).is_err());
+        assert!(l.withdraw(A, 101).is_err());
+        assert!(l.withdraw(B, 1).is_err());
+        assert!(l.deposit(B, u64::MAX).is_err());
+        assert!(l.release(HoldId(9)).is_err());
+        assert!(l.escrow_from_hold(HoldId(9), 1).is_err());
+        assert!(l.pay_from_escrow(A, 1, B).is_err());
+        assert!(l.forfeit(HoldId(9), B).is_err());
+        assert_eq!(touched(&mut l), Vec::<AccountId>::new());
+    }
+
+    #[test]
+    fn the_touched_set_is_not_serialized() {
+        let mut l = funded(100);
+        let with_touch = bincode::serialize(&l).unwrap();
+        l.take_touched();
+        assert_eq!(bincode::serialize(&l).unwrap(), with_touch);
     }
 }

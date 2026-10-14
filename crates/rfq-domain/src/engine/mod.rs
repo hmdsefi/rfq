@@ -73,8 +73,17 @@ impl Engine {
         self.timers.first().map(|(t, _)| *t)
     }
 
+    /// The accounts the last `apply` changed (its timers included), with each one's balance after
+    /// it, in account order. Gateways send these with the command's events (docs/specs/gateway.md §2).
+    pub fn take_touched_balances(&mut self) -> Vec<(AccountId, Balance)> {
+        let touched = self.ledger.take_touched();
+        touched.into_iter().map(|a| (a, self.ledger.balance(a))).collect()
+    }
+
     /// Applies one sequenced command. Commands with `seq <= last_seq` are ignored (replay-safe).
     pub fn apply(&mut self, sc: &SequencedCommand) -> Vec<Emitted> {
+        // A previous command's touches are never reported again.
+        self.ledger.take_touched();
         let mut out = Vec::new();
         if sc.seq <= self.last_seq {
             return out;
