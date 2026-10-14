@@ -16,14 +16,14 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       # Same version as rust-toolchain.toml. Pinned to a commit (tag v1 = master on 2026-10-14),
       # not a moving branch.
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
         with:
           toolchain: 1.99.0
           components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       # `--locked`: Cargo.lock is the audited dependency set, so CI fails instead of silently
       # re-resolving it. `cargo fmt` has no `--locked` flag.
       - run: cargo fmt --all --check
@@ -34,8 +34,8 @@ jobs:
   deny:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
 
   # The only CI coverage of the `aeron` feature: the Dockerfile installs the build tools and builds
   # each binary with `--features aeron --locked` (a cold build takes several minutes). Both binaries
@@ -44,6 +44,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - run: docker build -f docker/rust.Dockerfile --build-arg BIN=rfq-node .
       - run: docker build -f docker/rust.Dockerfile --build-arg BIN=rfq-demo .
