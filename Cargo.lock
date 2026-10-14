@@ -343,8 +343,16 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "proptest",
+ "rfq-testkit",
  "serde",
  "sha2",
+]
+
+[[package]]
+name = "rfq-testkit"
+version = "0.1.0"
+dependencies = [
+ "rfq-domain",
 ]
 
 [[package]]

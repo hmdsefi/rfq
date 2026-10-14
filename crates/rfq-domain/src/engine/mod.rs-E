@@ -1,0 +1,367 @@
+mod account;
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+use crate::command::{Action, Command, Config, Genesis, SequencedCommand};
+use crate::event::{Emitted, Event, RejectReason};
+use crate::ledger::{Balance, Ledger};
+use crate::model::*;
+use crate::types::*;
+
+/// Message for `.expect` on mutations whose preconditions were checked in validation.
+#[expect(dead_code, reason = "first used by the request and quote handlers in Task 4")]
+pub(crate) const VALIDATED: &str = "precondition checked during validation";
+
+pub(crate) type Out = Vec<Emitted>;
+pub(crate) type Handled = Result<(), RejectReason>;
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Engine {
+    pub(crate) genesis: Option<Genesis>,
+    pub(crate) last_seq: u64,
+    pub(crate) now: Timestamp,
+    pub(crate) nonces: BTreeMap<AccountId, u64>,
+    pub(crate) ledger: Ledger,
+    pub(crate) contracts: BTreeMap<ContractId, Contract>,
+    pub(crate) requests: BTreeMap<RequestId, Request>,
+    pub(crate) quotes: BTreeMap<QuoteId, Quote>,
+    pub(crate) positions: BTreeMap<PositionId, Position>,
+    pub(crate) next_position: u64,
+    pub(crate) timers: BTreeSet<(Timestamp, TimerKey)>,
+}
+
+impl Engine {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn last_seq(&self) -> u64 {
+        self.last_seq
+    }
+    pub fn now(&self) -> Timestamp {
+        self.now
+    }
+    pub fn balance(&self, a: AccountId) -> Balance {
+        self.ledger.balance(a)
+    }
+    pub fn request(&self, id: RequestId) -> Option<&Request> {
+        self.requests.get(&id)
+    }
+    pub fn quote(&self, id: QuoteId) -> Option<&Quote> {
+        self.quotes.get(&id)
+    }
+    pub fn contract(&self, id: ContractId) -> Option<&Contract> {
+        self.contracts.get(&id)
+    }
+    pub fn position(&self, id: PositionId) -> Option<&Position> {
+        self.positions.get(&id)
+    }
+    pub fn requests(&self) -> impl Iterator<Item = &Request> {
+        self.requests.values()
+    }
+    pub fn quotes(&self) -> impl Iterator<Item = &Quote> {
+        self.quotes.values()
+    }
+    pub fn contracts(&self) -> impl Iterator<Item = &Contract> {
+        self.contracts.values()
+    }
+    pub fn next_timer(&self) -> Option<Timestamp> {
+        self.timers.first().map(|(t, _)| *t)
+    }
+
+    /// Applies one sequenced command. Commands with `seq <= last_seq` are ignored (replay-safe).
+    pub fn apply(&mut self, sc: &SequencedCommand) -> Vec<Emitted> {
+        let mut out = Vec::new();
+        if sc.seq <= self.last_seq {
+            return out;
+        }
+        self.last_seq = sc.seq;
+        self.now = self.now.max(sc.time);
+        if self.genesis.is_some() {
+            self.fire_due_timers(&mut out);
+        }
+        match &sc.cmd {
+            Command::Genesis(g) => {
+                if self.genesis.is_some() {
+                    out.push(Emitted::public(Event::CommandRejected {
+                        reason: RejectReason::AlreadyInitialized,
+                    }));
+                } else {
+                    self.genesis = Some(g.clone());
+                    out.push(Emitted::public(Event::Initialized));
+                }
+            }
+            Command::Tick => {}
+            Command::User { actor, nonce, action } => self.apply_user(*actor, *nonce, action, &mut out),
+        }
+        debug_assert_eq!(self.check_invariants(), Ok(()));
+        out
+    }
+
+    fn apply_user(&mut self, actor: AccountId, nonce: u64, action: &Action, out: &mut Out) {
+        let reject = |out: &mut Out, reason| out.push(Emitted::to(actor, Event::CommandRejected { reason }));
+        if self.genesis.is_none() {
+            return reject(out, RejectReason::NotInitialized);
+        }
+        if nonce <= self.nonces.get(&actor).copied().unwrap_or(0) {
+            return reject(out, RejectReason::Duplicate);
+        }
+        // A valid nonce is consumed even if the action is then rejected: retries stay idempotent.
+        self.nonces.insert(actor, nonce);
+        let result = match action {
+            Action::Deposit { to, amount } => self.deposit(actor, *to, *amount, out),
+            Action::Withdraw { amount } => self.withdraw(actor, *amount, out),
+            _ => Err(RejectReason::Unsupported),
+        };
+        if let Err(reason) = result {
+            reject(out, reason);
+        }
+    }
+
+    // Placeholder dispatch: Tasks 4-6 add the real arms and make this match exhaustive. Each task
+    // that touches it must drop these `expect`s; an unfulfilled expectation fails clippy.
+    #[expect(clippy::match_single_binding, reason = "timer arms are added in Tasks 4-6")]
+    #[expect(
+        unused_variables,
+        reason = "`out` is first written by the timer handlers in Task 4"
+    )]
+    fn fire_due_timers(&mut self, out: &mut Out) {
+        while let Some(&(at, key)) = self.timers.first() {
+            if at > self.now {
+                break;
+            }
+            self.timers.pop_first();
+            // Timers are stale-safe: each handler is a no-op if its object moved on.
+            match key {
+                _ => {}
+            }
+        }
+    }
+
+    #[expect(
+        dead_code,
+        reason = "first used when contracts and requests arm timers in Task 4"
+    )]
+    pub(crate) fn arm(&mut self, at: Timestamp, key: TimerKey) {
+        self.timers.insert((at, key));
+    }
+
+    pub(crate) fn genesis(&self) -> &Genesis {
+        self.genesis.as_ref().expect("initialized")
+    }
+    #[expect(dead_code, reason = "first used by request validation in Task 4")]
+    pub(crate) fn config(&self) -> Config {
+        self.genesis().config
+    }
+
+    pub fn state_hash(&self) -> [u8; 32] {
+        Sha256::digest(bincode::serialize(self).expect("engine state serializes")).into()
+    }
+
+    /// I1–I5 from docs/specs/engine.md §3.
+    pub fn check_invariants(&self) -> Result<(), String> {
+        self.ledger.check()?;
+
+        // I3 escrow. Sums are accumulated in u128 so a corrupt state is reported, never an overflow panic.
+        let mut escrow: BTreeMap<AccountId, u128> = BTreeMap::new();
+        for p in self.positions.values().filter(|p| !p.settled) {
+            if u128::from(p.yes_lock) + u128::from(p.no_lock) != u128::from(p.qty) * u128::from(ONE_DOLLAR) {
+                return Err(format!("I3 position {:?}: locks don't sum to qty × $1", p.id));
+            }
+            *escrow.entry(p.yes_holder).or_default() += u128::from(p.yes_lock);
+            *escrow.entry(p.no_holder).or_default() += u128::from(p.no_lock);
+        }
+        for (a, b) in self.ledger.accounts() {
+            let e = escrow.remove(&a).unwrap_or(0);
+            if u128::from(b.escrowed) != e {
+                return Err(format!(
+                    "I3 escrow: {a:?} escrowed {} != open position locks {e}",
+                    b.escrowed
+                ));
+            }
+        }
+        if let Some(a) = escrow.keys().next() {
+            return Err(format!(
+                "I3 escrow: position lock for account {a:?} without balance"
+            ));
+        }
+
+        // I4 ownership: every live hold has exactly one live owner, and terminal objects own none.
+        let mut owned: BTreeSet<HoldId> = BTreeSet::new();
+        let mut own = |h: Option<HoldId>, live: bool, what: String| -> Result<(), String> {
+            match (h, live) {
+                (Some(h), true) if owned.insert(h) => Ok(()),
+                (Some(_), true) => Err(format!("I4 {what}: hold owned twice")),
+                (None, true) => Err(format!("I4 {what}: live without a hold")),
+                (Some(_), false) => Err(format!("I4 {what}: terminal but still holds funds")),
+                (None, false) => Ok(()),
+            }
+        };
+        for r in self.requests.values() {
+            own(r.hold, r.state.is_live(), format!("request {:?}", r.id))?;
+        }
+        for q in self.quotes.values() {
+            own(q.hold, q.state.is_live(), format!("quote {:?}", q.id))?;
+        }
+        for c in self.contracts.values() {
+            if let Some(d) = c.dispute {
+                let live = matches!(c.state, ContractState::Disputed { .. });
+                own(d.hold, live, format!("dispute on {:?}", c.id))?;
+            }
+        }
+        let held: BTreeSet<HoldId> = self.ledger.hold_ids().collect();
+        if held != owned {
+            return Err(format!(
+                "I4 ownership: ledger holds {held:?} != owned holds {owned:?}"
+            ));
+        }
+
+        // I5 no dead ends: every live money-owning object has a timer that ends it.
+        for r in self.requests.values() {
+            let timer = match r.state {
+                RequestState::Open => Some((r.response_deadline, TimerKey::RequestDeadline(r.id))),
+                RequestState::Presented { accept_by } => Some((accept_by, TimerKey::AcceptBy(r.id))),
+                _ => None,
+            };
+            if let Some(t) = timer
+                && !self.timers.contains(&t)
+            {
+                return Err(format!(
+                    "I5 request {:?} in {:?} has no exit timer",
+                    r.id, r.state
+                ));
+            }
+        }
+        for c in self.contracts.values() {
+            let is_final = matches!(c.state, ContractState::Final(_));
+            if !is_final
+                && !self
+                    .timers
+                    .contains(&(c.resolution_deadline, TimerKey::HardDeadline(c.id)))
+            {
+                return Err(format!("I5 contract {:?} has no hard-deadline timer", c.id));
+            }
+        }
+        Ok(())
+    }
+}
+
+// Added beyond the brief: nothing else exercises the I3-I5 checks until Task 4, so mutate state
+// directly and assert each check fires.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const A: AccountId = AccountId(1);
+    const B: AccountId = AccountId(2);
+
+    fn engine() -> Engine {
+        let mut e = Engine::new();
+        let genesis = Genesis {
+            operator: A,
+            arbiter: AccountId(3),
+            treasury: AccountId(4),
+            config: Config::default(),
+        };
+        e.apply(&SequencedCommand {
+            seq: 1,
+            time: 0,
+            cmd: Command::Genesis(genesis),
+        });
+        assert_eq!(e.check_invariants(), Ok(()));
+        e
+    }
+
+    fn position(yes_lock: Amount, no_lock: Amount) -> Position {
+        Position {
+            id: PositionId(1),
+            contract: ContractId(1),
+            request: RequestId(1),
+            qty: 1,
+            yes_holder: A,
+            yes_lock,
+            no_holder: B,
+            no_lock,
+            settled: false,
+        }
+    }
+
+    fn request(hold: Option<HoldId>) -> Request {
+        Request {
+            id: RequestId(7),
+            requester: A,
+            legs: Vec::new(),
+            response_deadline: 100,
+            hold,
+            state: RequestState::Open,
+        }
+    }
+
+    fn err(e: &Engine) -> String {
+        e.check_invariants().unwrap_err()
+    }
+
+    #[test]
+    fn i3_rejects_locks_that_do_not_sum_to_qty_dollars() {
+        let mut e = engine();
+        e.positions.insert(PositionId(1), position(1, 1));
+        assert!(err(&e).starts_with("I3 position"));
+    }
+
+    #[test]
+    fn i3_rejects_open_position_without_matching_escrow() {
+        let mut e = engine();
+        e.positions.insert(PositionId(1), position(600_000, 400_000));
+        assert!(err(&e).starts_with("I3 escrow"));
+    }
+
+    #[test]
+    fn i4_rejects_live_request_without_hold() {
+        let mut e = engine();
+        e.requests.insert(RequestId(7), request(None));
+        e.arm(100, TimerKey::RequestDeadline(RequestId(7)));
+        assert!(err(&e).starts_with("I4 request"));
+    }
+
+    #[test]
+    fn i4_rejects_ledger_hold_with_no_owner() {
+        let mut e = engine();
+        e.ledger.deposit(A, 10).unwrap();
+        e.ledger.hold(A, 10).unwrap();
+        assert!(err(&e).starts_with("I4 ownership"));
+    }
+
+    #[test]
+    fn i5_rejects_live_request_without_exit_timer() {
+        let mut e = engine();
+        e.ledger.deposit(A, 10).unwrap();
+        let hold = e.ledger.hold(A, 10).unwrap();
+        e.requests.insert(RequestId(7), request(Some(hold)));
+        assert!(err(&e).starts_with("I5 request"));
+        e.arm(100, TimerKey::RequestDeadline(RequestId(7)));
+        assert_eq!(e.check_invariants(), Ok(()));
+    }
+
+    #[test]
+    fn i5_rejects_open_contract_without_hard_deadline_timer() {
+        let mut e = engine();
+        let contract = Contract {
+            id: ContractId(1),
+            description: String::new(),
+            oracle: A,
+            trading_close: 10,
+            resolution_deadline: 20,
+            dispute_window: 5,
+            state: ContractState::Trading,
+            dispute: None,
+            positions: Vec::new(),
+        };
+        e.contracts.insert(ContractId(1), contract);
+        assert!(err(&e).starts_with("I5 contract"));
+        e.arm(20, TimerKey::HardDeadline(ContractId(1)));
+        assert_eq!(e.check_invariants(), Ok(()));
+    }
+}

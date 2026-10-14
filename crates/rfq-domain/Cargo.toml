@@ -12,3 +12,4 @@ sha2 = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+rfq-testkit = { path = "../rfq-testkit" }

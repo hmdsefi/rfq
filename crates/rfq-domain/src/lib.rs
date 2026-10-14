@@ -10,8 +10,16 @@
     clippy::cast_sign_loss
 )]
 
+pub mod command;
+pub mod engine;
+pub mod event;
 pub mod ledger;
+pub mod model;
 pub mod types;
 
+pub use command::*;
+pub use engine::Engine;
+pub use event::*;
 pub use ledger::*;
+pub use model::*;
 pub use types::*;
