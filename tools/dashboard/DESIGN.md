@@ -181,3 +181,45 @@ Errors come back as `{"error": "..."}`, never as a trap.
 | The page is mistaken for scope creep | Kept outside the workspace and labelled. It adds zero lines to the engine |
 | A live demo breaks mid-session | Deterministic engine, no network, a single file. Reset always works |
 | The artifact host's content security policy blocks WebAssembly | Task D8 checks this. The fallback is opening `dist/rfq-dashboard.html` from disk, which needs no host |
+
+## 10. Visual design (Task D1)
+
+**Source of truth:** [`web/mockup.html`](web/mockup.html). D6 and D7 copy its `<style>` block verbatim and render the same markup from engine state.
+
+**Direction.** A calm, light, ledger-like console that reads well on a projector, with a dark theme for screens (the "Theme" toggle). Minimal Swiss structure: flat surfaces, 1 px lines, 6 px radius, no shadows. These are the choices behind it:
+
+- **Light by default.** The design-system search proposed a near-black background with an acid-green accent. That's the generic trading-terminal look, and dark themes wash out on projectors.
+- **Money is the protagonist.** Every amount uses the same three bucket colours: **free** in slate, **reserved** in hatched amber (held, and can be released), **escrowed** in solid indigo (locked to the contract). The hatching keeps the buckets distinguishable without colour. The ledger's split bars animate their widths when money moves (320 ms, and disabled under `prefers-reduced-motion`). That is the page's one deliberate motion.
+- **Two sides of the trade around the contract.**
+  - The contract card holds the market question, its state, a resolution timeline with a "now" cursor, and the oracle and arbiter actions. It sits between **requesters** (left, green rule: they ask) and **market makers** (right, indigo rule: they answer with sealed quotes).
+  - Below 1720 px the contract spans the full width above the two sides.
+  - The admin **trace** is a sticky right sidebar (440 px) holding the command log and the object inspector. It stacks under the main column below 1100 px.
+- **The clock is data.** Engine time `t+…` shows only in the top bar and the timeline, and it moves only when a command is stamped.
+- **Sealed by default.** What a viewer may not see is replaced by an explicit lock and "sealed" marker, never left blank. Commands from other actors appear as "Public" events.
+
+**Tokens** (on `:root`, with a `[data-theme="dark"]` override): `--page`, `--surface`, `--inset`, `--ink`, `--ink-2`, `--ink-3`, `--line`, `--line-2`, `--accent`, `--free`, `--reserved`, `--escrow`, `--yes`, `--no`, `--ok`, `--bad`, `--warn`, `--gone`, each with a `-tint`/`-ink` variant where needed, plus `--new` (row highlight) and `--focus`. The light ink colours on white are ≥ 4.5:1.
+
+**Type.** The system UI sans everywhere, with tabular figures. Monospace is used only for hashes and test names. Sizes: 13 px minimum, 14 px body, 15 px party and section names, 21 px for the market question.
+
+**Status badges** encode meaning, never sequence, and always carry their text:
+
+| Class | Meaning | States |
+|---|---|---|
+| `b-live` | in progress | Open, Active, Presented, Trading, Proposed |
+| `b-warn` | held firm or contested | Selected, Disputed, Taken over |
+| `b-good` | done well | Filled, Final, invariants hold, PASS |
+| `b-gone` | ended without a fill | Lost, Released, Expired, Cancelled, Replaced |
+| `b-bad` | rejected or broken | Rejected, FAIL, I1–I5 broken |
+
+**Components** (class names, for D6 and D7):
+- `.topbar`, `.scenario` (with `.chip.seen` expectation chips), `.arena` (`.requesters`, `.contract-col`, `.makers`);
+- `.party`, `.item`, `.bar` (`.seg.free/.reserved/.escrowed`), `.form-row`, `.field`, `.field-error`, `.toast` (auto-dismisses after 4 s), `.sealed`;
+- `.contract` (`.contract-main`, `.contract-side`, `.timeline`, `.roles`, `.positions`), `.ledger` (with `tr.changed` and `.delta.up/.down`);
+- `.trace` (`.log`, `.row` with `.is-new/.is-open/.is-rejected`, `.row-events`, `.aud`/`.aud-acct`, `.inspector`), `.tabs`/`.tabpanel`;
+- `.machine` (SVG `.sm-node.is-current/.is-terminal`, `.sm-edge.is-last`, `.sm-label`).
+
+**Interaction rules:**
+- All controls are real buttons and inputs with visible labels and focus rings.
+- Form errors appear inline under the field (`role="alert"`) and block sending.
+- Engine rejections show as a toast in the acting card and as a red row in the trace; they're never an error banner.
+- Ids are underlined buttons that select the object for the inspector and the D1 diagram.

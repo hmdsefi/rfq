@@ -76,5 +76,5 @@ The five inputs most likely to bite during the live session. Each has a pinned t
 
 | # | Status |
 |---|---|
-| D1 | in progress (controller) |
+| D1 | mockup ready for PO review |
 | D2–D8 | waiting for plan approval |

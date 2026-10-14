@@ -1,0 +1,664 @@
+<!doctype html>
+<html lang="en" data-theme="light" data-view="admin">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RFQ Engine Console</title>
+<style>
+:root {
+  --page: #eef1f5; --surface: #ffffff; --inset: #f6f8fb;
+  --ink: #13213a; --ink-2: #44546c; --ink-3: #5d6b80;
+  --line: #d5dce6; --line-2: #b7c2d1;
+  --accent: #3446b8; --accent-ink: #ffffff; --accent-tint: #e7eafb;
+  --free: #c9d3e0; --free-ink: #33435a;
+  --reserved: #e9a73a; --reserved-ink: #8a4f00; --reserved-tint: #fdf1dc;
+  --escrow: #3446b8; --escrow-ink: #2a3a9e; --escrow-tint: #e7eafb;
+  --yes: #12784a; --yes-tint: #e3f4ec; --no: #b3261e; --no-tint: #fbe7e5;
+  --ok: #12784a; --ok-tint: #e3f4ec; --bad: #b3261e; --bad-tint: #fbe7e5;
+  --warn: #8a4f00; --warn-tint: #fdf1dc; --gone: #5d6b80; --gone-tint: #edf0f4;
+  --new: #fff7d6; --focus: #3446b8;
+  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  --r: 6px; --r-lg: 10px;
+}
+:root[data-theme="dark"] {
+  --page: #0b1220; --surface: #121b2c; --inset: #0f1726;
+  --ink: #e5ecf6; --ink-2: #b4c1d4; --ink-3: #93a2b8;
+  --line: #24324a; --line-2: #354764;
+  --accent: #8fa0ff; --accent-ink: #0b1220; --accent-tint: #1d2752;
+  --free: #3a4a63; --free-ink: #c9d3e0;
+  --reserved: #f4b740; --reserved-ink: #f6c66a; --reserved-tint: #3a2a0c;
+  --escrow: #8fa0ff; --escrow-ink: #aab7ff; --escrow-tint: #1d2752;
+  --yes: #4cc38a; --yes-tint: #0f3324; --no: #f2877e; --no-tint: #3d1714;
+  --ok: #4cc38a; --ok-tint: #0f3324; --bad: #f2877e; --bad-tint: #3d1714;
+  --warn: #f6c66a; --warn-tint: #3a2a0c; --gone: #93a2b8; --gone-tint: #1a2436;
+  --new: #2c2a14; --focus: #8fa0ff;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--page); color: var(--ink); font: 400 14px/1.5 var(--sans); font-variant-numeric: tabular-nums; }
+h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
+h2 { font-size: 15px; }
+h3 { font-size: 14px; }
+p { margin: 0; }
+button, input, select { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.mono { font-family: var(--mono); font-size: 13px; }
+.muted { color: var(--ink-3); }
+.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* Controls */
+.btn { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 12px; border: 1px solid var(--line-2); border-radius: var(--r); background: var(--surface); cursor: pointer; white-space: nowrap; }
+.btn:hover { border-color: var(--ink-3); }
+.btn svg { width: 14px; height: 14px; }
+.btn-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.btn-primary:hover { filter: brightness(1.08); border-color: var(--accent); }
+.btn-quiet { border-color: transparent; background: transparent; color: var(--ink-2); }
+.btn-quiet:hover { background: var(--inset); border-color: var(--line); }
+.btn-yes { color: var(--yes); }
+.btn-no { color: var(--no); }
+.btn-danger { color: var(--bad); }
+.btn-sm { min-height: 28px; padding: 0 9px; font-size: 13px; }
+.field { display: grid; gap: 3px; font-size: 13px; color: var(--ink-2); }
+.field input, .field select { min-height: 32px; width: 100%; padding: 0 8px; border: 1px solid var(--line-2); border-radius: var(--r); background: var(--surface); color: var(--ink); }
+.field .unit { position: relative; }
+.field .unit input { padding-right: 26px; }
+.field .unit span { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); color: var(--ink-3); }
+.field-error { color: var(--bad); font-size: 13px; }
+.seg-ctl { display: inline-flex; border: 1px solid var(--line-2); border-radius: var(--r); overflow: hidden; }
+.seg-ctl button { min-height: 30px; padding: 0 10px; border: 0; border-right: 1px solid var(--line); background: var(--surface); cursor: pointer; }
+.seg-ctl button:last-child { border-right: 0; }
+.seg-ctl button[aria-pressed="true"] { background: var(--ink); color: var(--surface); font-weight: 600; }
+
+/* Badges: text always carries the meaning; colour only groups it */
+.badge { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 999px; font-size: 12.5px; font-weight: 600; line-height: 20px; white-space: nowrap; }
+.b-live { background: var(--accent-tint); color: var(--escrow-ink); }
+.b-good { background: var(--ok-tint); color: var(--ok); }
+.b-gone { background: var(--gone-tint); color: var(--gone); }
+.b-bad { background: var(--bad-tint); color: var(--bad); }
+.b-warn { background: var(--warn-tint); color: var(--warn); }
+.b-gone::before { content: ""; width: 6px; height: 6px; border-radius: 50%; border: 1.5px solid currentColor; }
+.b-live::before, .b-good::before, .b-bad::before, .b-warn::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.aud { display: inline-block; padding: 0 6px; border: 1px solid var(--line-2); border-radius: 4px; font-size: 12px; color: var(--ink-2); white-space: nowrap; }
+.aud-acct { border-color: var(--escrow); color: var(--escrow-ink); }
+.sealed { display: inline-flex; align-items: center; gap: 4px; color: var(--ink-3); font-style: italic; }
+.sealed svg { width: 12px; height: 12px; }
+
+/* Money: free / reserved (hatched: held, can come back) / escrowed (solid: locked to the contract) */
+.bar { display: flex; height: 14px; border-radius: 3px; overflow: hidden; background: var(--inset); outline: 1px solid var(--line); }
+.seg { height: 100%; transition: width 320ms cubic-bezier(.2,.7,.2,1); }
+.seg.free { background: var(--free); }
+.seg.reserved { background: repeating-linear-gradient(135deg, var(--reserved) 0 4px, color-mix(in srgb, var(--reserved) 55%, var(--surface)) 4px 7px); }
+.seg.escrowed { background: var(--escrow); }
+.key { display: inline-flex; align-items: center; gap: 5px; font-size: 13px; color: var(--ink-2); }
+.key i { width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
+@media (prefers-reduced-motion: reduce) { .seg { transition: none; } }
+
+/* Layout */
+.app { display: grid; grid-template-columns: minmax(0, 1fr) 440px; grid-template-rows: auto 1fr; min-height: 100dvh; }
+.topbar { grid-column: 1 / -1; position: sticky; top: 0; z-index: 10; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; padding: 10px 20px; background: var(--surface); border-bottom: 1px solid var(--line); }
+.brand { display: grid; line-height: 1.25; margin-right: 6px; }
+.brand strong { font-size: 15px; }
+.brand span { font-size: 12.5px; color: var(--ink-3); }
+.group { display: flex; align-items: center; gap: 6px; }
+.group-label { font-size: 13px; color: var(--ink-3); margin-right: 2px; }
+.clock { font-size: 15px; font-weight: 600; min-width: 92px; }
+.health { margin-left: auto; display: flex; align-items: center; gap: 12px; font-size: 13px; }
+.health dl { display: flex; gap: 12px; margin: 0; }
+.health dt { color: var(--ink-3); display: inline; }
+.health dd { display: inline; margin: 0 0 0 4px; font-weight: 600; }
+.stage { padding: 16px 20px 40px; display: grid; gap: 16px; align-content: start; min-width: 0; }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); }
+.panel-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.panel-body { padding: 14px 16px; }
+
+/* Scenario strip */
+.scenario { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 20px; padding: 12px 16px; }
+.scenario-title { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.scenario-title h2 { font-size: 16px; }
+.scenario p { color: var(--ink-2); max-width: 75ch; }
+.expect { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 999px; border: 1px dashed var(--line-2); font-size: 12.5px; color: var(--ink-3); }
+.chip.seen { border-style: solid; border-color: var(--ok); color: var(--ok); background: var(--ok-tint); }
+.chip.seen::before { content: "✓"; font-weight: 700; }
+.progress { text-align: right; font-size: 13px; color: var(--ink-2); }
+.progress strong { color: var(--ink); }
+
+/* Arena: the two sides of the trade around the contract */
+.arena { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.side { display: grid; gap: 12px; }
+.side-head { display: flex; align-items: baseline; justify-content: space-between; padding: 0 2px; }
+.side-head h2 { font-size: 15px; }
+.side-head span { font-size: 13px; color: var(--ink-3); }
+.party { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 12px 14px; display: grid; gap: 10px; }
+.requesters .party { border-left: 3px solid var(--yes); }
+.makers .party { border-left: 3px solid var(--escrow); }
+.party-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.party-head h3 { font-size: 15px; }
+.party-head .meta { font-size: 12.5px; color: var(--ink-3); }
+.balances { display: grid; gap: 5px; }
+.balance-nums { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; }
+.balance-nums b { font-weight: 600; }
+.item { border: 1px solid var(--line); border-radius: var(--r); padding: 9px 10px; display: grid; gap: 7px; background: var(--inset); }
+.item-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.item-head .id { font-weight: 600; }
+.item-facts { display: flex; flex-wrap: wrap; gap: 2px 14px; font-size: 13px; color: var(--ink-2); }
+.item-facts b { color: var(--ink); font-weight: 600; }
+.item-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: end; }
+.form-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; gap: 6px; align-items: end; }
+.countdown { font-weight: 600; color: var(--warn); }
+.empty { font-size: 13px; color: var(--ink-3); padding: 2px 0; }
+.toast { font-size: 13px; padding: 6px 10px; border-radius: var(--r); background: var(--bad-tint); color: var(--bad); }
+a.idlink, button.idlink { color: var(--accent); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 2px; background: none; border: 0; padding: 0; cursor: pointer; font-weight: 600; }
+
+/* Contract: the subject, in the middle */
+.contract { padding: 16px 18px; display: grid; gap: 14px 24px; }
+.contract-main, .contract-side { display: grid; gap: 14px; min-width: 0; }
+.contract-q { font-size: 21px; line-height: 1.3; font-weight: 600; letter-spacing: -0.015em; }
+.contract-meta { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; font-size: 13px; color: var(--ink-2); }
+.timeline { position: relative; height: 66px; margin: 4px 6px 0; }
+.tl-track { position: absolute; left: 0; right: 0; top: 30px; height: 6px; border-radius: 3px; background: var(--inset); outline: 1px solid var(--line); }
+.tl-trading { position: absolute; left: 0; top: 30px; height: 6px; border-radius: 3px 0 0 3px; background: var(--yes); opacity: .55; }
+.tl-mark { position: absolute; top: 22px; width: 2px; height: 22px; background: var(--ink-2); }
+.tl-mark span { position: absolute; top: 26px; left: 50%; transform: translateX(-50%); white-space: nowrap; font-size: 12.5px; color: var(--ink-2); }
+.tl-mark.end span { left: auto; right: 0; transform: none; }
+.tl-now { position: absolute; top: 0; width: 2px; height: 52px; background: var(--accent); }
+.tl-now span { position: absolute; top: -2px; left: 6px; white-space: nowrap; font-size: 12.5px; font-weight: 600; color: var(--accent); }
+.roles { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.role { border: 1px solid var(--line); border-radius: var(--r); padding: 9px 10px; display: grid; gap: 7px; }
+.role-name { font-size: 13px; color: var(--ink-2); }
+.role .item-actions .btn { flex: 1; justify-content: center; }
+.positions table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.positions th { text-align: left; font-weight: 600; color: var(--ink-3); padding: 4px 6px; border-bottom: 1px solid var(--line); }
+.positions td { padding: 5px 6px; border-bottom: 1px solid var(--line); }
+
+/* Ledger ribbon */
+.ledger table { width: 100%; border-collapse: collapse; }
+.ledger th { text-align: right; font-size: 13px; font-weight: 600; color: var(--ink-3); padding: 8px 12px; border-bottom: 1px solid var(--line); }
+.ledger th:first-child, .ledger td:first-child { text-align: left; }
+.ledger th.barcol { width: 34%; text-align: left; }
+.ledger td { text-align: right; padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.ledger td .who { font-weight: 600; }
+.ledger td .role { display: block; border: 0; padding: 0; font-size: 12.5px; color: var(--ink-3); }
+.ledger tr.changed td { background: color-mix(in srgb, var(--new) 70%, transparent); }
+.delta { display: block; font-size: 12.5px; font-weight: 600; }
+.delta.up { color: var(--ok); }
+.delta.down { color: var(--bad); }
+.ledger tfoot td { font-weight: 600; border-bottom: 0; }
+.ledger-foot { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; padding: 10px 16px; border-top: 1px solid var(--line); font-size: 13px; }
+.check-ok { color: var(--ok); font-weight: 600; }
+
+/* Trace sidebar */
+.trace { position: sticky; top: 57px; height: calc(100dvh - 57px); display: grid; grid-template-rows: auto minmax(0, 1fr) auto; background: var(--surface); border-left: 1px solid var(--line); }
+.trace-head { padding: 12px 16px; border-bottom: 1px solid var(--line); display: grid; gap: 8px; }
+.trace-head-top { display: flex; justify-content: space-between; align-items: baseline; }
+.filters { display: flex; flex-wrap: wrap; gap: 6px; }
+.filters button { min-height: 26px; padding: 0 10px; border-radius: 999px; border: 1px solid var(--line-2); background: var(--surface); font-size: 12.5px; cursor: pointer; }
+.filters button[aria-pressed="true"] { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+.log { overflow-y: auto; }
+.row { border-bottom: 1px solid var(--line); }
+.row-head { display: grid; grid-template-columns: 34px 62px minmax(0, 1fr) auto; gap: 8px; align-items: baseline; width: 100%; padding: 7px 16px; border: 0; background: none; text-align: left; cursor: pointer; font-size: 13px; }
+.row-head:hover { background: var(--inset); }
+.row .seq { font-weight: 600; color: var(--ink-3); }
+.row .t { color: var(--ink-3); }
+.row .what { overflow-wrap: anywhere; }
+.row .what b { font-weight: 600; }
+.row .count { font-size: 12px; color: var(--ink-3); }
+.row.is-new { background: var(--new); }
+.row.is-rejected .what { color: var(--bad); }
+.row-events { list-style: none; margin: 0; padding: 0 16px 9px 120px; display: grid; gap: 5px; font-size: 13px; }
+.row-events li { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.row-events .ev { font-weight: 600; }
+.row-events .ev.rej { color: var(--bad); }
+.inspector { border-top: 1px solid var(--line); padding: 12px 16px; display: grid; gap: 8px; max-height: 44%; overflow-y: auto; background: var(--inset); }
+.inspector ol { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: 13px; }
+
+/* Deliverables */
+.tabs { display: flex; flex-wrap: wrap; gap: 2px; padding: 0 10px; border-bottom: 1px solid var(--line); }
+.tab { padding: 10px 12px; border: 0; border-bottom: 2px solid transparent; background: none; cursor: pointer; color: var(--ink-2); font-weight: 600; }
+.tab[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
+.tab small { font-weight: 400; color: var(--ink-3); }
+.tabpanel { padding: 14px 16px; }
+.tabpanel[hidden] { display: none; }
+.machines { display: grid; grid-template-columns: repeat(auto-fit, minmax(440px, 1fr)); gap: 14px; }
+.machine { border: 1px solid var(--line); border-radius: var(--r); padding: 10px; }
+.machine h3 { margin-bottom: 6px; display: flex; gap: 8px; align-items: baseline; }
+.machine svg { width: 100%; height: auto; display: block; }
+.caption { font-size: 13px; margin-top: 4px; }
+.sm-node rect { fill: var(--surface); stroke: var(--line-2); stroke-width: 1.2; }
+.sm-node text { fill: var(--ink); font: 600 13px var(--sans); }
+.sm-node.is-current rect { fill: var(--accent-tint); stroke: var(--accent); stroke-width: 2.5; }
+.sm-node.is-terminal rect { stroke-dasharray: 3 2; }
+.sm-edge { fill: none; stroke: var(--ink-3); stroke-width: 1.3; }
+.sm-edge.is-last { stroke: var(--accent); stroke-width: 2.5; }
+.sm-label { fill: var(--ink-2); font: 400 12px var(--sans); }
+.sm-label.is-last { fill: var(--accent); font-weight: 600; }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 10px; font-size: 13px; color: var(--ink-2); }
+.dtable { width: 100%; border-collapse: collapse; font-size: 13px; }
+.dtable th { text-align: left; color: var(--ink-3); font-weight: 600; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.dtable td { padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.dtable td:first-child { font-weight: 600; white-space: nowrap; }
+.dtable code { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+.steps3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.not-built { display: inline-flex; padding: 2px 8px; border-radius: 4px; border: 1px dashed var(--warn); color: var(--warn); font-size: 12.5px; font-weight: 600; }
+.seam { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.seam .item { background: var(--surface); }
+.seam ul { margin: 0; padding-left: 18px; display: grid; gap: 3px; font-size: 13px; color: var(--ink-2); }
+
+/* View-as: what a non-admin viewer can't see is replaced by an explicit "sealed" marker */
+[data-view="mm1"] .only-admin { display: none !important; }
+[data-view="admin"] .only-mm1 { display: none !important; }
+
+@media (max-width: 1720px) { .arena { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } .arena .contract-col { grid-column: 1 / -1; order: -1; } .contract { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); align-items: start; } }
+@media (max-width: 1100px) { .app { grid-template-columns: 1fr; } .trace { position: static; height: auto; border-left: 0; border-top: 1px solid var(--line); } .log { max-height: 60vh; } }
+@media (max-width: 720px) { .arena { grid-template-columns: 1fr; } .form-row { grid-template-columns: 1fr 1fr; } .row-events { padding-left: 16px; } .health { margin-left: 0; } .steps3 { grid-template-columns: 1fr; } .ledger { overflow-x: auto; } }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-step" viewBox="0 0 16 16"><path d="M4 3l6 5-6 5V3zm8 0h1.5v10H12z" fill="currentColor"/></symbol>
+  <symbol id="i-play" viewBox="0 0 16 16"><path d="M4 2.5l9.5 5.5L4 13.5z" fill="currentColor"/></symbol>
+  <symbol id="i-end" viewBox="0 0 16 16"><path d="M2 3l5 5-5 5zm6 0l5 5-5 5z" fill="currentColor"/></symbol>
+  <symbol id="i-reset" viewBox="0 0 16 16"><path d="M8 3a5 5 0 1 1-4.6 3H1.8A6.5 6.5 0 1 0 3.5 3.3V1.5H2v4h4V4H4.5A5 5 0 0 1 8 3z" fill="currentColor"/></symbol>
+  <symbol id="i-hand" viewBox="0 0 16 16"><path d="M6 2.5a1 1 0 0 1 2 0V7h.5V3.5a1 1 0 0 1 2 0V7h.5V5a1 1 0 0 1 2 0v4.5A5 5 0 0 1 8 14.5 4.5 4.5 0 0 1 3.6 11L2.2 7.7a1 1 0 0 1 1.8-.8L5 9V3.5a1 1 0 0 1 1-1z" fill="currentColor"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 16 16"><path d="M5 7V5a3 3 0 0 1 6 0v2h1v7H4V7zm1.5 0h3V5a1.5 1.5 0 0 0-3 0z" fill="currentColor"/></symbol>
+  <symbol id="i-theme" viewBox="0 0 16 16"><path d="M8 1.5a6.5 6.5 0 1 0 0 13zm0 1.5v10a5 5 0 0 0 0-10z" fill="currentColor"/></symbol>
+</svg>
+
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <strong>RFQ engine console</strong>
+      <span>Demo aid — not part of the engine</span>
+    </div>
+
+    <div class="group" role="group" aria-label="Scenario">
+      <label class="sr-only" for="preset">Scenario</label>
+      <select id="preset" class="btn" style="padding-right:8px">
+        <optgroup label="Sandbox"><option>Sandbox: drive it by hand</option></optgroup>
+        <optgroup label="Brief scenarios">
+          <option selected>happy_path</option><option>mm_cannot_withdraw_after_selection</option><option>no_quotes_expire</option>
+          <option>requester_lapses</option><option>disputed_ruled_invalid</option><option>oracle_silent_hard_deadline</option>
+        </optgroup>
+        <optgroup label="Attacks">
+          <option>attack_accept_wrong_price</option><option>attack_double_accept</option><option>attack_replayed_nonce</option>
+          <option>attack_over_limit_quote</option><option>attack_self_trade</option><option>attack_cancel_others_quote</option>
+        </optgroup>
+      </select>
+      <button class="btn btn-primary" type="button"><svg aria-hidden="true"><use href="#i-step"/></svg>Step</button>
+      <button class="btn" type="button"><svg aria-hidden="true"><use href="#i-play"/></svg>Play</button>
+      <button class="btn" type="button"><svg aria-hidden="true"><use href="#i-end"/></svg>Run to end</button>
+      <button class="btn btn-quiet" type="button"><svg aria-hidden="true"><use href="#i-reset"/></svg>Reset</button>
+      <button class="btn btn-quiet" type="button"><svg aria-hidden="true"><use href="#i-hand"/></svg>Take over</button>
+    </div>
+
+    <div class="group" role="group" aria-label="Clock">
+      <span class="clock num" title="Engine time. It moves only when a command is stamped.">t+1.600 s</span>
+      <button class="btn btn-sm" type="button">+100 ms</button>
+      <button class="btn btn-sm" type="button">+1 s</button>
+      <button class="btn btn-sm" type="button" title="Request #11 deadline at t+2.700 s">Next timer</button>
+    </div>
+
+    <div class="group" role="group" aria-label="View as">
+      <span class="group-label">View as</span>
+      <div class="seg-ctl" id="viewas">
+        <button type="button" aria-pressed="true" data-v="admin">Admin</button>
+        <button type="button" aria-pressed="false" data-v="admin">Alice</button>
+        <button type="button" aria-pressed="false" data-v="admin">Carol</button>
+        <button type="button" aria-pressed="false" data-v="mm1">MM1</button>
+        <button type="button" aria-pressed="false" data-v="admin">MM2</button>
+      </div>
+    </div>
+
+    <div class="health" role="status" aria-label="Engine health">
+      <dl>
+        <div><dt>seq</dt><dd class="num">12</dd></div>
+        <div><dt>state hash</dt><dd class="mono">3f9a1c0e</dd></div>
+      </dl>
+      <span class="badge b-good">I1–I5 hold</span>
+      <button class="btn btn-quiet btn-sm" type="button" id="theme"><svg aria-hidden="true"><use href="#i-theme"/></svg>Theme</button>
+    </div>
+  </header>
+
+  <main class="stage" id="main">
+    <section class="panel scenario" aria-label="Scenario">
+      <div>
+        <div class="scenario-title">
+          <h2>happy_path</h2>
+          <span class="badge b-live">Brief scenario</span>
+          <span class="badge b-warn">Taken over</span>
+        </div>
+        <p>Two market makers quote, the best price is presented, Alice accepts, the oracle proposes YES and the contract settles.</p>
+      </div>
+      <div class="progress">
+        <div>Script stopped after step <strong>8</strong> of 13</div>
+        <div>You're driving by hand. Reset to replay the script.</div>
+      </div>
+      <div class="expect" aria-label="Expected events, in order">
+        <span class="chip seen">RequestOpened</span><span class="chip seen">QuoteSubmitted</span><span class="chip seen">QuoteSubmitted</span>
+        <span class="chip seen">QuoteLost</span><span class="chip seen">QuoteSelected</span><span class="chip seen">RequestPresented</span>
+        <span class="chip">QuoteFilled</span><span class="chip">RequestFilled</span><span class="chip">ContractClosed</span>
+        <span class="chip">OutcomeProposed</span><span class="chip">ContractFinalized</span><span class="chip">PositionSettled</span>
+      </div>
+    </section>
+
+    <div class="arena">
+      <!-- Requesters: the side that asks -->
+      <section class="side requesters" aria-labelledby="req-h">
+        <div class="side-head"><h2 id="req-h">Requesters</h2><span>ask for a price</span></div>
+
+        <article class="party only-admin" aria-label="Alice">
+          <div class="party-head"><h3>Alice</h3><span class="meta">account 10, nonce 1</span></div>
+          <div class="balances">
+            <div class="bar" role="img" aria-label="Free $300.00, reserved $700.00, escrowed $0.00"><div class="seg free" style="width:30%"></div><div class="seg reserved" style="width:70%"></div></div>
+            <div class="balance-nums"><span>Free <b>$300.00</b></span><span>Reserved <b>$700.00</b></span><span>Escrowed <b>$0.00</b></span></div>
+          </div>
+          <div class="item">
+            <div class="item-head"><button class="idlink" type="button">Request #7</button><span class="badge b-live">Presented</span></div>
+            <div class="item-facts"><span>Buy <b>YES</b> × <b>1,000</b></span><span>Limit <b>0.70</b></span><span>Contract #1000</span></div>
+            <div class="item-facts"><span>Best quote <button class="idlink" type="button">#9</button> at <b>0.60</b></span><span>Accept within <span class="countdown">2.000 s</span> (t+3.600 s)</span></div>
+            <div class="item-actions"><button class="btn btn-primary" type="button">Accept at 0.60</button><button class="btn" type="button">Reject</button></div>
+          </div>
+          <button class="btn btn-quiet btn-sm" type="button" style="justify-self:start">New request</button>
+        </article>
+
+        <article class="party only-admin" aria-label="Carol">
+          <div class="party-head"><h3>Carol</h3><span class="meta">account 30, nonce 1</span></div>
+          <div class="balances">
+            <div class="bar" role="img" aria-label="Free $725.00, reserved $275.00"><div class="seg free" style="width:72.5%"></div><div class="seg reserved" style="width:27.5%"></div></div>
+            <div class="balance-nums"><span>Free <b>$725.00</b></span><span>Reserved <b>$275.00</b></span><span>Escrowed <b>$0.00</b></span></div>
+          </div>
+          <div class="item">
+            <div class="item-head"><button class="idlink" type="button">Request #11</button><span class="badge b-live">Open</span></div>
+            <div class="item-facts"><span>Buy <b>YES</b> × <b>500</b></span><span>Limit <b>0.55</b></span><span>Quotes due in <span class="countdown">1.100 s</span></span></div>
+            <div class="item-actions"><button class="btn btn-sm" type="button">Cancel request</button></div>
+          </div>
+          <p class="toast" role="status">Rejected: Unauthorized. Carol can't cancel MM1's quote #8.</p>
+          <details>
+            <summary class="btn btn-quiet btn-sm" style="display:inline-flex">New request</summary>
+            <div class="form-row" style="margin-top:8px">
+              <label class="field">Side<select><option>Buy YES</option><option>Buy NO</option></select></label>
+              <label class="field">Shares<input inputmode="numeric" value="1000"></label>
+              <label class="field">Limit<span class="unit"><input inputmode="decimal" value="70" aria-describedby="lim-help"><span>¢</span></span></label>
+              <button class="btn btn-primary" type="button">Ask</button>
+            </div>
+            <p id="lim-help" class="muted" style="font-size:13px;margin-top:4px">Your limit stays sealed: market makers never see it.</p>
+          </details>
+        </article>
+
+        <article class="party only-mm1" aria-label="Requesters as MM1 sees them">
+          <p class="empty">As MM1 you don't see who asks or their limits. Open requests appear in your card.</p>
+        </article>
+      </section>
+
+      <!-- The contract: the subject both sides trade -->
+      <section class="contract-col" aria-labelledby="contract-q">
+        <article class="panel contract">
+          <div class="contract-main">
+          <div>
+            <div class="contract-meta" style="margin-bottom:6px"><span class="badge b-live">Trading</span><span>Contract #1000</span><span>Oracle: account 4</span></div>
+            <h2 class="contract-q" id="contract-q">Will it rain in Paris on 2026-11-01?</h2>
+          </div>
+
+          <div class="timeline" role="img" aria-label="Now t+1.600 s. Trading closes t+5.000 s. Hard deadline t+15.000 s.">
+            <div class="tl-track"></div>
+            <div class="tl-trading" style="width:33.3%"></div>
+            <div class="tl-now" style="left:10.7%"><span>now t+1.600 s</span></div>
+            <div class="tl-mark" style="left:33.3%"><span>trading closes t+5.000 s</span></div>
+            <div class="tl-mark end" style="left:calc(100% - 2px)"><span>hard deadline t+15.000 s</span></div>
+          </div>
+          <p class="muted" style="font-size:13px">After close the oracle proposes; anyone can dispute for 2 s with a $100 bond. If nobody resolves it by the hard deadline, it ends INVALID and everyone is refunded.</p>
+          </div>
+          <div class="contract-side">
+
+          <div class="roles">
+            <div class="role">
+              <span class="role-name">Oracle proposes</span>
+              <div class="item-actions"><button class="btn btn-sm btn-yes" type="button">YES</button><button class="btn btn-sm btn-no" type="button">NO</button><button class="btn btn-sm" type="button">INVALID</button></div>
+            </div>
+            <div class="role">
+              <span class="role-name">Arbiter rules (after a dispute)</span>
+              <div class="item-actions"><button class="btn btn-sm btn-yes" type="button">YES</button><button class="btn btn-sm btn-no" type="button">NO</button><button class="btn btn-sm" type="button">INVALID</button></div>
+            </div>
+          </div>
+
+          <div class="positions">
+            <h3 style="margin-bottom:6px">Positions</h3>
+            <p class="empty">No positions yet. One opens when a requester accepts a quote.</p>
+          </div>
+          </div>
+        </article>
+      </section>
+
+      <!-- Market makers: the side that answers -->
+      <section class="side makers" aria-labelledby="mm-h">
+        <div class="side-head"><h2 id="mm-h">Market makers</h2><span>answer with sealed quotes</span></div>
+
+        <article class="party" aria-label="MM1">
+          <div class="party-head"><h3>MM1</h3><span class="meta">account 20, nonce 1</span></div>
+          <div class="balances">
+            <div class="bar" role="img" aria-label="Free $1,000.00"><div class="seg free" style="width:100%"></div></div>
+            <div class="balance-nums"><span>Free <b>$1,000.00</b></span><span>Reserved <b>$0.00</b></span><span>Escrowed <b>$0.00</b></span></div>
+          </div>
+          <div class="item">
+            <div class="item-head"><button class="idlink" type="button">Request #11</button><span class="badge b-live">Open</span><span class="muted" style="font-size:13px">quotes due in 1.100 s</span></div>
+            <div class="item-facts"><span>Buy <b>YES</b> × <b>500</b></span><span class="sealed"><svg aria-hidden="true"><use href="#i-lock"/></svg>limit sealed</span></div>
+            <form class="form-row" onsubmit="return false">
+              <label class="field">Price<span class="unit"><input inputmode="decimal" value="0" aria-invalid="true" aria-describedby="p-err"><span>¢</span></span></label>
+              <label class="field">Shares<input inputmode="numeric" value="500"></label>
+              <label class="field">Expires in<span class="unit"><input inputmode="decimal" value="10"><span>s</span></span></label>
+              <button class="btn btn-primary" type="submit">Quote</button>
+            </form>
+            <p class="field-error" id="p-err" role="alert">Enter a price between 0.01 and 99.99.</p>
+          </div>
+          <div class="item">
+            <div class="item-head"><button class="idlink" type="button">Quote #8</button><span class="badge b-gone">Lost</span><span class="muted" style="font-size:13px">on request #7</span></div>
+            <div class="item-facts"><span>Sell YES at <b>0.62</b> × <b>1,000</b></span><span>Hold released</span></div>
+          </div>
+        </article>
+
+        <article class="party only-admin" aria-label="MM2">
+          <div class="party-head"><h3>MM2</h3><span class="meta">account 21, nonce 1</span></div>
+          <div class="balances">
+            <div class="bar" role="img" aria-label="Free $600.00, reserved $400.00"><div class="seg free" style="width:60%"></div><div class="seg reserved" style="width:40%"></div></div>
+            <div class="balance-nums"><span>Free <b>$600.00</b></span><span>Reserved <b>$400.00</b></span><span>Escrowed <b>$0.00</b></span></div>
+          </div>
+          <div class="item">
+            <div class="item-head"><button class="idlink" type="button">Quote #9</button><span class="badge b-warn">Selected</span><span class="muted" style="font-size:13px">on request #7</span></div>
+            <div class="item-facts"><span>Sell YES at <b>0.60</b> × <b>1,000</b></span><span>Holds <b>$400.00</b></span><span>Firm until t+3.600 s</span></div>
+            <div class="item-actions"><button class="btn btn-sm btn-danger" type="button">Cancel quote</button></div>
+          </div>
+          <div class="item">
+            <div class="item-head"><button class="idlink" type="button">Request #11</button><span class="badge b-live">Open</span></div>
+            <div class="item-actions"><button class="btn btn-sm" type="button">Quote on #11</button></div>
+          </div>
+        </article>
+      </section>
+    </div>
+
+    <!-- Ledger: the money, in every intermediate state -->
+    <section class="panel ledger" aria-labelledby="ledger-h">
+      <div class="panel-head">
+        <h2 id="ledger-h">Ledger</h2>
+        <div style="display:flex;gap:14px;flex-wrap:wrap">
+          <span class="key"><i style="background:var(--free)"></i>Free</span>
+          <span class="key"><i class="seg reserved"></i>Reserved (held, can be released)</span>
+          <span class="key"><i style="background:var(--escrow)"></i>Escrowed (locked to the contract)</span>
+        </div>
+      </div>
+      <table>
+        <thead><tr><th scope="col">Account</th><th scope="col">Free</th><th scope="col">Reserved</th><th scope="col">Escrowed</th><th scope="col">Total</th><th scope="col" class="barcol">Split</th></tr></thead>
+        <tbody>
+          <tr class="only-admin"><td><span class="who">Alice</span><span class="role">requester</span></td><td>$300.00</td><td>$700.00</td><td>$0.00</td><td>$1,000.00</td><td><div class="bar"><div class="seg free" style="width:30%"></div><div class="seg reserved" style="width:70%"></div></div></td></tr>
+          <tr class="only-admin"><td><span class="who">Carol</span><span class="role">requester</span></td><td>$725.00</td><td>$275.00</td><td>$0.00</td><td>$1,000.00</td><td><div class="bar"><div class="seg free" style="width:72.5%"></div><div class="seg reserved" style="width:27.5%"></div></div></td></tr>
+          <tr class="changed"><td><span class="who">MM1</span><span class="role">market maker</span></td><td>$1,000.00<span class="delta up">+$380.00</span></td><td>$0.00<span class="delta down">−$380.00</span></td><td>$0.00</td><td>$1,000.00</td><td><div class="bar"><div class="seg free" style="width:100%"></div></div></td></tr>
+          <tr class="only-admin"><td><span class="who">MM2</span><span class="role">market maker</span></td><td>$600.00</td><td>$400.00</td><td>$0.00</td><td>$1,000.00</td><td><div class="bar"><div class="seg free" style="width:60%"></div><div class="seg reserved" style="width:40%"></div></div></td></tr>
+          <tr class="only-admin"><td><span class="who">Operator, Arbiter, Treasury, Oracle</span><span class="role">system accounts</span></td><td>$0.00</td><td>$0.00</td><td>$0.00</td><td>$0.00</td><td></td></tr>
+        </tbody>
+        <tfoot class="only-admin"><tr><td>All accounts</td><td>$2,625.00</td><td>$1,375.00</td><td>$0.00</td><td>$4,000.00</td><td class="muted" style="text-align:left;font-weight:400">The total changes only on Deposit and Withdraw (I1)</td></tr></tfoot>
+      </table>
+      <div class="ledger-foot">
+        <span><span class="badge b-good">I1–I5 hold</span> <span class="muted">checked after every command</span></span>
+        <span style="display:flex;gap:10px;align-items:center">
+          <span class="check-ok">Replayed 12 commands into a fresh engine: hash 3f9a1c0e matches live 3f9a1c0e</span>
+          <button class="btn btn-sm" type="button">Replay check</button>
+        </span>
+      </div>
+    </section>
+
+    <!-- Deliverables -->
+    <section class="panel" aria-label="Deliverables">
+      <div class="tabs" role="tablist" aria-label="Deliverables">
+        <button class="tab" role="tab" aria-selected="true" aria-controls="t-d1" id="tab-d1">D1 State machines</button>
+        <button class="tab" role="tab" aria-selected="false" aria-controls="t-ml" id="tab-ml">Multi-leg <small>Designed, not built (P6)</small></button>
+        <button class="tab" role="tab" aria-selected="false" aria-controls="t-d3" id="tab-d3">D3 Failure modes</button>
+        <button class="tab" role="tab" aria-selected="false" aria-controls="t-d4" id="tab-d4">D4 Resolution</button>
+        <button class="tab" role="tab" aria-selected="false" aria-controls="t-d5" id="tab-d5">D5 Quote lifetime</button>
+      </div>
+
+      <div class="tabpanel" role="tabpanel" id="t-d1" aria-labelledby="tab-d1">
+        <div class="machines">
+          <div class="machine">
+            <h3>Request <span class="muted" style="font-weight:400;font-size:13px">#7 is Presented</span></h3>
+            <svg viewBox="0 0 520 206" role="img" aria-label="Request state machine. Current state Presented, entered by the deadline timer."><defs><marker id="ah" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8z" style="fill:var(--ink-3)"/></marker><marker id="ah-last" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L8 4L0 8z" style="fill:var(--accent)"/></marker></defs><path class="sm-edge is-last" d="M100 102 H198" marker-end="url(#ah-last)"/><path class="sm-edge" d="M300 102 H408" marker-end="url(#ah)"/><path class="sm-edge" d="M55 86 V42" marker-end="url(#ah)"/><path class="sm-edge" d="M55 118 V166" marker-end="url(#ah)"/><path class="sm-edge" d="M250 118 V166" marker-end="url(#ah)"/><text class="sm-label is-last" x="108" y="84">deadline</text><text class="sm-label is-last" x="108" y="96">(clock)</text><text class="sm-label" x="310" y="84">Accept</text><text class="sm-label" x="310" y="96">(requester)</text><text class="sm-label" x="62" y="58">Cancel</text><text class="sm-label" x="62" y="70">(requester)</text><text class="sm-label" x="62" y="136">deadline, a leg</text><text class="sm-label" x="62" y="148">unquoted (clock)</text><text class="sm-label" x="257" y="136">Reject (requester)</text><text class="sm-label" x="257" y="148">or accept_by (clock)</text><g class="sm-node is-terminal"><rect x="10" y="8" width="90" height="32" rx="6"/><text x="55" y="29" text-anchor="middle">Cancelled</text></g><g class="sm-node"><rect x="10" y="86" width="90" height="32" rx="6"/><text x="55" y="107" text-anchor="middle">Open</text></g><g class="sm-node is-current"><rect x="200" y="86" width="100" height="32" rx="6"/><text x="250" y="107" text-anchor="middle">Presented</text></g><g class="sm-node is-terminal"><rect x="410" y="86" width="100" height="32" rx="6"/><text x="460" y="107" text-anchor="middle">Filled</text></g><g class="sm-node is-terminal"><rect x="10" y="168" width="90" height="32" rx="6"/><text x="55" y="189" text-anchor="middle">Expired</text></g><g class="sm-node is-terminal"><rect x="200" y="168" width="100" height="32" rx="6"/><text x="250" y="189" text-anchor="middle">Rejected</text></g></svg>
+            <p class="muted caption">Every exit except Filled releases every hold in the same command.</p>
+          </div>
+          <div class="machine">
+            <h3>Quote <span class="muted" style="font-weight:400;font-size:13px">select a quote to light it</span></h3>
+            <svg viewBox="0 0 520 206" role="img" aria-label="Quote state machine."><defs><marker id="ah" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8z" style="fill:var(--ink-3)"/></marker><marker id="ah-last" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L8 4L0 8z" style="fill:var(--accent)"/></marker></defs><path class="sm-edge" d="M100 102 H198" marker-end="url(#ah)"/><path class="sm-edge" d="M300 102 H408" marker-end="url(#ah)"/><path class="sm-edge" d="M55 118 V166" marker-end="url(#ah)"/><path class="sm-edge" d="M290 118 V166" marker-end="url(#ah)"/><text class="sm-label" x="106" y="84">deadline: best</text><text class="sm-label" x="106" y="96">eligible (clock)</text><text class="sm-label" x="310" y="84">Accept</text><text class="sm-label" x="310" y="96">(requester)</text><text class="sm-label" x="62" y="136">Cancel (MM), expiry,</text><text class="sm-label" x="62" y="148">not best, replaced</text><text class="sm-label" x="297" y="136">Reject or lapse</text><text class="sm-label" x="297" y="148">(firm: no MM cancel)</text><g class="sm-node"><rect x="10" y="86" width="90" height="32" rx="6"/><text x="55" y="107" text-anchor="middle">Active</text></g><g class="sm-node"><rect x="200" y="86" width="100" height="32" rx="6"/><text x="250" y="107" text-anchor="middle">Selected</text></g><g class="sm-node is-terminal"><rect x="410" y="86" width="100" height="32" rx="6"/><text x="460" y="107" text-anchor="middle">Filled</text></g><g class="sm-node is-terminal"><rect x="10" y="168" width="220" height="32" rx="6"/><text x="120" y="189" text-anchor="middle">Lost, Cancelled, Expired, Replaced</text></g><g class="sm-node is-terminal"><rect x="250" y="168" width="100" height="32" rx="6"/><text x="300" y="189" text-anchor="middle">Released</text></g></svg>
+            <p class="muted caption">Every end state except Filled releases the quote's hold.</p>
+          </div>
+          <div class="machine">
+            <h3>Contract <span class="muted" style="font-weight:400;font-size:13px">#1000 is Trading</span></h3>
+            <svg viewBox="0 0 520 206" role="img" aria-label="Contract state machine. Current state Trading."><defs><marker id="ah" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8z" style="fill:var(--ink-3)"/></marker><marker id="ah-last" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L8 4L0 8z" style="fill:var(--accent)"/></marker></defs><path class="sm-edge" d="M80 102 H138" marker-end="url(#ah)"/><path class="sm-edge" d="M216 102 H274" marker-end="url(#ah)"/><path class="sm-edge" d="M366 102 H438" marker-end="url(#ah)"/><path class="sm-edge" d="M321 118 V166" marker-end="url(#ah)"/><path class="sm-edge" d="M366 184 H438" marker-end="url(#ah)"/><path class="sm-edge" d="M178 86 C178 34, 478 34, 478 84" marker-end="url(#ah)"/><text class="sm-label" x="86" y="84">close</text><text class="sm-label" x="86" y="96">(clock)</text><text class="sm-label" x="222" y="84">Propose</text><text class="sm-label" x="222" y="96">(oracle)</text><text class="sm-label" x="372" y="84">window ends</text><text class="sm-label" x="372" y="96">(clock)</text><text class="sm-label" x="314" y="136" text-anchor="end">Dispute</text><text class="sm-label" x="314" y="148" text-anchor="end">(anyone, bond)</text><text class="sm-label" x="370" y="148">Rule (arbiter)</text><text class="sm-label" x="370" y="161">or hard deadline</text><text class="sm-label" x="196" y="30">hard deadline with no proposal: INVALID (clock)</text><g class="sm-node is-current"><rect x="4" y="86" width="76" height="32" rx="6"/><text x="42" y="107" text-anchor="middle">Trading</text></g><g class="sm-node"><rect x="140" y="86" width="76" height="32" rx="6"/><text x="178" y="107" text-anchor="middle">Closed</text></g><g class="sm-node"><rect x="276" y="86" width="90" height="32" rx="6"/><text x="321" y="107" text-anchor="middle">Proposed</text></g><g class="sm-node is-terminal"><rect x="440" y="86" width="76" height="32" rx="6"/><text x="478" y="107" text-anchor="middle">Final</text></g><g class="sm-node"><rect x="276" y="168" width="90" height="32" rx="6"/><text x="321" y="189" text-anchor="middle">Disputed</text></g><g class="sm-node is-terminal"><rect x="440" y="168" width="76" height="32" rx="6"/><text x="478" y="189" text-anchor="middle">Final</text></g></svg>
+            <p class="muted caption">Final settles every position in the same command. Resume can extend an open dispute window after downtime.</p>
+          </div>
+        </div>
+        <div class="legend">
+          <span><svg width="22" height="12" aria-hidden="true"><rect x="1" y="1" width="20" height="10" rx="3" fill="var(--accent-tint)" stroke="var(--accent)" stroke-width="2"/></svg> Current state of the selected object</span>
+          <span><svg width="22" height="12" aria-hidden="true"><line x1="1" y1="6" x2="21" y2="6" stroke="var(--accent)" stroke-width="2.5"/></svg> The transition it took last</span>
+          <span><svg width="22" height="12" aria-hidden="true"><rect x="1" y="1" width="20" height="10" rx="3" fill="none" stroke="var(--line-2)" stroke-dasharray="3 2"/></svg> Terminal</span>
+          <span>Labels show the trigger and who can fire it.</span>
+        </div>
+      </div>
+
+      <div class="tabpanel" role="tabpanel" id="t-ml" aria-labelledby="tab-ml" hidden>
+        <p style="margin-bottom:10px"><span class="not-built">Designed, not built (P6)</span> <span class="muted">The engine rejects more than one leg today. This is the design for "leg 2 of 3 fails after leg 1 matched".</span></p>
+        <div class="steps3">
+          <div class="item"><div class="item-head"><span class="id">1. Before the deadline</span></div><p style="font-size:13px">Leg 1: MM-A's quote is Active and holds. Leg 2: no quote. Leg 3: MM-C's quote is Active and holds. The request is Open. Nothing is escrowed.</p></div>
+          <div class="item"><div class="item-head"><span class="id">2. The deadline fires</span></div><p style="font-size:13px">Leg 2 has no eligible quote, so the whole request is Expired. MM-A's, MM-C's and the requester's holds are all released in that one command.</p></div>
+          <div class="item"><div class="item-head"><span class="id">3. Alternative path</span></div><p style="font-size:13px">Every leg has a quote and the request is Presented. MM-B's cancel on leg 2 is rejected because selected quotes are firm. Accept fills all three legs in one command; Reject or a lapse releases all of them.</p></div>
+        </div>
+      </div>
+
+      <div class="tabpanel" role="tabpanel" id="t-d3" aria-labelledby="tab-d3" hidden>
+        <table class="dtable">
+          <thead><tr><th scope="col">#</th><th scope="col">Race or failure</th><th scope="col">Handling</th><th scope="col">Test</th><th scope="col"><span class="sr-only">Run</span></th></tr></thead>
+          <tbody>
+            <tr><td>R1</td><td>Cancel vs the response deadline</td><td>Before the deadline the quote is removed; at or after it, it is Selected and firm, so the cancel is InvalidState.</td><td><code>cancel_after_selection_rejected</code></td><td><button class="btn btn-sm" type="button">Run</button></td></tr>
+            <tr><td>R5</td><td>Double accept or reject</td><td>The second finds the request no longer Presented: InvalidState.</td><td><code>double_accept_rejected</code></td><td><button class="btn btn-sm" type="button">Run</button></td></tr>
+            <tr><td>R6</td><td>Duplicate or skipped command</td><td>Strict nonces: Duplicate or NonceGap, and neither consumes anything.</td><td><code>nonce_gap_rejected_and_not_consumed</code></td><td><button class="btn btn-sm" type="button">Run</button></td></tr>
+            <tr><td>F7</td><td>Oracle never answers</td><td>Hard deadline makes it Final(Invalid) with full refunds.</td><td><code>oracle_silent_hard_deadline_refunds</code></td><td><button class="btn btn-sm" type="button">Run</button></td></tr>
+            <tr><td>F3</td><td>Crash before durable</td><td>Nothing applied or published; a retry applies once or is Duplicate.</td><td><code>failed_durability_applies_and_publishes_nothing</code></td><td class="muted">Node test</td></tr>
+          </tbody>
+        </table>
+        <p class="muted" style="font-size:13px;margin-top:8px">Full notes: docs/specs/failure-modes.md. Attacker table: docs/specs/adversarial.md.</p>
+      </div>
+
+      <div class="tabpanel" role="tabpanel" id="t-d4" aria-labelledby="tab-d4" hidden>
+        <table class="dtable">
+          <thead><tr><th scope="col">Path</th><th scope="col">What happens</th><th scope="col">Funds</th><th scope="col"><span class="sr-only">Run</span></th></tr></thead>
+          <tbody>
+            <tr><td>Undisputed</td><td>Oracle proposes after close; the dispute window ends.</td><td>Final with the proposed outcome; every position settles in that command.</td><td><button class="btn btn-sm" type="button">Run</button></td></tr>
+            <tr><td>Disputed, ruled</td><td>Anyone disputes with a bond; the arbiter rules.</td><td>Final with the ruling; the bond follows the ruling.</td><td><button class="btn btn-sm" type="button">Run</button></td></tr>
+            <tr><td>Oracle silent</td><td>Nobody proposes by the hard deadline.</td><td>Final INVALID; everyone gets their escrow back.</td><td><button class="btn btn-sm" type="button">Run</button></td></tr>
+            <tr><td>Unruled dispute</td><td>The arbiter never rules by the hard deadline.</td><td>Final with the proposed outcome; the bond is returned.</td><td class="muted">Unit test</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="tabpanel" role="tabpanel" id="t-d5" aria-labelledby="tab-d5" hidden>
+        <div class="seam">
+          <div class="item"><div class="item-head"><span class="id">Read from this run's Genesis</span></div>
+            <div class="item-facts"><span>Reservation <b>FullHold</b></span><span>Selection <b>SealedAtDeadline</b></span></div>
+            <p class="muted" style="font-size:13px">Both are enums in the genesis config, so the choice is in the log and replays identically.</p></div>
+          <div class="item"><div class="item-head"><span class="id">Same whether quotes live seconds or days</span></div>
+            <ul><li>State machines, ledger and invariants I1–I5</li><li>Every deadline is an absolute timestamp</li><li>Timers fire the same way at 200 ms or 3 days</li></ul></div>
+          <div class="item"><div class="item-head"><span class="id">Changes with the answer</span></div>
+            <ul><li>Collateral: full holds vs one limit behind many quotes</li><li>Selection: sealed at the deadline vs live best quote</li><li>State size: pruning and snapshots</li></ul></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Admin trace: everything, in sequence order -->
+  <aside class="trace" aria-labelledby="trace-h">
+    <div class="trace-head">
+      <div class="trace-head-top"><h2 id="trace-h">Trace</h2><span class="muted" style="font-size:13px"><span class="only-admin">Every command and event</span><span class="only-mm1">What MM1 can see</span></span></div>
+      <div class="filters" role="group" aria-label="Filter the trace">
+        <button type="button" aria-pressed="true">All</button><button type="button" aria-pressed="false">Rejections</button><button type="button" aria-pressed="false">Money</button><button type="button" aria-pressed="false">Clock</button>
+      </div>
+    </div>
+    <div class="log" role="log" aria-label="Command log">
+      <div class="row only-admin"><button class="row-head" type="button" aria-expanded="false"><span class="seq">1</span><span class="t">start</span><span class="what"><b>Genesis</b> FullHold, SealedAtDeadline</span><span class="count">1</span></button></div>
+      <div class="row only-admin"><button class="row-head" type="button" aria-expanded="false"><span class="seq">2</span><span class="t">t+0.000</span><span class="what"><b>Operator</b> Deposit $1,000.00 to Alice</span><span class="count">1</span></button></div>
+      <div class="row only-admin"><button class="row-head" type="button" aria-expanded="false"><span class="seq">3–5</span><span class="t">t+0.000</span><span class="what"><b>Operator</b> Deposit $1,000.00 to MM1, MM2, Carol</span><span class="count">3</span></button></div>
+      <div class="row"><button class="row-head" type="button" aria-expanded="false"><span class="seq">6</span><span class="t">t+0.000</span><span class="what"><b>Operator</b> ListContract #1000</span><span class="count">1</span></button></div>
+      <div class="row"><button class="row-head" type="button" aria-expanded="false"><span class="seq">7</span><span class="t">t+0.100</span><span class="what"><span class="only-admin"><b>Alice</b> SubmitRequest Buy YES × 1,000, limit 0.70</span><span class="only-mm1"><b>Public</b> RequestOpened #7, Buy YES × 1,000</span></span><span class="count">1</span></button></div>
+      <div class="row"><button class="row-head" type="button" aria-expanded="false"><span class="seq">8</span><span class="t">t+0.300</span><span class="what"><b>MM1</b> SubmitQuote on #7 at 0.62 × 1,000</span><span class="count">1</span></button></div>
+      <div class="row only-admin"><button class="row-head" type="button" aria-expanded="false"><span class="seq">9</span><span class="t">t+0.400</span><span class="what"><b>MM2</b> SubmitQuote on #7 at 0.60 × 1,000</span><span class="count">1</span></button></div>
+      <div class="row is-rejected only-admin">
+        <button class="row-head" type="button" aria-expanded="true"><span class="seq">10</span><span class="t">t+0.500</span><span class="what"><b>Carol</b> CancelQuote #8</span><span class="count">1</span></button>
+        <ul class="row-events"><li><span class="ev rej">CommandRejected</span><span>Unauthorized</span><span class="aud aud-acct">to Carol</span></li></ul>
+      </div>
+      <div class="row"><button class="row-head" type="button" aria-expanded="false"><span class="seq">11</span><span class="t">t+1.200</span><span class="what"><span class="only-admin"><b>Carol</b> SubmitRequest Buy YES × 500, limit 0.55</span><span class="only-mm1"><b>Public</b> RequestOpened #11, Buy YES × 500</span></span><span class="count">1</span></button></div>
+      <div class="row is-new is-open">
+        <button class="row-head" type="button" aria-expanded="true"><span class="seq">12</span><span class="t">t+1.600</span><span class="what"><b>Clock</b> tick: request #7 deadline</span><span class="count"><span class="only-admin">3</span><span class="only-mm1">1</span></span></button>
+        <ul class="row-events">
+          <li><span class="ev">QuoteLost</span><span>#8</span><span class="aud aud-acct">to MM1</span></li>
+          <li class="only-admin"><span class="ev">QuoteSelected</span><span>#9</span><span class="aud aud-acct">to MM2</span></li>
+          <li class="only-admin"><span class="ev">RequestPresented</span><span>#7, pick #9 at 0.60, accept by t+3.600</span><span class="aud aud-acct">to Alice</span></li>
+        </ul>
+      </div>
+    </div>
+    <div class="inspector" aria-labelledby="insp-h">
+      <div style="display:flex;justify-content:space-between;align-items:baseline"><h2 id="insp-h">Request #7</h2><span class="badge b-live">Presented</span></div>
+      <div class="item-facts"><span>Requester <b class="only-admin">Alice</b><span class="sealed only-mm1"><svg aria-hidden="true"><use href="#i-lock"/></svg>sealed</span></span><span>Limit <b class="only-admin">0.70</b><span class="sealed only-mm1"><svg aria-hidden="true"><use href="#i-lock"/></svg>sealed</span></span><span>Accept by <b>t+3.600 s</b></span></div>
+      <ol>
+        <li><button class="idlink" type="button">seq 7</button> SubmitRequest, then RequestOpened (public)</li>
+        <li class="only-admin"><button class="idlink" type="button">seq 8</button> Quote #8 from MM1 at 0.62</li>
+        <li class="only-admin"><button class="idlink" type="button">seq 9</button> Quote #9 from MM2 at 0.60</li>
+        <li><button class="idlink" type="button">seq 12</button> Deadline: #8 Lost, #9 Selected, Presented to Alice</li>
+      </ol>
+    </div>
+  </aside>
+</div>
+
+<script>
+// Mockup-only interactions: theme, a two-state "view as" preview, tabs, expandable trace rows.
+const root = document.documentElement;
+if (location.hash.includes("dark")) root.dataset.theme = "dark";
+if (location.hash.includes("mm1")) { root.dataset.view = "mm1"; document.querySelectorAll("#viewas button").forEach((x) => x.setAttribute("aria-pressed", String(x.textContent === "MM1"))); }
+document.getElementById("theme").addEventListener("click", () => {
+  root.dataset.theme = root.dataset.theme === "dark" ? "light" : "dark";
+});
+document.getElementById("viewas").addEventListener("click", (e) => {
+  const b = e.target.closest("button"); if (!b) return;
+  for (const x of e.currentTarget.children) x.setAttribute("aria-pressed", String(x === b));
+  root.dataset.view = b.dataset.v;
+});
+document.querySelectorAll('[role="tab"]').forEach((tab) => tab.addEventListener("click", () => {
+  document.querySelectorAll('[role="tab"]').forEach((t) => {
+    t.setAttribute("aria-selected", String(t === tab));
+    document.getElementById(t.getAttribute("aria-controls")).hidden = t !== tab;
+  });
+}));
+document.querySelectorAll(".row-head").forEach((h) => h.addEventListener("click", () => {
+  const open = h.getAttribute("aria-expanded") === "true";
+  h.setAttribute("aria-expanded", String(!open));
+  const list = h.nextElementSibling; if (list) list.hidden = open;
+}));
+</script>
+</body>
+</html>
