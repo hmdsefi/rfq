@@ -46,6 +46,14 @@ pub fn encode<T: Serialize>(value: &T) -> Vec<u8> {
     bytes
 }
 
+/// `encode(value).len()`, computed without allocating.
+pub fn encoded_len<T: Serialize>(value: &T) -> usize {
+    let body = opts()
+        .serialized_size(value)
+        .expect("in-memory serialization cannot fail");
+    1 + usize::try_from(body).expect("an in-memory value's encoding fits in memory")
+}
+
 /// Trusted decoder (journal replay, egress): no size limit. Untrusted input must go through
 /// [`decode_ingress`].
 pub fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, CodecError> {
@@ -148,6 +156,13 @@ mod tests {
         assert!(decode_ingress(&bytes).is_none());
         // The trusted decoder (journal, egress) has no size limit and reads the same bytes fine.
         assert_eq!(decode::<ClientCommand>(&bytes).unwrap(), cmd);
+    }
+
+    #[test]
+    fn encoded_len_matches_encode() {
+        let cmd = big_command();
+        assert_eq!(encoded_len(&cmd), encode(&cmd).len());
+        assert_eq!(encoded_len(&Command::Tick), encode(&Command::Tick).len());
     }
 
     #[test]

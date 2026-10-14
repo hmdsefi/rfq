@@ -1,0 +1,378 @@
+//! [`ArchiveJournal`]: the log is stream 1002, recorded by Aeron Archive.
+//!
+//! Each node start records the stream anew, so the log is the sequence of all recordings of
+//! stream 1002 in recording-id order. Startup replays each over `[start, stop)` onto stream 1004.
+//!
+//! Crash handling (spike-verified): a node that dies without closing its publication leaves its
+//! recording active until the driver times the dead client out (about 10 s). Replay first stops
+//! such a recording, so every recording has a final stop position and the log being replayed
+//! cannot grow while it is read; anything the dead node offered but the Archive never recorded
+//! was never durable, so it was never applied or published. The next `start_recording` would
+//! otherwise fail with `ActiveSubscription` (it still stops and retries if that happens).
+//!
+//! Durability is read from the recording's position counter in the driver's shared memory, not
+//! asked of the Archive (`get_recording_position`). The Archive pings each control session every
+//! second and closes it once a ping has not fitted in the response stream for its connect timeout,
+//! and the node only reads that stream during a request. After roughly nine idle minutes the
+//! pings fill it and the session is gone, so a control request in `wait_durable` would fail on
+//! the first command after an idle spell. The control session is therefore used only at startup
+//! (replay, starting the recording); closing it does not stop the recording.
+use std::collections::BTreeSet;
+use std::ffi::CString;
+use std::time::{Duration, Instant};
+
+use rfq_app::{BoxError, Journal};
+use rfq_domain::SequencedCommand;
+use rusteron_archive::{
+    Aeron, AeronArchive, AeronArchiveAsyncConnect, AeronArchiveContext, AeronArchiveErrorCode,
+    AeronArchiveRecordingDescriptor, AeronArchiveReplayParams, AeronCountersReader, AeronHeader,
+    AeronPublication, ChannelUri, Handlers, RecordingPos, SOURCE_LOCATION_LOCAL,
+};
+
+use super::{AeronError, IPC, LOG, REPLAY, RESOURCE_TIMEOUT, Unconnected, frame_of, offer, retry};
+use crate::codec::{decode, encode};
+use crate::fragment::Reassembler;
+
+/// Aeron's "no position": the stop position of a recording that is still active.
+const NULL_POSITION: i64 = -1;
+/// Aeron's "no counter".
+const NULL_COUNTER_ID: i32 = -1;
+/// How long an offer to the log may stay back-pressured or unconnected.
+const LOG_PATIENCE: Duration = Duration::from_secs(10);
+/// How long the Archive may take to record an appended command.
+const DURABLE_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a replay may make no progress, and a stopped recording may take to get its stop
+/// position.
+const ARCHIVE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Fragments per replay poll.
+const REPLAY_FRAGMENTS: usize = 256;
+/// `start_recording` attempts that may hit `ActiveSubscription`.
+const START_ATTEMPTS: usize = 3;
+
+/// A recording of the log stream, from the Archive's catalog.
+#[derive(Clone, Copy, Debug)]
+struct Recording {
+    id: i64,
+    start: i64,
+    /// [`NULL_POSITION`] while active.
+    stop: i64,
+    session: i32,
+}
+
+/// This node's own recording and the publication it records.
+struct Log {
+    publication: AeronPublication,
+    max_message: usize,
+    recording_id: i64,
+    /// The recording's position counter: how far the Archive has written the log.
+    counters: AeronCountersReader,
+    counter_id: i32,
+}
+
+pub struct ArchiveJournal {
+    aeron: Aeron,
+    archive: AeronArchive,
+    /// Started by the first `append`, after `replay` has read the earlier recordings.
+    log: Option<Log>,
+}
+
+impl ArchiveJournal {
+    /// Connects to the Archive over its local IPC control channel, retrying while it starts.
+    pub fn new(aeron: &Aeron) -> Result<Self, AeronError> {
+        let ctx = AeronArchiveContext::new()?;
+        ctx.set_aeron(aeron)?;
+        ctx.set_control_request_channel(IPC)?;
+        ctx.set_control_response_channel(IPC)?;
+        ctx.set_error_handler(Some(|code: i32, msg: &str| {
+            tracing::error!(code, msg, "aeron archive error");
+        }))?;
+        let archive = retry("connect to the archive", || {
+            Ok(AeronArchiveAsyncConnect::new_with_aeron(&ctx, aeron)?
+                .poll_blocking(Duration::from_secs(5))?)
+        })?;
+        tracing::info!(archive_id = archive.get_archive_id(), "connected to the archive");
+        Ok(ArchiveJournal {
+            aeron: aeron.clone(),
+            archive,
+            log: None,
+        })
+    }
+
+    /// Every recording of the log stream, in recording-id order.
+    fn recordings(&self) -> Result<Vec<Recording>, AeronError> {
+        let mut out = Vec::new();
+        let mut count = 0;
+        self.archive.list_recordings_for_uri_fn(
+            &mut count,
+            0,
+            i32::MAX,
+            IPC,
+            LOG,
+            |d: AeronArchiveRecordingDescriptor| {
+                out.push(Recording {
+                    id: d.recording_id(),
+                    start: d.start_position(),
+                    stop: d.stop_position(),
+                    session: d.session_id(),
+                });
+            },
+        )?;
+        out.sort_by_key(|r| r.id);
+        Ok(out)
+    }
+
+    /// Stops a recording left active by a node that crashed, then waits until every recording
+    /// has its final stop position.
+    fn sealed_recordings(&self) -> Result<Vec<Recording>, AeronError> {
+        let start = Instant::now();
+        let mut stop_requested = false;
+        loop {
+            let all = self.recordings()?;
+            if all.iter().all(|r| r.stop != NULL_POSITION) {
+                return Ok(all);
+            }
+            if !stop_requested {
+                tracing::warn!(
+                    "a log recording is still active (the last node did not stop cleanly); stopping it"
+                );
+                self.archive.try_stop_recording_channel_and_stream(IPC, LOG)?;
+                stop_requested = true;
+            }
+            if start.elapsed() > ARCHIVE_TIMEOUT {
+                return Err(AeronError::Timeout {
+                    what: "stop the active log recording",
+                    after: ARCHIVE_TIMEOUT,
+                });
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Replays `[r.start, r.stop)` of one recording onto the replay stream, feeding each command
+    /// to `f`. A message torn at `r.stop` by a crash never completes, so it is never fed.
+    fn replay_recording(&self, r: &Recording, f: &mut dyn FnMut(SequencedCommand)) -> Result<(), AeronError> {
+        let params = AeronArchiveReplayParams::builder()
+            .position(r.start)
+            .length(r.stop - r.start)
+            .build()?;
+        let replay_session = self.archive.start_replay(r.id, IPC, REPLAY, &params)?;
+        // Subscribe to this replay's session only, so no other replay on the stream can mix in.
+        let session = image_session(replay_session);
+        let channel = CString::new(ChannelUri::add_session_id("aeron:ipc", session))
+            .expect("a channel URI built from an IPC channel and a number has no NUL byte");
+        let subscription = self
+            .aeron
+            .async_add_subscription(&channel, REPLAY, Handlers::NONE, Handlers::NONE)?
+            .poll_blocking(RESOURCE_TIMEOUT)?;
+        let waiting = Instant::now();
+        let image = loop {
+            if let Some(image) = subscription.image_by_session_id(session) {
+                break image;
+            }
+            if waiting.elapsed() > ARCHIVE_TIMEOUT {
+                return Err(AeronError::Timeout {
+                    what: "replay image to appear",
+                    after: ARCHIVE_TIMEOUT,
+                });
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        };
+
+        let mut reassembler = Reassembler::new(usize::MAX);
+        let mut failure: Option<AeronError> = None;
+        let mut progress = Instant::now();
+        // The image position also counts padding frames, which reach no handler.
+        while image.position() < r.stop {
+            let fragments = image.poll_fn(
+                |data: &[u8], header: AeronHeader| {
+                    if failure.is_some() {
+                        return;
+                    }
+                    let position = header.position();
+                    match frame_of(&header) {
+                        Ok((session, flags)) => {
+                            reassembler.on_fragment(session, flags, data, &mut |msg| match decode(msg) {
+                                Ok(sc) => f(sc),
+                                Err(source) => {
+                                    failure = Some(AeronError::Corrupt {
+                                        recording_id: r.id,
+                                        position,
+                                        source,
+                                    });
+                                }
+                            });
+                        }
+                        Err(e) => failure = Some(e.into()),
+                    }
+                },
+                REPLAY_FRAGMENTS,
+            )?;
+            if let Some(e) = failure {
+                return Err(e);
+            }
+            if fragments > 0 {
+                progress = Instant::now();
+            } else if image.is_end_of_stream() || image.is_closed() {
+                return Err(AeronError::ReplayEnded {
+                    recording_id: r.id,
+                    at: image.position(),
+                    stop: r.stop,
+                });
+            } else if progress.elapsed() > ARCHIVE_TIMEOUT {
+                return Err(AeronError::Timeout {
+                    what: "replay to make progress",
+                    after: ARCHIVE_TIMEOUT,
+                });
+            } else {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+        Ok(())
+    }
+
+    /// This node's log: starts a new recording of the log stream and the publication it records.
+    fn log(&mut self) -> Result<&Log, AeronError> {
+        if self.log.is_none() {
+            self.log = Some(self.start_log()?);
+        }
+        Ok(self.log.as_ref().expect("set above"))
+    }
+
+    fn start_log(&self) -> Result<Log, AeronError> {
+        let before: BTreeSet<i64> = self.recordings()?.iter().map(|r| r.id).collect();
+        let mut attempt = 1;
+        loop {
+            match self
+                .archive
+                .start_recording(IPC, LOG, SOURCE_LOCATION_LOCAL, true)
+            {
+                Ok(_) => break,
+                Err(e) if e.code == AeronArchiveErrorCode::ActiveSubscription && attempt < START_ATTEMPTS => {
+                    tracing::warn!("the log stream is already being recorded; stopping that recording");
+                    self.archive.stop_recording_channel_and_stream(IPC, LOG)?;
+                    attempt += 1;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+        let publication = self
+            .aeron
+            .async_add_publication(IPC, LOG)?
+            .poll_blocking(RESOURCE_TIMEOUT)?;
+        let max_message = publication.get_constants()?.max_message_length();
+        // The new recording is the one not listed before. If the driver still holds a crashed
+        // node's publication, ours shares its session (and its last recording's session id).
+        let session = publication.session_id();
+        let waiting = Instant::now();
+        let recording_id = loop {
+            let new = self
+                .recordings()?
+                .into_iter()
+                .filter(|r| !before.contains(&r.id) && r.session == session)
+                .map(|r| r.id)
+                .max();
+            if let Some(id) = new {
+                break id;
+            }
+            if waiting.elapsed() > ARCHIVE_TIMEOUT {
+                return Err(AeronError::Timeout {
+                    what: "the archive to create this node's log recording",
+                    after: ARCHIVE_TIMEOUT,
+                });
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        let counters = self.aeron.counters_reader();
+        let waiting = Instant::now();
+        let counter_id = loop {
+            let id = RecordingPos::find_counter_id_by_recording_id(&counters, recording_id);
+            if id != NULL_COUNTER_ID {
+                break id;
+            }
+            if waiting.elapsed() > ARCHIVE_TIMEOUT {
+                return Err(AeronError::Timeout {
+                    what: "the position counter of this node's log recording",
+                    after: ARCHIVE_TIMEOUT,
+                });
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        tracing::info!(
+            recording_id,
+            session,
+            max_message,
+            "recording the log (stream 1002)"
+        );
+        Ok(Log {
+            publication,
+            max_message,
+            recording_id,
+            counters,
+            counter_id,
+        })
+    }
+}
+
+impl Journal for ArchiveJournal {
+    /// The position is the log publication's stream position after the record.
+    fn append(&mut self, sc: &SequencedCommand) -> Result<u64, BoxError> {
+        let log = self.log()?;
+        let bytes = encode(sc);
+        let position = offer(
+            &log.publication,
+            &bytes,
+            log.max_message,
+            "the log",
+            Unconnected::Wait,
+            LOG_PATIENCE,
+        )?
+        .expect("Unconnected::Wait never drops");
+        Ok(u64::try_from(position).expect("offer returns a non-negative position"))
+    }
+
+    /// Waits until the Archive has recorded this node's recording up to `pos`, reading the
+    /// recording's position counter (the value `get_recording_position` reports).
+    fn wait_durable(&mut self, pos: u64) -> Result<(), BoxError> {
+        let log = self.log.as_ref().ok_or(AeronError::NothingAppended)?;
+        let target = i64::try_from(pos).expect("append returned it from an i64");
+        let start = Instant::now();
+        loop {
+            let recorded = log.counters.get_counter_value(log.counter_id);
+            // Trust the value only while the counter still belongs to our recording: a stopped
+            // recording frees its counter, which may then be reused.
+            if !RecordingPos::is_active(&log.counters, log.counter_id, log.recording_id)
+                .map_err(AeronError::from)?
+            {
+                return Err(AeronError::RecordingStopped(log.recording_id).into());
+            }
+            if recorded >= target {
+                return Ok(());
+            }
+            if start.elapsed() > DURABLE_TIMEOUT {
+                return Err(AeronError::Timeout {
+                    what: "the archive to record the log",
+                    after: DURABLE_TIMEOUT,
+                }
+                .into());
+            }
+            std::thread::yield_now();
+        }
+    }
+
+    /// Replays every recording of the log stream in recording-id order.
+    fn replay(&mut self, f: &mut dyn FnMut(SequencedCommand)) -> Result<(), BoxError> {
+        for r in self.sealed_recordings()? {
+            if r.stop > r.start {
+                self.replay_recording(&r, f)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The session id of a replay's image: by Aeron's definition, the low 32 bits of the replay
+/// session id that `start_replay` returns.
+#[allow(clippy::cast_possible_truncation)]
+fn image_session(replay_session_id: i64) -> i32 {
+    replay_session_id as i32
+}

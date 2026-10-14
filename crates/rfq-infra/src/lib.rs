@@ -1,6 +1,8 @@
 //! Infrastructure layer of the RFQ engine: adapters that connect the application's ports to the
-//! outside world. The versioned wire codec, the file and in-memory `Journal`s, and the in-memory
-//! `Transport`; the Aeron transport and Archive journal follow behind the `aeron` feature.
+//! outside world: the versioned wire codec, the file and in-memory `Journal`s, the in-memory
+//! `Transport`, and, behind the `aeron` feature, the Aeron transport and Archive journal. The
+//! pieces of the Aeron path that need no Aeron (fragment reassembly, egress batch splitting) are
+//! always built, so they are tested without it.
 //!
 //! Depends on `rfq-app` and `rfq-domain`; never on a binary.
 #![forbid(unsafe_code)]
@@ -11,6 +13,9 @@
     clippy::cast_sign_loss
 )]
 
+#[cfg(feature = "aeron")]
+pub mod aeron;
 pub mod codec;
+pub mod fragment;
 pub mod journal;
 pub mod transport;
