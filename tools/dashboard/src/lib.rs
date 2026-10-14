@@ -8,5 +8,9 @@
     clippy::cast_sign_loss
 )]
 
+pub mod api;
+#[allow(unsafe_code)] // `#[unsafe(no_mangle)]` export attributes only; no unsafe blocks.
+mod ffi;
 pub mod presets;
 pub mod session;
+pub mod view;
