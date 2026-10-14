@@ -44,7 +44,8 @@ pub enum ServerMsg {
         engine: EngineState,
         now: u64,
     },
-    /// The command is on ingress, with this nonce.
+    /// Accepted by the gateway and offered to ingress, with this nonce; an `error` (for example
+    /// back pressure) may still follow.
     Sent {
         id: String,
         actor: AccountId,
@@ -52,9 +53,9 @@ pub enum ServerMsg {
     },
     /// One engine output, filtered for this connection's view.
     Batch(OutBatch),
-    /// To the sender only, right after the batch of its command. `latency_us` runs from putting
-    /// the command on ingress to receiving its batch, on the gateway's clock (a command that
-    /// waited behind the actor's previous one is timed from when it was sent).
+    /// To the sender only, right after the batch of its command. `latency_us` runs from the
+    /// gateway receiving the command to receiving its batch, on the gateway's clock, so it
+    /// includes any wait behind the actor's previous command or a nonce sync.
     Result {
         id: String,
         seq: u64,
@@ -111,12 +112,14 @@ pub struct AccountBalance {
 /// or is longer than [`MAX_TEXT`], is an `Err` with a `bad request: …` sentence for the client.
 pub fn decode_client(text: &str) -> Result<ClientMsg, String> {
     if text.len() > MAX_TEXT {
-        return Err(format!(
-            "bad request: message too large ({} bytes, at most {MAX_TEXT})",
-            text.len()
-        ));
+        return Err(too_large(text.len()));
     }
     serde_json::from_str(text).map_err(|e| format!("bad request: {e}"))
+}
+
+/// The error sentence for a client frame of `len` bytes, over [`MAX_TEXT`].
+pub fn too_large(len: usize) -> String {
+    format!("bad request: message too large ({len} bytes, at most {MAX_TEXT})")
 }
 
 /// The text frame for `msg`.

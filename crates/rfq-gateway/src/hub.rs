@@ -13,9 +13,12 @@
 //!   its rejection are never forwarded (what timers added to it still is).
 //! - **Engine state** (gateway.md §6). Down when the ingress publication is not connected or a
 //!   command has had no batch for 3 s; every command in flight or waiting then fails, and its
-//!   actor's nonce is forgotten. Up again once the publication is connected and a batch has
-//!   arrived since the failure (a restarted node's `Resume`, in either order). At start-up nothing
-//!   has failed, so the first connection is enough.
+//!   actor's nonce is forgotten. Up again once the publication is connected and the engine has
+//!   shown it works since the failure: a batch that came while connected, or a restarted node's
+//!   `Resume`, which may be polled just before the connection is seen. Any other batch polled
+//!   while disconnected is stale (published before the failure) and does not count. So after a
+//!   restart a client sees `down`, then the `Resume` batch, then `up`. At start-up nothing has
+//!   failed, so the first connection is enough.
 //!
 //! Logging (gateway.md §8): each command sent, each result, each engine status change, each
 //! nonce sync.
@@ -78,11 +81,19 @@ struct Waiting {
     id: String,
     nonce: Option<u64>,
     action: Action,
+    /// When the gateway received it, on the caller's monotonic clock (µs): `latency_us` runs
+    /// from here (gateway.md §3), including any wait behind the actor's previous command or a
+    /// nonce sync.
+    received_at: u64,
 }
 
 enum Flight {
     /// A client's command. `conn` is `None` once the sender has gone: its result is dropped.
-    Command { conn: Option<ConnId>, id: String },
+    Command {
+        conn: Option<ConnId>,
+        id: String,
+        received_at: u64,
+    },
     /// A nonce probe (`Withdraw { amount: 0 }`), never reported to clients.
     Probe,
 }
@@ -90,7 +101,7 @@ enum Flight {
 /// The one command of an actor that is on ingress, waiting for its batch.
 struct InFlight {
     nonce: u64,
-    /// When it was offered, on the caller's monotonic clock (µs).
+    /// When it was offered, on the caller's monotonic clock (µs). The 3 s timeout runs from here.
     sent_at: u64,
     what: Flight,
 }
@@ -111,7 +122,7 @@ pub struct Hub {
     /// Whether the ingress publication is connected (a node subscribes to it).
     connected: bool,
     /// Nothing has failed since the engine was last seen working: at start-up, and after a
-    /// batch. Up needs it, besides the connection.
+    /// batch that came while connected, or a `Resume`. Up needs it, besides the connection.
     fresh: bool,
     last_seq: Option<u64>,
     /// The last batch, and whose it was. A batch too big for one message arrives as chunks with
@@ -182,6 +193,11 @@ impl Hub {
         out
     }
 
+    /// The view of an open connection.
+    pub fn view(&self, conn: ConnId) -> Option<View> {
+        self.views.get(&conn).copied()
+    }
+
     fn close(&mut self, conn: ConnId) {
         self.views.remove(&conn);
         for a in self.actors.values_mut() {
@@ -226,6 +242,7 @@ impl Hub {
                     id,
                     nonce,
                     action,
+                    received_at: now_us,
                 };
                 self.command(actor, waiting, now_us, out);
             }
@@ -275,7 +292,14 @@ impl Hub {
             });
             return;
         };
-        let Some(Waiting { conn, id, action, .. }) = a.waiting.pop_front() else {
+        let Some(Waiting {
+            conn,
+            id,
+            action,
+            received_at,
+            ..
+        }) = a.waiting.pop_front()
+        else {
             return;
         };
         tracing::info!(
@@ -298,7 +322,11 @@ impl Hub {
         a.in_flight = Some(InFlight {
             nonce,
             sent_at: now_us,
-            what: Flight::Command { conn: Some(conn), id },
+            what: Flight::Command {
+                conn: Some(conn),
+                id,
+                received_at,
+            },
         });
     }
 
@@ -336,9 +364,15 @@ impl Hub {
         self.current = Some((chunk(b), whose));
 
         self.last_seq = Some(self.last_seq.map_or(b.seq, |last| last.max(b.seq)));
-        self.fresh = true;
-        if self.connected && self.engine == EngineState::Down {
-            self.set_engine(EngineState::Up, "a batch arrived", out);
+        // A batch shows the engine working only if it came while ingress is connected, or if it
+        // is a node's `Resume`: its first output after a start, which the gateway may poll just
+        // before it sees the connection. Any other batch polled while disconnected was published
+        // before the failure, so it is stale and no sign of recovery (it is still forwarded).
+        if self.connected || b.kind == BatchKind::Resume {
+            self.fresh = true;
+            if self.connected && self.engine == EngineState::Down {
+                self.set_engine(EngineState::Up, "a batch arrived", out);
+            }
         }
     }
 
@@ -387,14 +421,19 @@ impl Hub {
             return;
         };
         let Some(InFlight {
-            sent_at,
-            what: Flight::Command { conn, id },
+            what:
+                Flight::Command {
+                    conn,
+                    id,
+                    received_at,
+                    ..
+                },
             ..
         }) = a.in_flight.take()
         else {
             return;
         };
-        let latency_us = now_us.saturating_sub(sent_at);
+        let latency_us = now_us.saturating_sub(received_at);
         tracing::info!(seq, latency_us, "result");
         if let Some(conn) = conn {
             self.reply(out, conn, &ServerMsg::Result { id, seq, latency_us });
@@ -492,7 +531,7 @@ impl Hub {
             return;
         };
         match f.what {
-            Flight::Command { conn, id } => {
+            Flight::Command { conn, id, .. } => {
                 tracing::warn!(actor = actor.0, nonce, "ingress back-pressured");
                 if let Some(conn) = conn {
                     self.reply(out, conn, &error(Some(id), BACK_PRESSURED));
@@ -519,7 +558,9 @@ impl Hub {
             if let Some(f) = a.in_flight {
                 self.book.forget(actor);
                 match f.what {
-                    Flight::Command { conn: Some(conn), id } => {
+                    Flight::Command {
+                        conn: Some(conn), id, ..
+                    } => {
                         self.reply(out, conn, &error(Some(id), UNAVAILABLE));
                     }
                     Flight::Command { conn: None, .. } => {}
@@ -678,6 +719,17 @@ mod tests {
         }
     }
 
+    fn resume(seq: u64) -> EventBatch {
+        EventBatch {
+            seq,
+            time: seq.saturating_add(5_000),
+            kind: BatchKind::Resume,
+            origin: None,
+            events: Vec::new(),
+            balances: Vec::new(),
+        }
+    }
+
     fn withdrawn(actor: AccountId) -> Emitted {
         Emitted::to(
             actor,
@@ -831,8 +883,50 @@ mod tests {
         );
         assert_eq!(
             frames(&fx, 1)[1],
-            json!({"type": "result", "id": "c2", "seq": 23, "latency_us": 500}),
-            "latency from sending c2"
+            json!({"type": "result", "id": "c2", "seq": 23, "latency_us": 1_300}),
+            "latency from receiving c2 (at 200), which waited behind c1"
+        );
+    }
+
+    /// `latency_us` runs from the gateway receiving the command (gateway.md §3), including the
+    /// time it waits behind a nonce sync or behind the actor's previous command.
+    #[test]
+    fn latency_runs_from_receiving_the_command() {
+        let mut hub = up();
+        open(&mut hub, 1, None);
+        // ALICE is unknown: c1 waits for a probe, c2 waits behind c1.
+        assert_eq!(
+            offers(&command(&mut hub, 1, "c1", ALICE, 1_000)),
+            vec![probe(ALICE, 1)]
+        );
+        assert!(offers(&command(&mut hub, 1, "c2", ALICE, 1_100)).is_empty());
+        let fx = batch(
+            &mut hub,
+            user_batch(40, (ALICE, 1), vec![rejected(ALICE, RejectReason::InvalidInput)]),
+            1_400,
+        );
+        assert_eq!(offers(&fx), vec![withdraw(ALICE, 2)], "synced: c1 goes at 1 400");
+
+        let fx = batch(
+            &mut hub,
+            user_batch(41, (ALICE, 2), vec![withdrawn(ALICE)]),
+            2_000,
+        );
+        assert_eq!(
+            frames(&fx, 1)[1],
+            json!({"type": "result", "id": "c1", "seq": 41, "latency_us": 1_000}),
+            "from 1 000 (received), not 1 400 (offered)"
+        );
+        assert_eq!(offers(&fx), vec![withdraw(ALICE, 3)], "c2 goes at 2 000");
+        let fx = batch(
+            &mut hub,
+            user_batch(42, (ALICE, 3), vec![withdrawn(ALICE)]),
+            2_500,
+        );
+        assert_eq!(
+            frames(&fx, 1)[1],
+            json!({"type": "result", "id": "c2", "seq": 42, "latency_us": 1_400}),
+            "from 1 100 (received), not 2 000 (offered)"
         );
     }
 
@@ -1190,6 +1284,8 @@ mod tests {
 
     /// The gateway starts with the ingress publication unconnected: down. When it connects (the
     /// node is running), the engine is up; nothing failed, so there is no `Resume` to wait for.
+    /// After a failure it is different: a restarted node's `Resume` may be polled just before
+    /// the connection is seen, and it still counts, so `up` follows the connection.
     #[test]
     fn the_first_connection_at_start_up_is_up() {
         let mut hub = Hub::new();
@@ -1201,16 +1297,47 @@ mod tests {
             frames(&fx, 1),
             vec![json!({"type": "status", "engine": "up", "last_seq": null})]
         );
-        // A Resume that came before the connection still counts.
+
         let mut hub = up();
-        hub.handle(Input::Ingress { connected: false }, 0, WALL);
-        batch(&mut hub, user_batch(5, (MM1, 1), vec![withdrawn(MM1)]), 0);
         open(&mut hub, 1, None);
+        hub.handle(Input::Ingress { connected: false }, 0, WALL);
+        let fx = batch(&mut hub, resume(5), 0);
+        assert_eq!(
+            types(&frames(&fx, 1)),
+            ["batch"],
+            "the Resume first; not up while disconnected"
+        );
         let fx = hub.handle(Input::Ingress { connected: true }, 0, WALL);
         assert_eq!(
             frames(&fx, 1),
             vec![json!({"type": "status", "engine": "up", "last_seq": 5})]
         );
+    }
+
+    /// After the disconnect, the gateway may still poll batches the old node published before it
+    /// died. They are forwarded, but they are no sign of recovery: when a node connects again,
+    /// the engine stays down until that node's `Resume`, so a client sees `down`, then the
+    /// `Resume` batch, then `up`.
+    #[test]
+    fn a_stale_batch_after_the_disconnect_does_not_mark_up() {
+        let mut hub = up();
+        open(&mut hub, 1, None);
+        let fx = hub.handle(Input::Ingress { connected: false }, 0, WALL);
+        assert_eq!(types(&frames(&fx, 1)), ["status"]);
+
+        let fx = batch(&mut hub, user_batch(7, (MM1, 1), vec![withdrawn(MM1)]), 0);
+        assert_eq!(types(&frames(&fx, 1)), ["batch"], "forwarded, but no status");
+        let fx = hub.handle(Input::Ingress { connected: true }, 0, WALL);
+        assert!(fx.is_empty(), "still down: {fx:?}");
+        assert_eq!(
+            frames(&command(&mut hub, 1, "c1", ALICE, 0), 1),
+            vec![json!({"type": "error", "id": "c1", "error": "engine unavailable"})]
+        );
+
+        let got = frames(&batch(&mut hub, resume(8), 0), 1);
+        assert_eq!(types(&got), ["batch", "status"]);
+        assert_eq!(got[0]["kind"], "Resume");
+        assert_eq!(got[1], json!({"type": "status", "engine": "up", "last_seq": 8}));
     }
 
     /// An explicit nonce (attack scripts) is sent as given, for a known or an unknown actor, and

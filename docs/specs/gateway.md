@@ -58,7 +58,7 @@ Text frames, one JSON object each, tagged by `type`. Ids are plain numbers, pric
 | Message | Meaning |
 |---|---|
 | `{"type":"welcome","view":…,"engine":"up"\|"down","now":ms}` | Reply to `hello`. `now` is the gateway's wall clock, so clients can align their schedule with engine time. |
-| `{"type":"sent","id":"c1","actor":10,"nonce":7}` | The command is on ingress. |
+| `{"type":"sent","id":"c1","actor":10,"nonce":7}` | Accepted by the gateway and offered to ingress; an `error` (for example back-pressure) may still follow. |
 | `{"type":"batch","seq":12,"time":ms,"kind":"User","origin":{"actor":10,"nonce":7}\|null,"events":[{"audience":…,"event":…}],"balances":[{"account":10,"balance":{"free":…,"reserved":…,"escrowed":…}}]}` | One engine output, filtered for this connection's view (§4). |
 | `{"type":"result","id":"c1","seq":12,"latency_us":840}` | To the sender only, right after the batch whose origin matches its command. `latency_us` runs from receiving the command to receiving its batch. |
 | `{"type":"status","engine":"up"\|"down","last_seq":12}` | Sent when the engine's state changes (§6), and on `welcome`. |
