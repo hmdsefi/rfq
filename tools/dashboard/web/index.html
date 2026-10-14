@@ -1,23 +1,1142 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="light" data-view="admin">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>RFQ Engine Dashboard</title>
+<title>RFQ Engine Console</title>
+<style>
+:root {
+  --page: #eef1f5; --surface: #ffffff; --inset: #f6f8fb;
+  --ink: #13213a; --ink-2: #44546c; --ink-3: #5d6b80;
+  --line: #d5dce6; --line-2: #b7c2d1;
+  --accent: #3446b8; --accent-ink: #ffffff; --accent-tint: #e7eafb;
+  --free: #c9d3e0; --free-ink: #33435a;
+  --reserved: #e9a73a; --reserved-ink: #8a4f00; --reserved-tint: #fdf1dc;
+  --escrow: #3446b8; --escrow-ink: #2a3a9e; --escrow-tint: #e7eafb;
+  --yes: #12784a; --yes-tint: #e3f4ec; --no: #b3261e; --no-tint: #fbe7e5;
+  --ok: #12784a; --ok-tint: #e3f4ec; --bad: #b3261e; --bad-tint: #fbe7e5;
+  --warn: #8a4f00; --warn-tint: #fdf1dc; --gone: #5d6b80; --gone-tint: #edf0f4;
+  --new: #fff7d6; --focus: #3446b8;
+  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  --r: 6px; --r-lg: 10px;
+}
+:root[data-theme="dark"] {
+  --page: #0b1220; --surface: #121b2c; --inset: #0f1726;
+  --ink: #e5ecf6; --ink-2: #b4c1d4; --ink-3: #93a2b8;
+  --line: #24324a; --line-2: #354764;
+  --accent: #8fa0ff; --accent-ink: #0b1220; --accent-tint: #1d2752;
+  --free: #3a4a63; --free-ink: #c9d3e0;
+  --reserved: #f4b740; --reserved-ink: #f6c66a; --reserved-tint: #3a2a0c;
+  --escrow: #8fa0ff; --escrow-ink: #aab7ff; --escrow-tint: #1d2752;
+  --yes: #4cc38a; --yes-tint: #0f3324; --no: #f2877e; --no-tint: #3d1714;
+  --ok: #4cc38a; --ok-tint: #0f3324; --bad: #f2877e; --bad-tint: #3d1714;
+  --warn: #f6c66a; --warn-tint: #3a2a0c; --gone: #93a2b8; --gone-tint: #1a2436;
+  --new: #2c2a14; --focus: #8fa0ff;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--page); color: var(--ink); font: 400 14px/1.5 var(--sans); font-variant-numeric: tabular-nums; }
+h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
+h2 { font-size: 15px; }
+h3 { font-size: 14px; }
+p { margin: 0; }
+button, input, select { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.mono { font-family: var(--mono); font-size: 13px; }
+.muted { color: var(--ink-3); }
+.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* Controls */
+.btn { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 12px; border: 1px solid var(--line-2); border-radius: var(--r); background: var(--surface); cursor: pointer; white-space: nowrap; }
+.btn:hover { border-color: var(--ink-3); }
+.btn svg { width: 14px; height: 14px; }
+.btn-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.btn-primary:hover { filter: brightness(1.08); border-color: var(--accent); }
+.btn-quiet { border-color: transparent; background: transparent; color: var(--ink-2); }
+.btn-quiet:hover { background: var(--inset); border-color: var(--line); }
+.btn-yes { color: var(--yes); }
+.btn-no { color: var(--no); }
+.btn-danger { color: var(--bad); }
+.btn-sm { min-height: 28px; padding: 0 9px; font-size: 13px; }
+.field { display: grid; gap: 3px; font-size: 13px; color: var(--ink-2); }
+.field input, .field select { min-height: 32px; width: 100%; padding: 0 8px; border: 1px solid var(--line-2); border-radius: var(--r); background: var(--surface); color: var(--ink); }
+.field .unit { position: relative; }
+.field .unit input { padding-right: 26px; }
+.field .unit span { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); color: var(--ink-3); }
+.field-error { color: var(--bad); font-size: 13px; }
+.seg-ctl { display: inline-flex; border: 1px solid var(--line-2); border-radius: var(--r); overflow: hidden; }
+.seg-ctl button { min-height: 30px; padding: 0 10px; border: 0; border-right: 1px solid var(--line); background: var(--surface); cursor: pointer; }
+.seg-ctl button:last-child { border-right: 0; }
+.seg-ctl button[aria-pressed="true"] { background: var(--ink); color: var(--surface); font-weight: 600; }
+
+/* Badges: text always carries the meaning; colour only groups it */
+.badge { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 999px; font-size: 12.5px; font-weight: 600; line-height: 20px; white-space: nowrap; }
+.b-live { background: var(--accent-tint); color: var(--escrow-ink); }
+.b-good { background: var(--ok-tint); color: var(--ok); }
+.b-gone { background: var(--gone-tint); color: var(--gone); }
+.b-bad { background: var(--bad-tint); color: var(--bad); }
+.b-warn { background: var(--warn-tint); color: var(--warn); }
+.b-gone::before { content: ""; width: 6px; height: 6px; border-radius: 50%; border: 1.5px solid currentColor; }
+.b-live::before, .b-good::before, .b-bad::before, .b-warn::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.aud { display: inline-block; padding: 0 6px; border: 1px solid var(--line-2); border-radius: 4px; font-size: 12px; color: var(--ink-2); white-space: nowrap; }
+.aud-acct { border-color: var(--escrow); color: var(--escrow-ink); }
+.sealed { display: inline-flex; align-items: center; gap: 4px; color: var(--ink-3); font-style: italic; }
+.sealed svg { width: 12px; height: 12px; }
+
+/* Money: free / reserved (hatched: held, can come back) / escrowed (solid: locked to the contract) */
+.bar { display: flex; height: 14px; border-radius: 3px; overflow: hidden; background: var(--inset); outline: 1px solid var(--line); }
+.seg { height: 100%; transition: width 320ms cubic-bezier(.2,.7,.2,1); }
+.seg.free { background: var(--free); }
+.seg.reserved { background: repeating-linear-gradient(135deg, var(--reserved) 0 4px, color-mix(in srgb, var(--reserved) 55%, var(--surface)) 4px 7px); }
+.seg.escrowed { background: var(--escrow); }
+.key { display: inline-flex; align-items: center; gap: 5px; font-size: 13px; color: var(--ink-2); }
+.key i { width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
+@media (prefers-reduced-motion: reduce) { .seg { transition: none; } }
+
+/* Layout */
+.app { display: grid; grid-template-columns: minmax(0, 1fr) 440px; grid-template-rows: auto 1fr; min-height: 100dvh; }
+.topbar { grid-column: 1 / -1; position: sticky; top: 0; z-index: 10; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; padding: 10px 20px; background: var(--surface); border-bottom: 1px solid var(--line); }
+.brand { display: grid; line-height: 1.25; margin-right: 6px; }
+.brand strong { font-size: 15px; }
+.brand span { font-size: 12.5px; color: var(--ink-3); }
+.group { display: flex; align-items: center; gap: 6px; }
+.group-label { font-size: 13px; color: var(--ink-3); margin-right: 2px; }
+.clock { font-size: 15px; font-weight: 600; min-width: 92px; }
+.health { margin-left: auto; display: flex; align-items: center; gap: 12px; font-size: 13px; }
+.health dl { display: flex; gap: 12px; margin: 0; }
+.health dt { color: var(--ink-3); display: inline; }
+.health dd { display: inline; margin: 0 0 0 4px; font-weight: 600; }
+.stage { padding: 16px 20px 40px; display: grid; gap: 16px; align-content: start; min-width: 0; }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); }
+.panel-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.panel-body { padding: 14px 16px; }
+
+/* Scenario strip */
+.scenario { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 20px; padding: 12px 16px; }
+.scenario-title { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.scenario-title h2 { font-size: 16px; }
+.scenario p { color: var(--ink-2); max-width: 75ch; }
+.expect { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 999px; border: 1px dashed var(--line-2); font-size: 12.5px; color: var(--ink-3); }
+.chip.seen { border-style: solid; border-color: var(--ok); color: var(--ok); background: var(--ok-tint); }
+.chip.seen::before { content: "✓"; font-weight: 700; }
+.progress { text-align: right; font-size: 13px; color: var(--ink-2); }
+.progress strong { color: var(--ink); }
+
+/* Arena: the two sides of the trade around the contract */
+.arena { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.side { display: grid; gap: 12px; }
+.side-head { display: flex; align-items: baseline; justify-content: space-between; padding: 0 2px; }
+.side-head h2 { font-size: 15px; }
+.side-head span { font-size: 13px; color: var(--ink-3); }
+.party { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 12px 14px; display: grid; gap: 10px; }
+.requesters .party { border-left: 3px solid var(--yes); }
+.makers .party { border-left: 3px solid var(--escrow); }
+.party-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.party-head h3 { font-size: 15px; }
+.party-head .meta { font-size: 12.5px; color: var(--ink-3); }
+.balances { display: grid; gap: 5px; }
+.balance-nums { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; }
+.balance-nums b { font-weight: 600; }
+.item { border: 1px solid var(--line); border-radius: var(--r); padding: 9px 10px; display: grid; gap: 7px; background: var(--inset); }
+.item-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.item-head .id { font-weight: 600; }
+.item-facts { display: flex; flex-wrap: wrap; gap: 2px 14px; font-size: 13px; color: var(--ink-2); }
+.item-facts b { color: var(--ink); font-weight: 600; }
+.item-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: end; }
+.form-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; gap: 6px; align-items: end; }
+.countdown { font-weight: 600; color: var(--warn); }
+.empty { font-size: 13px; color: var(--ink-3); padding: 2px 0; }
+.toast { font-size: 13px; padding: 6px 10px; border-radius: var(--r); background: var(--bad-tint); color: var(--bad); }
+a.idlink, button.idlink { color: var(--accent); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 2px; background: none; border: 0; padding: 0; cursor: pointer; font-weight: 600; }
+
+/* Contract: the subject, in the middle */
+.contract { padding: 16px 18px; display: grid; gap: 14px 24px; }
+.contract-main, .contract-side { display: grid; gap: 14px; min-width: 0; }
+.contract-q { font-size: 21px; line-height: 1.3; font-weight: 600; letter-spacing: -0.015em; }
+.contract-meta { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; font-size: 13px; color: var(--ink-2); }
+.timeline { position: relative; height: 66px; margin: 4px 6px 0; }
+.tl-track { position: absolute; left: 0; right: 0; top: 30px; height: 6px; border-radius: 3px; background: var(--inset); outline: 1px solid var(--line); }
+.tl-trading { position: absolute; left: 0; top: 30px; height: 6px; border-radius: 3px 0 0 3px; background: var(--yes); opacity: .55; }
+.tl-mark { position: absolute; top: 22px; width: 2px; height: 22px; background: var(--ink-2); }
+.tl-mark span { position: absolute; top: 26px; left: 50%; transform: translateX(-50%); white-space: nowrap; font-size: 12.5px; color: var(--ink-2); }
+.tl-mark.end span { left: auto; right: 0; transform: none; }
+.tl-now { position: absolute; top: 0; width: 2px; height: 52px; background: var(--accent); }
+.tl-now span { position: absolute; top: -2px; left: 6px; white-space: nowrap; font-size: 12.5px; font-weight: 600; color: var(--accent); }
+.roles { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.role { border: 1px solid var(--line); border-radius: var(--r); padding: 9px 10px; display: grid; gap: 7px; }
+.role-name { font-size: 13px; color: var(--ink-2); }
+.role .item-actions .btn { flex: 1; justify-content: center; }
+.positions table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.positions th { text-align: left; font-weight: 600; color: var(--ink-3); padding: 4px 6px; border-bottom: 1px solid var(--line); }
+.positions td { padding: 5px 6px; border-bottom: 1px solid var(--line); }
+
+/* Ledger ribbon */
+.ledger table { width: 100%; border-collapse: collapse; }
+.ledger th { text-align: right; font-size: 13px; font-weight: 600; color: var(--ink-3); padding: 8px 12px; border-bottom: 1px solid var(--line); }
+.ledger th:first-child, .ledger td:first-child { text-align: left; }
+.ledger th.barcol { width: 34%; text-align: left; }
+.ledger td { text-align: right; padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.ledger td .who { font-weight: 600; }
+.ledger td .role { display: block; border: 0; padding: 0; font-size: 12.5px; color: var(--ink-3); }
+.ledger tr.changed td { background: color-mix(in srgb, var(--new) 70%, transparent); }
+.delta { display: block; font-size: 12.5px; font-weight: 600; }
+.delta.up { color: var(--ok); }
+.delta.down { color: var(--bad); }
+.ledger tfoot td { font-weight: 600; border-bottom: 0; }
+.ledger-foot { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; padding: 10px 16px; border-top: 1px solid var(--line); font-size: 13px; }
+.check-ok { color: var(--ok); font-weight: 600; }
+
+/* Trace sidebar */
+.trace { position: sticky; top: 57px; height: calc(100dvh - 57px); display: grid; grid-template-rows: auto minmax(0, 1fr) auto; background: var(--surface); border-left: 1px solid var(--line); }
+.trace-head { padding: 12px 16px; border-bottom: 1px solid var(--line); display: grid; gap: 8px; }
+.trace-head-top { display: flex; justify-content: space-between; align-items: baseline; }
+.filters { display: flex; flex-wrap: wrap; gap: 6px; }
+.filters button { min-height: 26px; padding: 0 10px; border-radius: 999px; border: 1px solid var(--line-2); background: var(--surface); font-size: 12.5px; cursor: pointer; }
+.filters button[aria-pressed="true"] { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+.log { overflow-y: auto; }
+.row { border-bottom: 1px solid var(--line); }
+.row-head { display: grid; grid-template-columns: 34px 62px minmax(0, 1fr) auto; gap: 8px; align-items: baseline; width: 100%; padding: 7px 16px; border: 0; background: none; text-align: left; cursor: pointer; font-size: 13px; }
+.row-head:hover { background: var(--inset); }
+.row .seq { font-weight: 600; color: var(--ink-3); }
+.row .t { color: var(--ink-3); }
+.row .what { overflow-wrap: anywhere; }
+.row .what b { font-weight: 600; }
+.row .count { font-size: 12px; color: var(--ink-3); }
+.row.is-new { background: var(--new); }
+.row.is-rejected .what { color: var(--bad); }
+.row-events { list-style: none; margin: 0; padding: 0 16px 9px 120px; display: grid; gap: 5px; font-size: 13px; }
+.row-events li { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.row-events .ev { font-weight: 600; }
+.row-events .ev.rej { color: var(--bad); }
+.inspector { border-top: 1px solid var(--line); padding: 12px 16px; display: grid; gap: 8px; max-height: 44%; overflow-y: auto; background: var(--inset); }
+.inspector ol { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: 13px; }
+
+/* Deliverables */
+.tabs { display: flex; flex-wrap: wrap; gap: 2px; padding: 0 10px; border-bottom: 1px solid var(--line); }
+.tab { padding: 10px 12px; border: 0; border-bottom: 2px solid transparent; background: none; cursor: pointer; color: var(--ink-2); font-weight: 600; }
+.tab[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
+.tab small { font-weight: 400; color: var(--ink-3); }
+.tabpanel { padding: 14px 16px; }
+.tabpanel[hidden] { display: none; }
+.machines { display: grid; grid-template-columns: repeat(auto-fit, minmax(440px, 1fr)); gap: 14px; }
+.machine { border: 1px solid var(--line); border-radius: var(--r); padding: 10px; }
+.machine h3 { margin-bottom: 6px; display: flex; gap: 8px; align-items: baseline; }
+.machine svg { width: 100%; height: auto; display: block; }
+.caption { font-size: 13px; margin-top: 4px; }
+.sm-node rect { fill: var(--surface); stroke: var(--line-2); stroke-width: 1.2; }
+.sm-node text { fill: var(--ink); font: 600 13px var(--sans); }
+.sm-node.is-current rect { fill: var(--accent-tint); stroke: var(--accent); stroke-width: 2.5; }
+.sm-node.is-terminal rect { stroke-dasharray: 3 2; }
+.sm-edge { fill: none; stroke: var(--ink-3); stroke-width: 1.3; }
+.sm-edge.is-last { stroke: var(--accent); stroke-width: 2.5; }
+.sm-label { fill: var(--ink-2); font: 400 12px var(--sans); }
+.sm-label.is-last { fill: var(--accent); font-weight: 600; }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 10px; font-size: 13px; color: var(--ink-2); }
+.dtable { width: 100%; border-collapse: collapse; font-size: 13px; }
+.dtable th { text-align: left; color: var(--ink-3); font-weight: 600; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.dtable td { padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.dtable td:first-child { font-weight: 600; white-space: nowrap; }
+.dtable code { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+.steps3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.not-built { display: inline-flex; padding: 2px 8px; border-radius: 4px; border: 1px dashed var(--warn); color: var(--warn); font-size: 12.5px; font-weight: 600; }
+.seam { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.seam .item { background: var(--surface); }
+.seam ul { margin: 0; padding-left: 18px; display: grid; gap: 3px; font-size: 13px; color: var(--ink-2); }
+
+/* View-as: what a non-admin viewer can't see is replaced by an explicit "sealed" marker */
+[data-view="mm1"] .only-admin { display: none !important; }
+[data-view="admin"] .only-mm1 { display: none !important; }
+
+@media (max-width: 1720px) { .arena { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } .arena .contract-col { grid-column: 1 / -1; order: -1; } .contract { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); align-items: start; } }
+@media (max-width: 1100px) { .app { grid-template-columns: 1fr; } .trace { position: static; height: auto; border-left: 0; border-top: 1px solid var(--line); } .log { max-height: 60vh; } }
+@media (max-width: 720px) { .arena { grid-template-columns: 1fr; } .form-row { grid-template-columns: 1fr 1fr; } .row-events { padding-left: 16px; } .health { margin-left: 0; } .steps3 { grid-template-columns: 1fr; } .ledger { overflow-x: auto; } }
+</style>
+<style>
+/* Page additions the static mockup never needed: a disabled control must look disabled. */
+.btn:disabled, .seg-ctl button:disabled { opacity: .45; cursor: not-allowed; }
+.btn:disabled:hover { border-color: var(--line-2); }
+.btn-primary:disabled:hover { filter: none; border-color: var(--accent); }
+</style>
 </head>
 <body>
-<p>Demo aid — not part of the engine.</p>
-<pre id="out">loading…</pre>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-step" viewBox="0 0 16 16"><path d="M4 3l6 5-6 5V3zm8 0h1.5v10H12z" fill="currentColor"/></symbol>
+  <symbol id="i-play" viewBox="0 0 16 16"><path d="M4 2.5l9.5 5.5L4 13.5z" fill="currentColor"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 16 16"><path d="M4 2.5h3v11H4zm5 0h3v11H9z" fill="currentColor"/></symbol>
+  <symbol id="i-end" viewBox="0 0 16 16"><path d="M2 3l5 5-5 5zm6 0l5 5-5 5z" fill="currentColor"/></symbol>
+  <symbol id="i-reset" viewBox="0 0 16 16"><path d="M8 3a5 5 0 1 1-4.6 3H1.8A6.5 6.5 0 1 0 3.5 3.3V1.5H2v4h4V4H4.5A5 5 0 0 1 8 3z" fill="currentColor"/></symbol>
+  <symbol id="i-hand" viewBox="0 0 16 16"><path d="M6 2.5a1 1 0 0 1 2 0V7h.5V3.5a1 1 0 0 1 2 0V7h.5V5a1 1 0 0 1 2 0v4.5A5 5 0 0 1 8 14.5 4.5 4.5 0 0 1 3.6 11L2.2 7.7a1 1 0 0 1 1.8-.8L5 9V3.5a1 1 0 0 1 1-1z" fill="currentColor"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 16 16"><path d="M5 7V5a3 3 0 0 1 6 0v2h1v7H4V7zm1.5 0h3V5a1.5 1.5 0 0 0-3 0z" fill="currentColor"/></symbol>
+  <symbol id="i-theme" viewBox="0 0 16 16"><path d="M8 1.5a6.5 6.5 0 1 0 0 13zm0 1.5v10a5 5 0 0 0 0-10z" fill="currentColor"/></symbol>
+</svg>
+
+<div class="app" id="app">
+  <header class="topbar" id="topbar">
+    <div class="brand">
+      <strong>RFQ engine console</strong>
+      <span>Demo aid — not part of the engine</span>
+    </div>
+    <div class="group" role="group" aria-label="Scenario">
+      <label class="sr-only" for="preset">Scenario</label>
+      <select id="preset" class="btn" style="padding-right:8px" disabled><option>Loading the engine…</option></select>
+      <span id="tb-run" style="display:contents"></span>
+    </div>
+    <div class="group" role="group" aria-label="Clock" id="tb-clock"></div>
+    <div class="group" role="group" aria-label="View as" id="tb-view"></div>
+    <div class="health" role="status" aria-label="Engine health" id="tb-health"></div>
+  </header>
+
+  <main class="stage" id="main">
+    <div id="errors" hidden></div>
+    <section class="panel scenario" id="scenario" aria-label="Scenario"><p class="muted">Loading the engine…</p></section>
+
+    <div class="arena">
+      <!-- Requesters: the side that asks -->
+      <section class="side requesters" id="user-lane" aria-labelledby="req-h"></section>
+      <!-- The contract: the subject both sides trade -->
+      <section class="contract-col" id="contract" aria-label="Contract" style="display:grid;gap:16px"></section>
+      <!-- Market makers: the side that answers -->
+      <section class="side makers" id="mm-lane" aria-labelledby="mm-h"></section>
+    </div>
+
+    <!-- Ledger and deliverable panels: filled by renderLedger and renderPanels -->
+    <section class="panel ledger" id="ledger" aria-label="Ledger"></section>
+    <section class="panel" id="panels" aria-label="Deliverables"></section>
+  </main>
+
+  <!-- Admin trace: filled by renderTrace and renderInspector -->
+  <aside class="trace" aria-label="Trace">
+    <div id="trace" style="display:contents"></div>
+    <div class="inspector" id="inspector" aria-label="Inspector"></div>
+  </aside>
+</div>
+
 <script>/*__RUNTIME_JS__*/</script>
 <script>
 const WASM_BASE64 = "__WASM_BASE64__";
+const T0 = 1000; // presets::T0; times are shown as t+ from here
+const ACCOUNTS = { OPERATOR: 1, ARBITER: 2, TREASURY: 3, ORACLE: 4, ALICE: 10, MM1: 20, MM2: 21, CAROL: 30 };
+let engine, state = null, prev = null, presets = [], selected = null, playing = null;
+
+function send(request) {
+  const out = engine.call(request);
+  if (out.error) { showError(out.error); return null; }
+  if (out.snapshot) { prev = state; state = out; }
+  render();
+  return out;
+}
+
+const fmtUsd = (micro) => {
+  const v = Math.abs(micro), sign = micro < 0 ? "−" : "";
+  const dollars = Math.floor(v / 1e6), cents = Math.floor((v % 1e6) / 1e4);
+  return `${sign}$${dollars.toLocaleString("en-US")}.${String(cents).padStart(2, "0")}${v % 1e4 ? "+" : ""}`;
+};
+const fmtPrice = (bps) => (bps / 10000).toFixed(4).replace(/0{1,2}$/, ""); // 6000 → "0.60"
+const fmtT = (ms) => `t+${((ms - T0) / 1000).toFixed(3)} s`;
+const name = (id) => state?.snapshot.accounts.find((a) => a.id === id)?.name
+  ?? Object.entries(ACCOUNTS).find(([, v]) => v === id)?.[0] ?? `#${id}`;
+const variant = (v) => (typeof v === "string" ? v : Object.keys(v)[0]); // serde enum → its variant name
+
 (async () => {
   const bytes = Uint8Array.from(atob(WASM_BASE64), (c) => c.charCodeAt(0));
-  const engine = await createEngine(bytes);
-  const out = engine.call({ op: "state" });
-  document.getElementById("out").textContent =
-    `seq ${out.snapshot.seq} · hash ${out.snapshot.state_hash.slice(0, 12)} · invariants ${out.snapshot.invariants.ok ? "ok" : "BROKEN"}`;
-})().catch((e) => { document.getElementById("out").textContent = `failed to start: ${e}`; });
+  engine = await createEngine(bytes);
+  presets = engine.call({ op: "presets" }).presets;
+  send({ op: "reset", mode: "sandbox" });
+})().catch((e) => showError(`The engine failed to start: ${e}`));
+
+// ---------------------------------------------------------------------------------------------
+// Everything below only formats what the engine returned and turns clicks into engine requests.
+// It never computes money or fires a timer: amounts and prices are the engine's integers.
+
+const root = document.documentElement;
+const app = document.getElementById("app");
+const PLAY_MS = 700;
+const TOAST_MS = 4000;
+const LIVE_QUOTE = ["Active", "Selected"];
+const LIVE_REQUEST = ["Open", "Presented"];
+const VIEWS = [["Admin", "admin"], ["Alice", ACCOUNTS.ALICE], ["Carol", ACCOUNTS.CAROL], ["MM1", ACCOUNTS.MM1], ["MM2", ACCOUNTS.MM2]];
+const MSG = {
+  price: "Enter a price between 0.01 and 99.99.",
+  shares: "Enter a whole number of shares.",
+  seconds: "Enter a number of seconds above 0.",
+};
+// Badges encode meaning, never sequence, and always carry their text (DESIGN §10).
+const BADGE = {
+  Open: "b-live", Active: "b-live", Presented: "b-live", Trading: "b-live", Closed: "b-live", Proposed: "b-live",
+  Selected: "b-warn", Disputed: "b-warn",
+  Filled: "b-good", Final: "b-good",
+  Lost: "b-gone", Released: "b-gone", Expired: "b-gone", Cancelled: "b-gone", Replaced: "b-gone",
+  Rejected: "b-bad",
+};
+
+// Page-only state: open forms, typed drafts, inline errors and rejection toasts. Never engine data.
+const ui = { open: new Set(), drafts: new Map(), errors: new Map() };
+const toasts = new Map(); // card key → { texts, timer }
+let rendered = null;      // the response the last render collected toasts from
+
+// ---- Formatting helpers --------------------------------------------------------------------
+
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+const qty = (n) => n.toLocaleString("en-US");
+const sideName = (s) => (s === "BuyYes" ? "YES" : "NO");
+const outcomeName = (o) => String(o).toUpperCase();
+const secs = (ms) => `${(ms / 1000).toFixed(3)} s`;
+const clockText = (ms) => (ms < T0 ? "start" : fmtT(ms));
+const due = (ts) => (ts > state.snapshot.now ? `in ${secs(ts - state.snapshot.now)}` : "now");
+const isAdmin = () => state.viewer === "admin";
+const viewerId = () => (state.viewer === "admin" ? null : state.viewer.account);
+const icon = (id) => `<svg aria-hidden="true"><use href="#i-${id}"/></svg>`;
+const sealedMark = (text) => `<span class="sealed">${icon("lock")}${esc(text)}</span>`;
+const badge = (text, cls) => `<span class="badge ${cls ?? BADGE[text] ?? "b-gone"}">${esc(text)}</span>`;
+const byIdDesc = (a, b) => b.id - a.id;
+const disabledIf = (off, why) => (off ? ` disabled${why ? ` title="${esc(why)}"` : ""}` : "");
+
+/** An id that selects its object for the inspector. `where` keeps the focus key unique per card. */
+const idlink = (kind, id, text, where) =>
+  `<button class="idlink" type="button" data-action="select" data-kind="${kind}" data-id="${id}" data-key="sel-${where}-${kind}-${id}">${esc(text)}</button>`;
+
+/**
+ * The new rows: seqs this response appended that the current viewer can see in its trace.
+ * `new_seqs` may name seqs hidden from the viewer; those are ignored. Empty after a reset.
+ */
+function newSeqs() {
+  const fresh = new Set(state.new_seqs);
+  return new Set(state.trace.filter((e) => fresh.has(e.seq)).map((e) => e.seq));
+}
+
+/** The last nonce the engine consumed for an account: Duplicate and NonceGap consume nothing. */
+function lastNonce(id) {
+  let n = 0;
+  for (const e of state.trace) {
+    if (e.actor !== id || e.nonce == null) continue;
+    const unconsumed = e.events.some((ev) => ["Duplicate", "NonceGap"].includes(ev.event?.CommandRejected?.reason));
+    if (!unconsumed && e.nonce > n) n = e.nonce;
+  }
+  return n;
+}
+
+/** The dispute bond from this run's Genesis config, when the trace carries it. */
+function disputeBond() {
+  const g = state.trace.find((e) => e.kind === "genesis")?.command?.Genesis;
+  return g?.config?.dispute_bond ?? null;
+}
+
+/** Every visible event of one variant, with the trace entry it came in. */
+function eventsNamed(variantName) {
+  const out = [];
+  for (const e of state.trace) for (const ev of e.events) if (variant(ev.event) === variantName) out.push({ entry: e, data: ev.event[variantName] });
+  return out;
+}
+
+// ---- Render ----------------------------------------------------------------------------------
+
+function render() {
+  if (!state) return;
+  const focus = rememberFocus();
+  if (rendered !== state) {
+    rendered = state;
+    clearError();
+    collectToasts();
+  }
+  root.dataset.view = isAdmin() ? "admin" : (VIEWS.find(([, v]) => v === viewerId())?.[0] ?? "account").toLowerCase();
+  renderTopBar();
+  renderUsers();
+  renderContract();
+  renderMarketMakers();
+  renderTrace();
+  renderLedger();
+  renderInspector();
+  renderPanels();
+  restoreFocus(focus);
+}
+
+// Task D7 fills these four.
+function renderTrace() {}
+function renderLedger() {}
+function renderInspector() {}
+function renderPanels() {}
+
+function select(kind, id) {
+  selected = { kind, id };
+  render();
+}
+
+/** Containers are rebuilt with innerHTML, so keep keyboard focus (and the caret) on the same control. */
+function rememberFocus() {
+  const el = document.activeElement;
+  if (!el || el === document.body) return null;
+  const key = el.id || el.dataset?.key;
+  if (!key) return null;
+  let range = null;
+  try { if (typeof el.selectionStart === "number") range = [el.selectionStart, el.selectionEnd]; } catch { range = null; }
+  return { el, key, range };
+}
+function restoreFocus(f) {
+  if (!f || document.contains(f.el)) return;
+  const el = document.getElementById(f.key) ?? [...document.querySelectorAll("[data-key]")].find((x) => x.dataset.key === f.key);
+  if (!el || el.disabled) return;
+  el.focus({ preventScroll: true });
+  if (f.range && el.setSelectionRange) try { el.setSelectionRange(...f.range); } catch { /* not a text field */ }
+}
+
+// ---- Top bar and scenario strip --------------------------------------------------------------
+
+function renderTopBar() {
+  const s = state.snapshot, p = state.preset;
+  const picker = document.getElementById("preset");
+  if (picker.dataset.ready !== "1" && presets.length) {
+    const group = (label, kind, text) => `<optgroup label="${label}">${presets.filter((x) => x.kind === kind)
+      .map((x) => `<option value="${esc(x.name)}">${esc(text(x))}</option>`).join("")}</optgroup>`;
+    picker.innerHTML = group("Sandbox", "sandbox", () => "Sandbox: drive it by hand")
+      + group("Brief scenarios", "brief", (x) => x.name) + group("Attacks", "attack", (x) => x.name);
+    picker.dataset.ready = "1";
+    picker.disabled = false;
+  }
+  picker.value = state.mode;
+
+  const why = !p ? "Pick a scenario to step through it"
+    : p.taken_over ? "Taken over: reset to replay the script"
+    : p.finished ? "The script has finished: reset to run it again" : "";
+  document.getElementById("tb-run").innerHTML = `
+    <button class="btn btn-primary" type="button" id="tb-step" data-action="step"${disabledIf(why, why)}>${icon("step")}Step</button>
+    <button class="btn" type="button" id="tb-play" data-action="play"${disabledIf(why && !playing, why)}>${playing ? `${icon("pause")}Pause` : `${icon("play")}Play`}</button>
+    <button class="btn" type="button" id="tb-end" data-action="run-all"${disabledIf(why, why)}>${icon("end")}Run to end</button>
+    <button class="btn btn-quiet" type="button" id="tb-reset" data-action="reset">${icon("reset")}Reset</button>
+    <button class="btn btn-quiet" type="button" id="tb-takeover" data-action="take-over"${disabledIf(why, why)}>${icon("hand")}Take over</button>`;
+
+  const nextWhy = !isAdmin() ? "Switch to Admin to jump to the next timer"
+    : s.next_timer == null ? "No timer is pending" : "";
+  document.getElementById("tb-clock").innerHTML = `
+    <span class="clock num" title="Engine time. It moves only when a command is stamped.">${clockText(s.now)}</span>
+    <button class="btn btn-sm" type="button" id="tb-100ms" data-action="advance" data-ms="100">+100 ms</button>
+    <button class="btn btn-sm" type="button" id="tb-1s" data-action="advance" data-ms="1000">+1 s</button>
+    <button class="btn btn-sm" type="button" id="tb-next" data-action="next-timer"${nextWhy ? disabledIf(true, nextWhy) : ` title="Fire the next timer, at ${fmtT(s.next_timer)}"`}>Next timer</button>`;
+
+  const me = viewerId();
+  document.getElementById("tb-view").innerHTML = `<span class="group-label" id="viewas-label">View as</span>
+    <div class="seg-ctl" id="viewas" role="group" aria-labelledby="viewas-label">${VIEWS.map(([label, v]) =>
+      `<button type="button" id="view-${label}" data-action="view" data-viewer="${v}" aria-pressed="${v === "admin" ? me === null : me === v}">${label}</button>`).join("")}</div>`;
+
+  const inv = s.invariants.ok
+    ? badge("I1–I5 hold", "b-good")
+    : `<span class="badge b-bad" title="${esc(s.invariants.error ?? "")}">I1–I5 BROKEN<span class="sr-only">: ${esc(s.invariants.error ?? "")}</span></span>`;
+  document.getElementById("tb-health").innerHTML = `<dl>
+      <div><dt>seq</dt><dd class="num">${s.seq}</dd></div>
+      <div><dt>state hash</dt><dd class="mono" title="${esc(s.state_hash)}">${esc(s.state_hash.slice(0, 8))}</dd></div>
+    </dl>${inv}
+    <button class="btn btn-quiet btn-sm" type="button" id="theme" data-action="theme">${icon("theme")}Theme</button>`;
+
+  renderScenario();
+}
+
+/**
+ * Which expected events this viewer has seen, matched in order like the runner's verdict. One the
+ * viewer can't see (or that hasn't happened) stays unlit without hiding the ones after it.
+ */
+function seenExpect(expect) {
+  const names = state.trace.flatMap((e) => e.events.map((ev) => {
+    const v = variant(ev.event);
+    return v === "CommandRejected" ? [v, `${v}(${ev.event.CommandRejected.reason})`] : [v];
+  }));
+  let from = 0;
+  return expect.map((want) => {
+    const at = names.findIndex((n, k) => k >= from && n.includes(want));
+    if (at < 0) return false;
+    from = at + 1;
+    return true;
+  });
+}
+
+function renderScenario() {
+  const el = document.getElementById("scenario");
+  const p = state.preset;
+  if (!p) {
+    const sandbox = presets.find((x) => x.kind === "sandbox");
+    el.innerHTML = `<div>
+        <div class="scenario-title"><h2>Sandbox</h2>${badge("Sandbox", "b-live")}</div>
+        <p>${esc(sandbox?.summary ?? "")}</p>
+      </div>
+      <div class="progress"><div>No script</div><div>Every command here is yours.</div></div>`;
+    return;
+  }
+  const v = p.finished ? p.verdict : null;
+  const title = [
+    `<h2>${esc(p.name)}</h2>`,
+    badge(p.kind === "attack" ? "Attack" : "Brief scenario", "b-live"),
+    p.taken_over ? badge("Taken over", "b-warn") : "",
+    v ? badge(v.pass ? "PASS" : "FAIL", v.pass ? "b-good" : "b-bad") : "",
+  ].join("");
+  const progress = p.taken_over
+    ? `<div>Script stopped after step <strong>${p.step}</strong> of ${p.steps}</div><div>You're driving by hand. Reset to replay the script.</div>`
+    : p.finished
+      ? `<div>Finished: step <strong>${p.step}</strong> of ${p.steps}</div><div>${v && !v.pass ? esc(v.detail ?? "An expected event is missing.") : "Every expected event happened in order."}</div>`
+      : `<div>Step <strong>${p.step}</strong> of ${p.steps}</div><div>Next: <strong>${esc(p.next ?? "")}</strong></div>`;
+  const seen = seenExpect(p.expect);
+  const chips = p.expect.map((x, i) => `<span class="chip${seen[i] ? " seen" : ""}">${esc(x)}${seen[i] ? '<span class="sr-only"> (seen)</span>' : ""}</span>`).join("");
+  el.innerHTML = `<div>
+      <div class="scenario-title">${title}</div>
+      <p>${esc(p.summary)}</p>
+    </div>
+    <div class="progress">${progress}</div>
+    <div class="expect" aria-label="Expected events, in order">${chips}</div>`;
+}
+
+// ---- Shared card parts -----------------------------------------------------------------------
+
+function partyHead(a) {
+  return `<div class="party-head"><h3>${esc(a.name)}</h3><span class="meta">account ${a.id}, nonce ${lastNonce(a.id)}</span></div>`;
+}
+
+function balances(a) {
+  const { free, reserved, escrowed } = a.balance;
+  const total = free + reserved + escrowed;
+  const segs = [["free", free], ["reserved", reserved], ["escrowed", escrowed]]
+    .filter(([, v]) => v > 0)
+    .map(([k, v]) => `<div class="seg ${k}" style="width:${((v / total) * 100).toFixed(2)}%"></div>`).join("");
+  return `<div class="balances">
+      <div class="bar" role="img" aria-label="Free ${fmtUsd(free)}, reserved ${fmtUsd(reserved)}, escrowed ${fmtUsd(escrowed)}">${segs}</div>
+      <div class="balance-nums"><span>Free <b>${fmtUsd(free)}</b></span><span>Reserved <b>${fmtUsd(reserved)}</b></span><span>Escrowed <b>${fmtUsd(escrowed)}</b></span></div>
+    </div>`;
+}
+
+/** The side of a position an account holds, and its lock: display only, from the engine's numbers. */
+const lockOf = (p, id) => (p.yes_holder === id ? p.yes_lock : p.no_lock);
+
+function toastHtml(card) {
+  const t = toasts.get(card);
+  return t ? t.texts.map((text) => `<p class="toast" role="status" data-toast="${card}">${esc(text)}</p>`).join("") : "";
+}
+
+/** Which card a command's actor acts from: requesters and market makers have one; the rest use the contract's. */
+function cardOf(actor) {
+  if (actor === ACCOUNTS.ALICE || actor === ACCOUNTS.CAROL) return `user-${actor}`;
+  if (actor === ACCOUNTS.MM1 || actor === ACCOUNTS.MM2) return `mm-${actor}`;
+  return "contract";
+}
+
+/** A rejection is not an error: it shows as a short toast in the acting card for 4 s (and in the trace). */
+function collectToasts() {
+  const fresh = newSeqs();
+  const batch = new Map();
+  for (const e of state.trace) {
+    if (!fresh.has(e.seq) || e.actor == null) continue;
+    for (const ev of e.events) {
+      const reason = ev.event?.CommandRejected?.reason;
+      if (!reason) continue;
+      const args = e.command?.User?.action ? Object.values(e.command.User.action)[0] : null;
+      const field = ["quote", "request", "contract"].find((f) => args?.[f] != null);
+      const what = `${e.kind}${field ? `, ${field} #${args[field]}` : ""}`;
+      const card = cardOf(e.actor);
+      batch.set(card, [...(batch.get(card) ?? []), `Rejected: ${reason} (${what})`]);
+    }
+  }
+  for (const [card, texts] of batch) {
+    clearTimeout(toasts.get(card)?.timer);
+    const entry = { texts };
+    entry.timer = setTimeout(() => {
+      if (toasts.get(card) !== entry) return;
+      toasts.delete(card);
+      document.querySelectorAll(`[data-toast="${card}"]`).forEach((n) => n.remove());
+    }, TOAST_MS);
+    toasts.set(card, entry);
+  }
+}
+
+function clearToasts() {
+  for (const t of toasts.values()) clearTimeout(t.timer);
+  toasts.clear();
+}
+
+// ---- Forms -----------------------------------------------------------------------------------
+
+function draft(key, defaults) {
+  return { ...defaults, ...(ui.drafts.get(key) ?? {}) };
+}
+
+function field(key, fieldName, label, value, inputmode, unit, help) {
+  const id = `${key}-${fieldName}`;
+  const err = ui.errors.get(key)?.[fieldName];
+  const describedBy = [err ? `${id}-err` : "", help ?? ""].filter(Boolean).join(" ");
+  const input = `<input id="${id}" name="${fieldName}" inputmode="${inputmode}" autocomplete="off" value="${esc(value)}"`
+    + `${err ? ' aria-invalid="true"' : ""}${describedBy ? ` aria-describedby="${describedBy}"` : ""}>`;
+  return `<label class="field">${label}${unit ? `<span class="unit">${input}<span>${unit}</span></span>` : input}</label>`;
+}
+
+function fieldErrors(key, order) {
+  const errs = ui.errors.get(key) ?? {};
+  return order.filter((f) => errs[f]).map((f) => `<p class="field-error" id="${key}-${f}-err" role="alert">${esc(errs[f])}</p>`).join("");
+}
+
+/** Cents → bps, or null outside 0.01–99.99. */
+function parseCents(text) {
+  const t = text.trim();
+  if (!/^(\d+\.?\d*|\.\d+)$/.test(t)) return null;
+  const cents = Number(t);
+  return cents >= 0.01 && cents <= 99.99 ? Math.round(cents * 100) : null;
+}
+function parseWhole(text) {
+  const t = text.replace(/[,_\s]/g, "");
+  if (!/^\d+$/.test(t)) return null;
+  const n = Number(t);
+  return n >= 1 && Number.isSafeInteger(n) ? n : null;
+}
+/** Seconds from now → ms, or null. The engine turns `now + ms` into its own timer. */
+function parseSeconds(text) {
+  const t = text.trim();
+  if (!/^(\d+\.?\d*|\.\d+)$/.test(t)) return null;
+  const ms = Math.round(Number(t) * 1000);
+  return ms >= 1 && Number.isSafeInteger(state.snapshot.now + ms) ? ms : null;
+}
+
+/** Inline errors block sending; the first invalid field takes focus. */
+function rejectForm(key, errs) {
+  ui.errors.set(key, errs);
+  render();
+  document.getElementById(`${key}-${Object.keys(errs)[0]}`)?.focus();
+}
+
+function submitQuote(form) {
+  const key = form.dataset.key, mm = Number(form.dataset.actor), request = Number(form.dataset.request);
+  const v = Object.fromEntries(new FormData(form));
+  const errs = {};
+  const price = parseCents(v.price ?? "");
+  if (price == null) errs.price = MSG.price;
+  const size = parseWhole(v.size ?? "");
+  if (size == null) errs.size = MSG.shares;
+  const ms = parseSeconds(v.expiry ?? "");
+  if (ms == null) errs.expiry = MSG.seconds;
+  if (Object.keys(errs).length) return rejectForm(key, errs);
+  ui.errors.delete(key);
+  const action = { SubmitQuote: { request, leg: 0, price, size, expires_at: state.snapshot.now + ms } };
+  if (act(mm, action)) {
+    ui.open.delete(key);
+    ui.drafts.delete(key);
+    render();
+  }
+}
+
+function submitRequest(form) {
+  const key = form.dataset.key, actor = Number(form.dataset.actor);
+  const contract = state.snapshot.contracts[0];
+  const v = Object.fromEntries(new FormData(form));
+  const errs = {};
+  const n = parseWhole(v.qty ?? "");
+  if (n == null) errs.qty = MSG.shares;
+  const limit = parseCents(v.limit ?? "");
+  if (limit == null) errs.limit = MSG.price;
+  const ms = parseSeconds(v.deadline ?? "");
+  if (ms == null) errs.deadline = MSG.seconds;
+  if (Object.keys(errs).length) return rejectForm(key, errs);
+  ui.errors.delete(key);
+  if (!contract) return;
+  act(actor, {
+    SubmitRequest: {
+      legs: [{ contract: contract.id, side: v.side === "BuyNo" ? "BuyNo" : "BuyYes", qty: n, limit_price: limit }],
+      response_deadline: state.snapshot.now + ms,
+    },
+  });
+}
+
+// ---- Requesters lane -------------------------------------------------------------------------
+
+function renderUsers() {
+  const el = document.getElementById("user-lane");
+  const mine = state.snapshot.accounts.filter((a) => a.role === "requester");
+  const who = esc(name(viewerId()));
+  const body = mine.length ? mine.map(requesterCard).join("")
+    : `<article class="party" aria-label="Requesters as ${who} sees them">
+        <p class="empty">As ${who} you don't see who asks or their limits. Open requests appear in your card.</p>
+      </article>`;
+  el.innerHTML = `<div class="side-head"><h2 id="req-h">Requesters</h2><span>ask for a price</span></div>${body}`;
+}
+
+function requesterCard(a) {
+  const s = state.snapshot;
+  const theirs = s.requests.filter((r) => r.requester === a.id).sort(byIdDesc);
+  const live = theirs.filter((r) => LIVE_REQUEST.includes(variant(r.state)));
+  const ended = theirs.filter((r) => !LIVE_REQUEST.includes(variant(r.state)));
+  const proposed = s.contracts.filter((c) => variant(c.state) === "Proposed");
+  const items = [...proposed.map((c) => disputeItem(a, c)), ...live.map((r) => requestItem(a, r)), ...ended.map((r) => requestItem(a, r))].join("");
+  return `<article class="party" aria-label="${esc(a.name)}">
+      ${partyHead(a)}
+      ${balances(a)}
+      ${items || '<p class="empty">No requests yet.</p>'}
+      ${toastHtml(`user-${a.id}`)}
+      ${requestForm(a)}
+    </article>`;
+}
+
+function requestItem(a, r) {
+  const s = state.snapshot, st = variant(r.state), leg = r.legs[0], where = `u${a.id}`;
+  const head = [idlink("request", r.id, `Request #${r.id}`, where), badge(st)];
+  if (st === "Rejected") head.push(`<span class="muted" style="font-size:13px">cause: ${esc(r.state.Rejected)}</span>`);
+  const facts = [`<span>Buy <b>${sideName(leg.side)}</b> × <b>${qty(leg.qty)}</b></span>`];
+  if (leg.limit_price != null) facts.push(`<span>Limit <b>${fmtPrice(leg.limit_price)}</b></span>`);
+  facts.push(`<span>${idlink("contract", leg.contract, `Contract #${leg.contract}`, `${where}r${r.id}`)}</span>`);
+  const rows = [`<div class="item-facts">${facts.join("")}</div>`];
+  const btn = (action, label, cls) =>
+    `<button class="btn ${cls}" type="button" data-action="${action}" data-actor="${a.id}" data-request="${r.id}" data-key="${action}-${r.id}">${label}</button>`;
+  if (st === "Open") {
+    rows.push(`<div class="item-facts"><span>Quotes due <span class="countdown">${due(r.response_deadline)}</span> (${fmtT(r.response_deadline)})</span></div>`);
+    rows.push(`<div class="item-actions">${btn("cancel-request", "Cancel request", "btn-sm")}</div>`);
+  } else if (st === "Presented") {
+    const acceptBy = r.state.Presented.accept_by;
+    const picks = r.picks.map((k) => `<span>Best quote ${idlink("quote", k.quote, `#${k.quote}`, `${where}r${r.id}`)} at <b>${fmtPrice(k.price)}</b></span>`).join("");
+    rows.push(`<div class="item-facts">${picks}<span>Accept within <span class="countdown">${acceptBy > s.now ? secs(acceptBy - s.now) : "0.000 s"}</span> (${fmtT(acceptBy)})</span></div>`);
+    const at = r.picks.length === 1 ? ` at ${fmtPrice(r.picks[0].price)}` : "";
+    rows.push(`<div class="item-actions">${btn("accept", `Accept${at}`, "btn-primary")}${btn("reject", "Reject", "")}</div>`);
+  } else if (st === "Filled") {
+    const p = s.positions.find((x) => x.request === r.id);
+    if (p) rows.push(`<div class="item-facts"><span>Position #${p.id}</span><span>${p.settled ? "Settled" : `Escrowed <b>${fmtUsd(lockOf(p, a.id))}</b>`}</span></div>`);
+  }
+  return `<div class="item"><div class="item-head">${head.join("")}</div>${rows.join("")}</div>`;
+}
+
+function disputeItem(a, c) {
+  const { outcome, dispute_until } = c.state.Proposed;
+  const bond = disputeBond();
+  return `<div class="item">
+      <div class="item-head">${idlink("contract", c.id, `Contract #${c.id}`, `u${a.id}d`)}${badge("Proposed")}<span class="muted" style="font-size:13px">oracle says ${outcomeName(outcome)}</span></div>
+      <div class="item-facts"><span>Dispute until <b>${fmtT(dispute_until)}</b></span>${bond != null ? `<span>Bond <b>${fmtUsd(bond)}</b></span>` : ""}</div>
+      <div class="item-actions"><button class="btn btn-sm btn-danger" type="button" data-action="dispute" data-actor="${a.id}" data-contract="${c.id}" data-key="dispute-${a.id}-${c.id}">Dispute</button></div>
+    </div>`;
+}
+
+function requestForm(a) {
+  const key = `req-${a.id}`;
+  const open = ui.open.has(key);
+  const toggle = `<button class="btn btn-quiet btn-sm" type="button" id="${key}-toggle" data-action="toggle" data-target="${key}" aria-expanded="${open}"${open ? ` aria-controls="${key}-form"` : ""}>New request</button>`;
+  if (!open) return `<div>${toggle}</div>`;
+  const contract = state.snapshot.contracts[0];
+  const d = draft(key, { side: "BuyYes", qty: "1000", limit: "70", deadline: "1.5" });
+  const option = (v, label) => `<option value="${v}"${d.side === v ? " selected" : ""}>${label}</option>`;
+  return `<div>${toggle}
+      <form class="form-row" id="${key}-form" data-form="request" data-key="${key}" data-actor="${a.id}" novalidate style="margin-top:8px;grid-template-columns:repeat(4,minmax(0,1fr)) auto">
+        <label class="field">Side<select id="${key}-side" name="side">${option("BuyYes", "Buy YES")}${option("BuyNo", "Buy NO")}</select></label>
+        ${field(key, "qty", "Shares", d.qty, "numeric")}
+        ${field(key, "limit", "Limit", d.limit, "decimal", "¢", `${key}-help`)}
+        ${field(key, "deadline", "Due in", d.deadline, "decimal", "s")}
+        <button class="btn btn-primary" type="submit"${disabledIf(!contract, "No contract is listed yet")}>Ask</button>
+      </form>
+      ${fieldErrors(key, ["qty", "limit", "deadline"])}
+      <p id="${key}-help" class="muted" style="font-size:13px;margin-top:4px">Your limit stays sealed: market makers never see it.</p>
+    </div>`;
+}
+
+// ---- Market makers lane ----------------------------------------------------------------------
+
+function renderMarketMakers() {
+  const el = document.getElementById("mm-lane");
+  const mine = state.snapshot.accounts.filter((a) => a.role === "market_maker");
+  const who = esc(name(viewerId()));
+  const body = mine.length ? mine.map(makerCard).join("")
+    : `<article class="party" aria-label="Market makers as ${who} sees them">
+        <p class="empty">As ${who} you don't see market makers or their quotes. The best quote is presented in your card.</p>
+      </article>`;
+  el.innerHTML = `<div class="side-head"><h2 id="mm-h">Market makers</h2><span>answer with sealed quotes</span></div>${body}`;
+}
+
+function makerCard(a) {
+  const s = state.snapshot;
+  const quotes = s.quotes.filter((q) => q.mm === a.id).sort(byIdDesc);
+  const live = quotes.filter((q) => LIVE_QUOTE.includes(q.state));
+  const ended = quotes.filter((q) => !LIVE_QUOTE.includes(q.state));
+  const open = s.requests.filter((r) => r.public_state === "open")
+    .sort((x, y) => x.response_deadline - y.response_deadline || x.id - y.id);
+  const items = [...live.map((q) => quoteItem(a, q)), ...open.map((r) => openRequestItem(a, r)), ...ended.map((q) => quoteItem(a, q))].join("");
+  return `<article class="party" aria-label="${esc(a.name)}">
+      ${partyHead(a)}
+      ${balances(a)}
+      ${items || '<p class="empty">No open requests to quote on.</p>'}
+      ${toastHtml(`mm-${a.id}`)}
+    </article>`;
+}
+
+/** An open request as every MM sees it: contract, side, qty and deadline. Never the limit, even as admin. */
+function openRequestItem(a, r) {
+  const leg = r.legs[0], key = `q-${a.id}-${r.id}`, where = `m${a.id}`;
+  const replacing = state.snapshot.quotes.some((q) => q.mm === a.id && q.request === r.id && LIVE_QUOTE.includes(q.state));
+  const verb = replacing ? "Replace" : "Quote";
+  const head = `<div class="item-head">${idlink("request", r.id, `Request #${r.id}`, where)}${badge("Open")}<span class="muted" style="font-size:13px">quotes due ${due(r.response_deadline)}</span></div>`;
+  const facts = `<div class="item-facts"><span>Buy <b>${sideName(leg.side)}</b> × <b>${qty(leg.qty)}</b></span><span>${idlink("contract", leg.contract, `Contract #${leg.contract}`, `${where}r${r.id}`)}</span>${sealedMark("limit sealed")}</div>`;
+  if (!ui.open.has(key)) {
+    const label = replacing ? `Replace quote on #${r.id}` : `Quote on #${r.id}`;
+    return `<div class="item">${head}${facts}<div class="item-actions"><button class="btn btn-sm" type="button" id="${key}-toggle" data-action="toggle" data-target="${key}" aria-expanded="false">${label}</button></div></div>`;
+  }
+  const d = draft(key, { price: "", size: String(leg.qty), expiry: "10" });
+  return `<div class="item">${head}${facts}
+      <form class="form-row" id="${key}-form" data-form="quote" data-key="${key}" data-actor="${a.id}" data-request="${r.id}" novalidate aria-label="${verb} on request #${r.id}">
+        ${field(key, "price", "Price", d.price, "decimal", "¢")}
+        ${field(key, "size", "Shares", d.size, "numeric")}
+        ${field(key, "expiry", "Expires in", d.expiry, "decimal", "s")}
+        <button class="btn btn-primary" type="submit" id="${key}-submit">${verb}</button>
+      </form>
+      ${fieldErrors(key, ["price", "size", "expiry"])}
+    </div>`;
+}
+
+function quoteItem(a, q) {
+  const s = state.snapshot, where = `m${a.id}`;
+  const leg = s.requests.find((r) => r.id === q.request)?.legs[q.leg];
+  const facts = [`<span>Sell ${leg ? sideName(leg.side) : ""} at <b>${fmtPrice(q.price)}</b> × <b>${qty(q.size)}</b></span>`];
+  const live = LIVE_QUOTE.includes(q.state);
+  if (live) {
+    // The hold label is size × (1 − price) in micro-USD: display only, from the engine's integers.
+    facts.push(`<span>Holds <b>${fmtUsd(q.size * (10000 - q.price) * 100)}</b></span>`);
+    facts.push(`<span>${q.state === "Selected" ? "Firm until" : "Expires"} ${fmtT(q.expires_at)}</span>`);
+  } else if (q.state === "Filled") {
+    const p = s.positions.find((x) => x.request === q.request);
+    facts.push(p ? `<span>Position #${p.id}</span><span>${p.settled ? "Settled" : `Escrowed <b>${fmtUsd(lockOf(p, a.id))}</b>`}</span>` : "<span>Hold moved to escrow</span>");
+  } else {
+    facts.push("<span>Hold released</span>");
+  }
+  // Cancel shows on every live quote: the engine answers for a Selected one, which is part of the demo.
+  const actions = live
+    ? `<div class="item-actions"><button class="btn btn-sm btn-danger" type="button" data-action="cancel-quote" data-actor="${a.id}" data-quote="${q.id}" data-key="cancel-quote-${q.id}">Cancel quote</button></div>`
+    : "";
+  return `<div class="item">
+      <div class="item-head">${idlink("quote", q.id, `Quote #${q.id}`, where)}${badge(q.state)}<span class="muted" style="font-size:13px">on request ${idlink("request", q.request, `#${q.request}`, `${where}q${q.id}`)}</span></div>
+      <div class="item-facts">${facts.join("")}</div>
+      ${actions}
+    </div>`;
+}
+
+// ---- Contract card ---------------------------------------------------------------------------
+
+function renderContract() {
+  const el = document.getElementById("contract");
+  const list = state.snapshot.contracts;
+  el.innerHTML = list.length ? list.map(contractCard).join("")
+    : `<article class="panel contract"><div class="contract-main">
+        <p class="empty">No contract is listed yet. The operator lists one during setup.</p>
+        ${toastHtml("contract")}
+      </div></article>`;
+}
+
+/** When the oracle proposed and how long the dispute window ran, from the public OutcomeProposed event. */
+function proposalOf(c) {
+  const last = eventsNamed("OutcomeProposed").filter((x) => x.data.contract === c.id).pop();
+  if (last) return { at: last.entry.time, until: last.data.dispute_until, outcome: last.data.outcome };
+  return null;
+}
+
+function timeline(c) {
+  const now = state.snapshot.now;
+  const span = Math.max(1, c.resolution_deadline - T0);
+  // Layout only: where each engine timestamp sits between t+0 and the hard deadline.
+  const at = (t) => Math.min(100, Math.max(0, ((t - T0) / span) * 100));
+  const pct = (t) => `${at(t).toFixed(2)}%`;
+  const p = proposalOf(c);
+  const parts = [
+    '<div class="tl-track"></div>',
+    `<div class="tl-trading" style="width:${pct(c.trading_close)}"></div>`,
+  ];
+  if (p) {
+    parts.push(`<div class="tl-trading" style="left:${pct(p.at)};width:${(at(p.until) - at(p.at)).toFixed(2)}%;background:var(--warn);border-radius:0" title="Dispute window: proposed ${fmtT(p.at)}, open until ${fmtT(p.until)}"></div>`);
+  }
+  const flip = at(now) > 70 ? ' style="left:auto;right:6px"' : "";
+  parts.push(`<div class="tl-now" style="left:${pct(now)}"><span${flip}>now ${fmtT(now)}</span></div>`);
+  parts.push(`<div class="tl-mark" style="left:${pct(c.trading_close)}"><span>trading closes ${fmtT(c.trading_close)}</span></div>`);
+  if (p) {
+    parts.push(`<div class="tl-mark" style="left:${pct(p.at)};height:14px;top:26px;opacity:.7" title="Proposed ${fmtT(p.at)}"></div>`);
+    parts.push(`<div class="tl-mark" style="left:${pct(p.until)}" title="Dispute window ends ${fmtT(p.until)}"></div>`);
+  }
+  parts.push(`<div class="tl-mark end" style="left:calc(100% - 2px)"><span>hard deadline ${fmtT(c.resolution_deadline)}</span></div>`);
+  const label = [`Now ${fmtT(now)}.`, `Trading closes ${fmtT(c.trading_close)}.`];
+  if (p) label.push(`Proposed ${outcomeName(p.outcome)} at ${fmtT(p.at)}, dispute window until ${fmtT(p.until)}.`);
+  label.push(`Hard deadline ${fmtT(c.resolution_deadline)}.`);
+  return `<div class="timeline" role="img" aria-label="${label.join(" ")}">${parts.join("")}</div>`;
+}
+
+function contractCard(c) {
+  const st = variant(c.state);
+  const meta = [badge(st), idlink("contract", c.id, `Contract #${c.id}`, "cc"), `<span>Oracle: account ${c.oracle}</span>`];
+  if (st === "Proposed") meta.push(`<span>Proposed <b>${outcomeName(c.state.Proposed.outcome)}</b>, dispute until ${fmtT(c.state.Proposed.dispute_until)}</span>`);
+  if (st === "Disputed") meta.push(`<span>Proposed <b>${outcomeName(c.state.Disputed.proposed)}</b>, disputed by ${esc(name(c.dispute?.disputer))}${c.dispute?.hold != null ? ", bond held" : ""}</span>`);
+  if (st === "Final") meta.push(`<span>Outcome <b>${outcomeName(c.state.Final)}</b></span>`);
+  const bond = disputeBond();
+  const windowS = (c.dispute_window / 1000).toLocaleString("en-US", { maximumFractionDigits: 3 });
+  const outcomes = (action, actor) => [["Yes", "YES", "btn-yes"], ["No", "NO", "btn-no"], ["Invalid", "INVALID", ""]]
+    .map(([o, label, cls]) => `<button class="btn btn-sm ${cls}" type="button" data-action="${action}" data-actor="${actor}" data-contract="${c.id}" data-outcome="${o}" data-key="${action}-${c.id}-${o}">${label}</button>`).join("");
+  return `<article class="panel contract">
+      <div class="contract-main">
+        <div>
+          <div class="contract-meta" style="margin-bottom:6px">${meta.join("")}</div>
+          <h2 class="contract-q" id="contract-q-${c.id}">${esc(c.description)}</h2>
+        </div>
+        ${timeline(c)}
+        <p class="muted" style="font-size:13px">After close the oracle proposes; anyone can dispute for ${windowS} s${bond != null ? ` with a ${fmtUsd(bond)} bond` : ""}. If nobody resolves it by the hard deadline, it ends INVALID and everyone is refunded.</p>
+      </div>
+      <div class="contract-side">
+        <div class="roles">
+          <div class="role" role="group" aria-label="Oracle proposes">
+            <span class="role-name">Oracle proposes</span>
+            <div class="item-actions">${outcomes("propose", c.oracle)}</div>
+          </div>
+          <div class="role" role="group" aria-label="Arbiter rules">
+            <span class="role-name">Arbiter rules (after a dispute)</span>
+            <div class="item-actions">${outcomes("rule", ACCOUNTS.ARBITER)}</div>
+          </div>
+        </div>
+        ${toastHtml("contract")}
+        <div class="positions">
+          <h3 style="margin-bottom:6px">Positions</h3>
+          ${positionsTable(c)}
+        </div>
+      </div>
+    </article>`;
+}
+
+function positionsTable(c) {
+  const list = state.snapshot.positions.filter((p) => p.contract === c.id);
+  if (!list.length) {
+    return isAdmin() ? '<p class="empty">No positions yet. One opens when a requester accepts a quote.</p>'
+      : '<p class="empty">You hold no positions in this contract. Other parties\' fills stay private.</p>';
+  }
+  // Payouts come from the PositionSettled events this viewer was sent (the engine names both holders there).
+  const settled = new Map(eventsNamed("PositionSettled").map((x) => [x.data.position, x.data]));
+  const line = (text) => `<span class="muted" style="display:block">${text}</span>`;
+  const holder = (id, lock, paid) => (id == null ? sealedMark("counterparty sealed until settlement") : `<b>${esc(name(id))}</b>`)
+    + line(`locks ${fmtUsd(lock)}`) + (paid != null ? line(`paid ${fmtUsd(paid)}`) : "");
+  const rows = list.map((p) => {
+    const pay = settled.get(p.id);
+    return `<tr style="vertical-align:top">
+        <td><b>#${p.id}</b>${line(`${qty(p.qty)} shares`)}${p.settled ? badge("Settled", "b-good") : badge("Escrowed", "b-live")}</td>
+        <td>${holder(p.yes_holder, p.yes_lock, pay?.yes_payout)}</td>
+        <td>${holder(p.no_holder, p.no_lock, pay?.no_payout)}</td>
+      </tr>`;
+  }).join("");
+  return `<div style="overflow-x:auto"><table>
+      <thead><tr><th scope="col">Position</th><th scope="col">YES side</th><th scope="col">NO side</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>`;
+}
+
+// ---- Errors ----------------------------------------------------------------------------------
+
+/** A dismissible banner with the engine's sentence. Never alert(). Cleared by the next good response. */
+function showError(msg) {
+  const el = document.getElementById("errors");
+  el.innerHTML = `<div class="toast" role="alert" style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+      <span>${esc(msg)}</span>
+      <button class="btn btn-quiet btn-sm" type="button" id="error-dismiss" data-action="dismiss-error">Dismiss</button>
+    </div>`;
+  el.hidden = false;
+}
+function clearError() {
+  const el = document.getElementById("errors");
+  el.hidden = true;
+  el.innerHTML = "";
+}
+
+// ---- Commands --------------------------------------------------------------------------------
+
+/** A manual command as `actor`. Mid-preset, the engine takes the script over. */
+function act(actor, action) {
+  stopPlay();
+  return send({ op: "act", actor, action });
+}
+
+function reset(mode) {
+  stopPlay();
+  selected = null;
+  ui.drafts.clear();
+  ui.errors.clear();
+  for (const k of [...ui.open]) if (!k.startsWith("req-")) ui.open.delete(k);
+  clearToasts();
+  if (!send({ op: "reset", mode })) renderTopBar(); // a refused reset: put the picker back
+}
+
+function startPlay() {
+  if (playing) return;
+  playing = setInterval(playStep, PLAY_MS);
+  playStep();
+}
+function playStep() {
+  const p = state?.preset;
+  if (!p || p.finished || p.taken_over) return stopPlay();
+  const out = send({ op: "step" });
+  if (!out?.preset || out.preset.finished || out.preset.taken_over) stopPlay();
+}
+function stopPlay() {
+  if (!playing) return;
+  clearInterval(playing);
+  playing = null;
+  if (state) renderTopBar();
+}
+
+function toggleTheme() {
+  root.dataset.theme = root.dataset.theme === "dark" ? "light" : "dark";
+  try { localStorage.setItem("rfq-dashboard-theme", root.dataset.theme); } catch { /* storage blocked */ }
+}
+
+// ---- Events: one delegated listener per kind, so re-rendering re-binds nothing --------------
+
+app.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-action]");
+  if (!b || b.disabled || !app.contains(b)) return;
+  const d = b.dataset, n = (k) => Number(d[k]);
+  if (d.action === "dismiss-error") return clearError();
+  if (d.action === "theme") return toggleTheme();
+  if (!state) return;
+  switch (d.action) {
+    case "select": return select(d.kind, n("id"));
+    case "step": stopPlay(); return send({ op: "step" });
+    case "play": return playing ? stopPlay() : startPlay();
+    case "run-all": stopPlay(); return send({ op: "run_all" });
+    case "reset": return reset(state.mode);
+    case "take-over": stopPlay(); return send({ op: "take_over" });
+    case "advance": stopPlay(); return send({ op: "advance", ms: n("ms") });
+    case "next-timer": stopPlay(); return send({ op: "next_timer" });
+    case "view": return send({ op: "view", viewer: d.viewer === "admin" ? "admin" : { account: n("viewer") } });
+    case "toggle":
+      if (ui.open.has(d.target)) ui.open.delete(d.target); else ui.open.add(d.target);
+      render();
+      document.getElementById(`${d.target}-${d.target.startsWith("q-") ? "price" : "qty"}`)?.focus();
+      return;
+    case "cancel-request": return act(n("actor"), { CancelRequest: { request: n("request") } });
+    case "accept": {
+      // Accept echoes the picks exactly as the engine presented them.
+      const r = state.snapshot.requests.find((x) => x.id === n("request"));
+      return act(n("actor"), { Accept: { request: n("request"), picks: r?.picks ?? [] } });
+    }
+    case "reject": return act(n("actor"), { Reject: { request: n("request") } });
+    case "cancel-quote": return act(n("actor"), { CancelQuote: { quote: n("quote") } });
+    case "dispute": return act(n("actor"), { Dispute: { contract: n("contract") } });
+    case "propose": return act(n("actor"), { ProposeOutcome: { contract: n("contract"), outcome: d.outcome } });
+    case "rule": return act(n("actor"), { Rule: { contract: n("contract"), outcome: d.outcome } });
+  }
+});
+
+app.addEventListener("submit", (e) => {
+  e.preventDefault();
+  if (!state) return;
+  if (e.target.dataset.form === "quote") submitQuote(e.target);
+  if (e.target.dataset.form === "request") submitRequest(e.target);
+});
+
+// Typing keeps a draft (re-renders rebuild the form) and clears that field's error.
+app.addEventListener("input", (e) => {
+  const form = e.target.closest("form[data-key]");
+  if (!form || !e.target.name) return;
+  const key = form.dataset.key;
+  ui.drafts.set(key, { ...(ui.drafts.get(key) ?? {}), [e.target.name]: e.target.value });
+  const errs = ui.errors.get(key);
+  if (errs?.[e.target.name]) {
+    delete errs[e.target.name];
+    render();
+  }
+});
+
+document.getElementById("preset").addEventListener("change", (e) => {
+  if (state) reset(e.target.value);
+});
+
+try { const t = localStorage.getItem("rfq-dashboard-theme"); if (t === "dark" || t === "light") root.dataset.theme = t; } catch { /* storage blocked */ }
+if (location.hash.includes("dark")) root.dataset.theme = "dark";
 </script>
 </body>
 </html>
