@@ -384,21 +384,14 @@ fn attacks() -> Vec<Preset> {
     let over_limit = {
         let mut s = setup();
         s.push(request(100));
-        s.push(quote(300, "q1", MM1, 6_200));
-        s.push(quote(400, "q_over", MM2, 7_500));
+        s.push(quote(300, "q_over", MM2, 7_500));
         s.push(tick(1_600));
         Preset {
             name: "attack_over_limit_quote",
             kind: PresetKind::Attack,
-            summary: "MM2 quotes 0.75 above Alice's sealed 0.70 limit: accepted as Active, never selected; MM1's 0.62 wins.",
+            summary: "MM2 is the only quote, at 0.75, above Alice's sealed 0.70 limit: accepted as Active but never eligible. At the deadline it's Lost and the request expires; every hold is released.",
             steps: s,
-            expect: vec![
-                "QuoteSubmitted",
-                "QuoteSubmitted",
-                "QuoteLost",
-                "QuoteSelected",
-                "RequestPresented",
-            ],
+            expect: vec!["QuoteSubmitted", "QuoteLost", "RequestExpired"],
         }
     };
     let self_trade = {
@@ -510,15 +503,16 @@ mod tests {
     }
 
     #[test]
-    fn over_limit_quote_never_wins() {
+    fn over_limit_quote_is_never_selected() {
+        // The over-limit quote is the only one, so only the sealed-limit check keeps it from winning
+        // (as in the engine's own `over_limit_quote_accepted_but_never_selected`).
         let (s, _) = run(preset("attack_over_limit_quote"));
-        let selected: Vec<AccountId> = s
-            .engine()
-            .quotes()
-            .filter(|q| q.state == QuoteState::Selected)
-            .map(|q| q.mm)
-            .collect();
-        assert_eq!(selected, vec![MM1]);
+        assert!(s.engine().quotes().all(|q| q.state == QuoteState::Lost));
+        assert!(s.engine().requests().all(|r| r.state == RequestState::Expired));
+        for a in [ALICE, MM2] {
+            let b = s.engine().balance(a);
+            assert_eq!((b.free, b.reserved, b.escrowed), (dollars(1_000), 0, 0), "{a:?}");
+        }
     }
 
     #[test]
