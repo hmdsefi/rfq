@@ -21,9 +21,8 @@
 
 use std::process::ExitCode;
 
-// The Aeron runner is the only user; the logic is tested either way.
-#[cfg_attr(not(feature = "aeron"), allow(dead_code))]
-mod nonce;
+// The Aeron runner is the only user; the logic is tested either way. The nonce probing it uses
+// lives in `rfq_app::client::nonce`, shared with the gateway.
 #[cfg_attr(not(feature = "aeron"), allow(dead_code))]
 mod scope;
 

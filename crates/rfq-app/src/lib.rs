@@ -1,5 +1,6 @@
 //! Application layer of the RFQ engine: protocol DTOs, the `Journal` and `Transport` ports, the
-//! sequencer, and the `Node` service that runs the write-ahead loop.
+//! sequencer, the `Node` service that runs the write-ahead loop, and the logic its clients share
+//! (`client`).
 //!
 //! Depends only on `rfq-domain`. Knows nothing of wire formats, files or Aeron: adapters live in
 //! `rfq-infra` and translate bytes to and from the typed values defined here.
@@ -11,6 +12,7 @@
     clippy::cast_sign_loss
 )]
 
+pub mod client;
 pub mod error;
 pub mod node;
 pub mod ports;

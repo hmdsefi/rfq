@@ -834,6 +834,7 @@ name = "rfq-app"
 version = "0.1.0"
 dependencies = [
  "rfq-domain",
+ "rfq-testkit",
  "serde",
  "thiserror",
  "tracing",

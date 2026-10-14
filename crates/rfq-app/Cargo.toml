@@ -11,3 +11,7 @@ rfq-domain = { path = "../rfq-domain" }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+# The nonce probe design is checked against a real engine.
+rfq-testkit = { path = "../rfq-testkit" }

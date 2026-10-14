@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, bail, ensure};
+use rfq_app::client::nonce::{Probe, probe_action, sync_nonce};
 use rfq_app::{ClientCommand, EventBatch};
 use rfq_domain::{AccountId, Action, Audience, Emitted, RejectReason};
 use rfq_infra::aeron::rusteron_archive::{AeronHeader, AeronPublication, AeronSubscription, Handlers};
@@ -20,7 +21,6 @@ use rfq_testkit::accounts::{ARBITER, OPERATOR};
 use rfq_testkit::rejection;
 use rfq_testkit::scenarios::{Ctx, Scenario, StepKind, all, contains_in_order};
 
-use crate::nonce::{Probe, probe_action, sync_nonce};
 use crate::scope::{Scope, remap};
 
 /// Lead time, in ms, between computing a scenario's `t0` and its first step.
@@ -309,13 +309,13 @@ impl Demo {
         self.command(actor, nonce, action, false)
     }
 
-    /// Finds a genesis role's last nonce by probing (see [`crate::nonce`]).
+    /// Finds a genesis role's last nonce by probing (see [`rfq_app::client::nonce`]).
     fn sync_nonce(&mut self, name: &str, role: AccountId) -> anyhow::Result<()> {
         let mut probes = 0;
-        let last = sync_nonce(|nonce| {
+        let last = sync_nonce(|nonce| -> anyhow::Result<Probe> {
             probes += 1;
             let answer = self.command(role, nonce, probe_action(), true)?;
-            Probe::from_rejection(answer.rejection)
+            Ok(Probe::from_rejection(answer.rejection)?)
         })
         .with_context(|| format!("find the next nonce of the {name}"))?;
         self.nonces.insert(role, last);
