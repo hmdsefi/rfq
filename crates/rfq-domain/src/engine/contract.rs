@@ -224,10 +224,12 @@ impl Engine {
         self.finalize(id, outcome, out);
     }
 
-    /// `Command::Resume`, the node's first command after a restart. Runs *before* due timers fire
-    /// (see `apply`), so downtime can't eat a dispute window: every open window ending before
-    /// `now + resume_grace` moves there, capped at `resolution_deadline - 1` so it still ends before
-    /// the hard deadline. Nothing else is extended: the other deadlines are refund-safe.
+    /// `Command::Resume`: the node's first command after a restart on a non-empty journal, and also
+    /// the first command of a poll that follows a gap longer than the node's `STALL_GAP_MS`. Runs
+    /// *before* due timers fire (see `apply`), so downtime or a stall can't eat a dispute window:
+    /// every open window ending before `now + resume_grace` moves there, capped at
+    /// `resolution_deadline - 1` so it still ends before the hard deadline. Nothing else is
+    /// extended: the other deadlines are refund-safe.
     pub(super) fn on_resume(&mut self, out: &mut Out) {
         let until = self.now.saturating_add(self.config().resume_grace);
         let mut extended = Vec::new();
