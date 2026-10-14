@@ -3,7 +3,7 @@
 
 A deterministic matching and settlement engine for a permissionless RFQ venue for binary-outcome contracts, in Rust. A requester asks for a price, market makers answer with firm quotes, the best quote is presented, and on acceptance both sides' collateral locks in escrow until an oracle resolves the contract. Real money sits in every intermediate state and every participant is assumed adversarial, so the design goal is that funds can never be lost, duplicated or stuck without an exit.
 
-Design docs: [docs/README.md](docs/README.md). The brief: [docs/RFQ_Technical_Exercise.pdf](docs/RFQ_Technical_Exercise.pdf).
+Design docs: [docs/README.md](docs/README.md). The brief (the exercise PDF) is not in the repository: it belongs to the company that set the exercise.
 
 The repository is private (`hmdsefi/rfq`), so you need access first. Then: `git clone https://github.com/hmdsefi/rfq.git && cd rfq`.
 

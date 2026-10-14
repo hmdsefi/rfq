@@ -1,6 +1,6 @@
 # RFQ Matching & Settlement Engine — Docs
 
-Brief: [RFQ_Technical_Exercise.pdf](RFQ_Technical_Exercise.pdf). How to build, test and run: the [root README](../README.md).
+The brief (the exercise PDF) is not in the repository. How to build, test and run: the [root README](../README.md).
 
 ## The five deliverables
 

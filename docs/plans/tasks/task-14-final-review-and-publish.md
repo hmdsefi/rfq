@@ -36,5 +36,5 @@ for u in <reviewer-1> <reviewer-2>; do
 done
 gh api repos/hmdsefi/rfq/invitations --jq '.[].invitee.login'
 ```
-Expected: every reviewer is listed as invited. If they ever ask for a public repo instead, run `git rm docs/RFQ_Technical_Exercise.pdf` and push before changing visibility.
+Expected: every reviewer is listed as invited. The brief PDF is not in the repository or its history, so nothing has to be removed before changing visibility.
 

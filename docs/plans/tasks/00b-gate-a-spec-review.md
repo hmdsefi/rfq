@@ -12,7 +12,7 @@
 
 ```text
 You are an adversarial reviewer for an RFQ settlement engine where real money sits in every
-intermediate state and every participant is hostile. Read docs/RFQ_Technical_Exercise.pdf,
+intermediate state and every participant is hostile. Read the brief (the exercise PDF, kept outside the repository),
 docs/rfc/0001-rfq-engine.md, docs/specs/engine.md, docs/specs/failure-modes.md and
 docs/specs/resolution.md. Do not read or write code.
 

@@ -1,7 +1,7 @@
 # Adversarial Spec Review
 
 - **Date:** 2026-10-14
-- **Reviewed:** `docs/RFQ_Technical_Exercise.pdf`, `docs/rfc/0001-rfq-engine.md`, `docs/specs/engine.md`, `docs/specs/failure-modes.md`, `docs/specs/resolution.md`, `docs/specs/quote-lifetime.md`
+- **Reviewed:** the brief (the exercise PDF), `docs/rfc/0001-rfq-engine.md`, `docs/specs/engine.md`, `docs/specs/failure-modes.md`, `docs/specs/resolution.md`, `docs/specs/quote-lifetime.md`
 - **Method:** I walked every state and transition in engine.md §6 as six attackers: a malicious requester, a malicious MM, a colluding requester+MM pair, a malicious oracle, a griefing third party, and a crashing node. For each one I asked five questions:
   1. Can funds be lost, duplicated or stuck (I1–I5)?
   2. Can someone extract value or impose cost more cheaply than it costs them?
