@@ -77,4 +77,10 @@ The five inputs most likely to bite during the live session. Each has a pinned t
 | # | Status |
 |---|---|
 | D1 | done, approved by the PO (92fc65d) |
-| D2–D8 | in progress |
+| D2 | done, review clean (a572952) |
+| D3 | done, 1 fix round (4d632fa..30adc37) |
+| D4 | done, 1 fix round (f147794..9fe987c) |
+| D5 | done, 1 fix round (b1e2c01..da48055) |
+| D6 | done, review clean (de817d9) |
+| D7 | done, 1 fix round (a3c5d32..5b404ba) |
+| D8 | done: gates green, acceptance 7/7, final review fixes (7fc508c), published as a private artifact |
