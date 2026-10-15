@@ -38,7 +38,7 @@
 4. **Recorder.** Every frame gets the browser's receive time. Split batches merge by `seq`: events concatenate in arrival order and balances come from the last chunk. Perf per run: each command's `latency_us` (from `result`) and client round-trip, then p50, p95 and max, commands per second, and wall time.
 5. **Run ×N with concurrency k.** `runMany(names, n, k)` returns every run's verdict and the aggregate perf. No run sees another's events (scope).
 6. **`live-smoke.mjs`:**
-   - Connect to `ws://127.0.0.1:8080`.
+   - Connect to `ws://127.0.0.1:18080`.
    - Run all 12 scenarios once, sequentially. Print `PASS <name>` / `FAIL <name>: <detail>` with p50/p95.
    - Run `happy_path` ×20 at concurrency 4. Print the aggregate.
    - Exit 0 only if everything passed.

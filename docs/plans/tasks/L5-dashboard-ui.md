@@ -14,7 +14,7 @@
 ## Requirements
 
 1. **Connection.**
-   - Default `ws://127.0.0.1:8080`; override it with `?gateway=ws://…`.
+   - Default `ws://127.0.0.1:18080`; override it with `?gateway=ws://…`.
    - A status bar shows:
      - Connected, Reconnecting or Disconnected;
      - engine up or down (from `status`);

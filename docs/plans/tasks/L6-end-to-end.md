@@ -18,7 +18,7 @@
 - [ ] **Step 3: Docs.**
   - README "Live dashboard" section: start the stack, open the page, run scenarios, the failure drills, what each panel shows. Five to ten lines, linking DESIGN §11 and gateway.md.
   - docs/README.md index: add gateway.md.
-  - architecture/overview.md: add the gateway to the runtime diagram (one node, two arrows) and §5 deployment (service `gateway`, port `127.0.0.1:8080`). Keep D3 and D5 within their word budgets (don't touch them unless needed).
+  - architecture/overview.md: add the gateway to the runtime diagram (one node, two arrows) and §5 deployment (service `gateway`, port `127.0.0.1:18080`). Keep D3 and D5 within their word budgets (don't touch them unless needed).
 - [ ] **Step 4: Final review.** One whole-branch review on the most capable model, over this plan's range, pointed at the ledger's deferred minors. Fix them in one wave and run one scoped re-review.
 - [ ] **Step 5: Push.** Update this plan's Status table and give the PO a run sheet:
   - which scenario to run for which question;
