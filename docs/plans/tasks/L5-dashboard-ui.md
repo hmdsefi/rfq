@@ -67,7 +67,7 @@ docker compose down -v && docker compose up -d aeron engine gateway
   3. **Run ×20** at concurrency 4: 20 PASS, with a histogram.
   4. Scrub `happy_path` back to the `RequestPresented` batch: the request lane shows Presented and the D1 diagram lights Presented.
   5. View as MM1, then run `happy_path`: no Alice data and no MM2 balances in the DOM.
-  6. `docker compose kill engine` during a Run ×20: the status shows down, the in-flight run fails with "engine unavailable", and nothing hangs. `docker compose start engine`: a Resume row appears, status up, and the next Run passes.
+  6. `docker compose kill engine` during a Run ×20: the status shows down; the in-flight command shows "outcome unknown", then its safe retry with the same nonce ("applied once") once the engine is back; runs not yet started are refused with "engine unavailable"; nothing hangs. `docker compose start engine`: a Resume row appears, status up, and the next Run passes.
   7. No console errors.
 
   Take screenshots at 1440×900, both themes.

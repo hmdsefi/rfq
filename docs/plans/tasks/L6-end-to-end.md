@@ -12,7 +12,7 @@
   - `node scripts/gateway-smoke.mjs`: `GATEWAY SMOKE OK`.
   - `node tools/dashboard/web/live-smoke.mjs`: 12 PASS, then 20/20.
 - [ ] **Step 2: Failure drills.** Run each one, and record the evidence (gateway frames, page screenshot, engine logs):
-  1. `docker compose kill engine` mid-run, then `docker compose start engine`: down → engine unavailable → Resume → up → the next run passes. `docker compose logs engine` shows `replayed seq=… hash=…`.
+  1. `docker compose kill engine` mid-run, then `docker compose start engine`: down → the in-flight command gets `outcome unknown … nonce N` → Resume → up → the driver resends with nonce N and gets `Duplicate` (applied once) or a result (applied on retry) → the next run passes. `docker compose logs engine` shows `replayed seq=… hash=…`.
   2. `docker compose pause engine; sleep 2; docker compose unpause engine`: a Resume batch, and runs continue.
   3. `docker compose kill aeron`: the engine and gateway exit 1 and are restarted by Docker (cap 3); the page reconnects; runs pass afterwards.
 - [ ] **Step 3: Docs.**

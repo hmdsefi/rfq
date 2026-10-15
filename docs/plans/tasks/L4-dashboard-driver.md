@@ -34,7 +34,12 @@
    - A `wait` step sleeps until `t0 + at` plus 300 ms of grace. The engine fires its own timers. Check `rfq-demo/src/live.rs` for how it waits, and mirror it.
    - The verdict: `contains_in_order` over the run's own events, with the same rule as the testkit (`CommandRejected(<Reason>)` may pin a reason).
    - `nonce: "reuse"` sends `nonce = last nonce sent for that actor`; `"skip"` sends `last + 2`.
-   - A refused command (`error` frame) fails the run with that sentence. It must not hang.
+   - A refused command (`error` frame) fails the run with that sentence. It must not hang. One exception is `outcome unknown … resend it with nonce N` (gateway.md §3/§6): the engine stopped answering after the command was sent, so it may or may not have been applied. Then:
+     1. wait for `status up`;
+     2. resend the same action with the explicit nonce N;
+     3. a normal `result` means it was not applied before and now is; `CommandRejected(Duplicate)` means it was applied before the outage.
+
+     Either way the command happened exactly once. Record it in the run log as "outcome recovered: applied once (Duplicate on retry)" or "…: applied on retry". The run then continues. Its expect list may still fail if the original batch was lost; report that honestly, never paper over it.
 4. **Recorder.** Every frame gets the browser's receive time. Split batches merge by `seq`: events concatenate in arrival order and balances come from the last chunk. Perf per run: each command's `latency_us` (from `result`) and client round-trip, then p50, p95 and max, commands per second, and wall time.
 5. **Run ×N with concurrency k.** `runMany(names, n, k)` returns every run's verdict and the aggregate perf. No run sees another's events (scope).
 6. **`live-smoke.mjs`:**
