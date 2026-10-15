@@ -19,7 +19,6 @@ The brief (the exercise PDF) is not in the repository. How to build, test and ru
 | [demo.md](demo.md) | Recorded runs (GIFs) of five scenarios on the live stack: what each step does, with the engine's events and the logs |
 | [rfc/0001-rfq-engine.md](rfc/0001-rfq-engine.md) | What we're building, the product decisions (P1–P12), the technical decisions (T1–T7), and why |
 | [architecture/overview.md](architecture/overview.md) | Layers and crates, components, Aeron streams, write-ahead loop and crash points, Docker topology, production path, measured numbers |
-| [architecture/data-structures.md](architecture/data-structures.md) | One command's path through the queues (gateway, Aeron, node) and the BTrees (gateway and engine state), and why each kind is used where it is |
 | [specs/engine.md](specs/engine.md) | Domain model, ledger and invariants I1–I5, commands and validation, state machines, events |
 | [specs/failure-modes.md](specs/failure-modes.md) | Every race and partial failure, and how it's handled |
 | [specs/adversarial.md](specs/adversarial.md) | Companion to D3: what a malicious requester, MM, oracle or bystander can try, and the defence or accepted residual risk |
