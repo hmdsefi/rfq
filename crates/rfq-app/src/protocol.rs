@@ -51,7 +51,8 @@ pub struct EventBatch {
     pub origin: Option<(AccountId, u64)>,
     pub events: Vec<Emitted>,
     /// Every account this command changed (its timers included), with its balance after the
-    /// command, in account order. Empty when the command changed no balance, a rejected one for
-    /// example. A gateway filters it per viewer, like `origin`: an account sees only its own.
+    /// command, in account order. A rejected command changes none itself, but timers that fell
+    /// due in the same apply still appear here. A gateway filters it per viewer, like `origin`:
+    /// an account sees only its own.
     pub balances: Vec<(AccountId, Balance)>,
 }

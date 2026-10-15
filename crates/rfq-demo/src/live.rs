@@ -127,8 +127,8 @@ impl Client {
     }
 
     /// Polls egress once and hands every whole message to `sink`: a batch, or one chunk of a
-    /// batch the node split (chunks share the batch's `seq` and `origin`). Returns the number of
-    /// fragments read.
+    /// batch the node split (chunks share the batch's `seq`, `time`, `kind` and `origin`; its
+    /// `balances` travel on the last chunk). Returns the number of fragments read.
     fn poll(&mut self, sink: &mut dyn FnMut(EventBatch)) -> anyhow::Result<i32> {
         ensure!(!self.egress.is_closed(), "the egress subscription is closed");
         let reassembler = &mut self.reassembler;
