@@ -3,17 +3,18 @@
 //! | Variable | Values | Default |
 //! |---|---|---|
 //! | `AERON_DIR` | the media driver's directory | `/dev/shm/aeron` |
-//! | `RFQ_GATEWAY_ADDR` | the WebSocket listen address, `ip:port` | `127.0.0.1:8080` |
+//! | `RFQ_GATEWAY_ADDR` | the WebSocket listen address, `ip:port` | `127.0.0.1:18080` |
 //! | `RUST_LOG` | the log level: `error`, `warn`, `info`, `debug` or `trace` | `info` |
 //!
-//! The gateway listens on `127.0.0.1` only (gateway.md §7). In Docker it binds `0.0.0.0:8080`
+//! The gateway listens on `127.0.0.1` only (gateway.md §7). In Docker it binds `0.0.0.0:18080`
 //! inside the container, and docker-compose publishes that port on the host's `127.0.0.1` only.
+//! (18080, not 8080: 8080 is often taken on a developer's machine.)
 use std::net::SocketAddr;
 
 use anyhow::{Context, bail};
 
 pub const DEFAULT_AERON_DIR: &str = "/dev/shm/aeron";
-pub const DEFAULT_ADDR: &str = "127.0.0.1:8080";
+pub const DEFAULT_ADDR: &str = "127.0.0.1:18080";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
@@ -57,7 +58,7 @@ mod tests {
     fn defaults_listen_on_localhost_only() {
         let c = parse(&[]).unwrap();
         assert_eq!(c.aeron_dir, "/dev/shm/aeron");
-        assert_eq!(c.addr, "127.0.0.1:8080".parse::<SocketAddr>().unwrap());
+        assert_eq!(c.addr, "127.0.0.1:18080".parse::<SocketAddr>().unwrap());
         assert!(c.addr.ip().is_loopback());
     }
 

@@ -10,13 +10,14 @@ publish = false
 # Off by default so `cargo test --workspace` never builds rusteron. Without it the binary only
 # reports that it was built without Aeron and exits with status 2. The library, the WebSocket
 # server and the hub loop build and test either way; docker/rust.Dockerfile enables it.
-aeron = ["dep:rfq-infra", "rfq-infra/aeron"]
+aeron = ["rfq-infra/aeron"]
 
 [dependencies]
 rfq-app = { path = "../rfq-app" }
 rfq-domain = { path = "../rfq-domain" }
-# The Aeron adapter: `aeron::{connect, offer, ...}`, the `Reassembler` and the codec.
-rfq-infra = { path = "../rfq-infra", optional = true }
+# The codec, always: the hub refuses a command whose encoding exceeds the node's ingress limit.
+# With feature `aeron`, also the Aeron adapter's `aeron::{connect, offer, ...}` and `Reassembler`.
+rfq-infra = { path = "../rfq-infra" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }

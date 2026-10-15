@@ -7,7 +7,9 @@
 //!
 //! - **Commands.** Each actor has at most one command on ingress at a time; the next one waits
 //!   until the first has its batch, so nonces never race (gateway.md §5). A command takes its
-//!   explicit nonce, else the nonce book's `last + 1`, else it waits for a probe search.
+//!   explicit nonce, else the nonce book's `last + 1`, else it waits for a probe search. A
+//!   command whose encoding is over the node's ingress limit is refused on arrival: the node
+//!   would drop it unseen.
 //! - **Batches.** Every egress batch goes to every connection through its view's filter; the
 //!   sender then gets its `result`. A probe's batch is the gateway's own business: its origin and
 //!   its rejection are never forwarded (what timers added to it still is).
@@ -19,6 +21,13 @@
 //!   while disconnected is stale (published before the failure) and does not count. So after a
 //!   restart a client sees `down`, then the `Resume` batch, then `up`. At start-up nothing has
 //!   failed, so the first connection is enough.
+//! - **Outcome unknown.** A command already offered when the engine goes down may still be
+//!   applied. Its sender is told so, with the nonce to resend it with (a repeat is a harmless
+//!   `Duplicate`), and still gets its `result` if the batch comes later. A command never offered
+//!   is `engine unavailable`.
+//! - **Liveness.** Down with ingress connected, nothing would ever publish (commands are
+//!   refused), so about every second the hub offers a probe that the engine always rejects as
+//!   `Duplicate` (nonce 0). Its batch is internal, and brings the engine back up.
 //!
 //! Logging (gateway.md §8): each command sent, each result, each engine status change, each
 //! nonce sync.
@@ -27,6 +36,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use rfq_app::client::nonce::probe_action;
 use rfq_app::{BatchKind, ClientCommand, EventBatch};
 use rfq_domain::{AccountId, Action, Audience, Emitted, Event, RejectReason, Timestamp};
+use rfq_infra::codec::{MAX_INGRESS, encoded_len};
 
 use crate::nonce_book::{NonceBook, SyncStep};
 use crate::protocol::{ClientMsg, EngineState, ServerMsg, decode_client, encode_server};
@@ -39,9 +49,31 @@ pub const MAX_QUEUED: usize = 1_024;
 /// Probes in flight when the engine went down, remembered so that a late answer is still known
 /// for a probe and not forwarded. Past this many, a late answer is forwarded like any batch.
 const MAX_ORPHAN_PROBES: usize = 1_024;
+/// Commands whose outcome is unknown, remembered so that a late batch still gives the sender its
+/// `result`. Past this many, a late batch is forwarded without one.
+const MAX_UNKNOWN: usize = 1_024;
+/// How often (µs) a liveness probe goes out while the engine is down and ingress is connected.
+pub const LIVENESS_EVERY_US: u64 = 1_000_000;
+/// The liveness probe's actor: the demo genesis operator. Any actor would do: nonce 0 is never
+/// above an actor's last nonce, so the engine always answers `Duplicate` and consumes nothing.
+pub const LIVENESS_ACTOR: AccountId = AccountId(1);
 
+/// Never offered: the engine was down, or the command was still waiting its turn.
 const UNAVAILABLE: &str = "engine unavailable";
 const BACK_PRESSURED: &str = "ingress back-pressured, try again";
+
+/// For a command already offered when the engine stopped answering: it may still be applied.
+fn unknown_outcome(nonce: u64) -> String {
+    format!(
+        "outcome unknown: the engine stopped answering after this command was sent; resend it with \
+         nonce {nonce} to retry safely (a repeat is rejected as Duplicate)"
+    )
+}
+
+/// For a command whose encoding is over the node's ingress limit: the node would drop it unseen.
+fn too_large_for_ingress(len: usize) -> String {
+    format!("bad request: command too large for ingress ({len} bytes, limit {MAX_INGRESS})")
+}
 
 /// A WebSocket connection, numbered by the server.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -62,9 +94,24 @@ pub enum Input {
     Ingress { connected: bool },
     /// Time passed (the caller sends one every 100 ms or so).
     Tick,
-    /// The `Effect::Offer` of `(actor, nonce)` could not be put on ingress (back pressure). The
-    /// engine never saw it, so the nonce is still free.
-    OfferFailed { actor: AccountId, nonce: u64 },
+    /// The `Effect::Offer` of `(actor, nonce)` could not be put on ingress, for `why`. The engine
+    /// never saw it, so the nonce is still free.
+    OfferFailed {
+        actor: AccountId,
+        nonce: u64,
+        why: OfferFailure,
+    },
+}
+
+/// Why an offer failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OfferFailure {
+    /// The encoded command (this many bytes) is over what the publication takes.
+    TooLarge(usize),
+    /// Ingress stayed back-pressured; the client may try again.
+    BackPressure,
+    /// Nobody subscribes to ingress: the engine is gone.
+    Unconnected,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -106,6 +153,21 @@ struct InFlight {
     what: Flight,
 }
 
+/// A command that was offered when the engine stopped answering. Its batch may still come.
+struct Unknown {
+    conn: ConnId,
+    id: String,
+    received_at: u64,
+}
+
+/// Liveness probes (see [`LIVENESS_EVERY_US`]).
+#[derive(Default)]
+struct Liveness {
+    /// Offered and not yet answered (or refused).
+    outstanding: u32,
+    last_offered_at: Option<u64>,
+}
+
 #[derive(Default)]
 struct Actor {
     in_flight: Option<InFlight>,
@@ -132,6 +194,10 @@ pub struct Hub {
     /// `(actor, nonce)` of probes that were in flight when the engine went down, until a later
     /// command's batch shows that no answer to them can still come.
     orphan_probes: BTreeSet<(AccountId, u64)>,
+    /// Commands in flight when the engine went down, by `(actor, nonce)`, until their batch
+    /// comes, a later command's batch shows it never will, or the client resends the nonce.
+    unknown: BTreeMap<(AccountId, u64), Unknown>,
+    liveness: Liveness,
 }
 
 /// What the chunks of one batch have in common.
@@ -150,6 +216,10 @@ enum Whose {
     Probe { answered: bool },
     /// A probe that was in flight when the engine went down: it stays internal too.
     OrphanProbe,
+    /// A liveness probe: internal, and never news for the nonce book.
+    Liveness,
+    /// A command that was in flight when the engine went down: its sender gets the result now.
+    Unknown,
     /// Anyone else's command (another client of the node), or a system command.
     Other,
 }
@@ -172,6 +242,8 @@ impl Hub {
             last_seq: None,
             current: None,
             orphan_probes: BTreeSet::new(),
+            unknown: BTreeMap::new(),
+            liveness: Liveness::default(),
         }
     }
 
@@ -188,7 +260,9 @@ impl Hub {
             Input::Batch(b) => self.batch(&b, now_us, &mut out),
             Input::Ingress { connected } => self.ingress(connected, &mut out),
             Input::Tick => self.tick(now_us, &mut out),
-            Input::OfferFailed { actor, nonce } => self.offer_failed(actor, nonce, now_us, &mut out),
+            Input::OfferFailed { actor, nonce, why } => {
+                self.offer_failed(actor, nonce, why, now_us, &mut out)
+            }
         }
         out
     }
@@ -200,6 +274,7 @@ impl Hub {
 
     fn close(&mut self, conn: ConnId) {
         self.views.remove(&conn);
+        self.unknown.retain(|_, u| u.conn != conn);
         for a in self.actors.values_mut() {
             a.waiting.retain(|w| w.conn != conn);
             if let Some(InFlight {
@@ -237,11 +312,24 @@ impl Hub {
                 nonce,
                 action,
             }) => {
+                // The node drops an ingress message over MAX_INGRESS unseen, and a JSON frame
+                // within 64 KiB can encode larger (a struct may be written as an array). The size
+                // does not depend on the nonce (fixed-width integers), so check it now.
+                let cmd = ClientCommand {
+                    actor,
+                    nonce: nonce.unwrap_or(0),
+                    action,
+                };
+                let len = encoded_len(&cmd);
+                if len > MAX_INGRESS {
+                    send(out, conn, &error(Some(id), &too_large_for_ingress(len)));
+                    return;
+                }
                 let waiting = Waiting {
                     conn,
                     id,
                     nonce,
-                    action,
+                    action: cmd.action,
                     received_at: now_us,
                 };
                 self.command(actor, waiting, now_us, out);
@@ -309,6 +397,9 @@ impl Hub {
             action = action_name(&action),
             "command"
         );
+        // A resend of an unknown command's nonce takes it over: whichever batch comes first for
+        // `(actor, nonce)` answers the resend.
+        self.unknown.remove(&(actor, nonce));
         out.push(Effect::Offer(ClientCommand { actor, nonce, action }));
         send(
             out,
@@ -335,20 +426,38 @@ impl Hub {
             Some((last, whose)) if last == chunk(b) => (false, whose),
             _ => (true, self.whose(b)),
         };
-        if let Some(origin) = b.origin {
+        if let Some(origin) = b.origin
+            && whose != Whose::Liveness
+        {
             self.book.observe(b.seq, origin, &b.events);
         }
         match whose {
-            Whose::Probe { .. } | Whose::OrphanProbe => {
+            Whose::Probe { .. } | Whose::OrphanProbe | Whose::Liveness => {
                 if let Some(rest) = without_probe(b) {
                     self.forward(&rest, out);
                 }
             }
-            Whose::Command | Whose::Other => self.forward(b, out),
+            Whose::Command | Whose::Unknown | Whose::Other => self.forward(b, out),
         }
         let whose = match (whose, b.origin) {
             (Whose::Command, Some((actor, _))) if first_chunk => {
                 self.command_answered(actor, b.seq, now_us, out);
+                whose
+            }
+            (Whose::Unknown, Some(origin)) if first_chunk => {
+                if let Some(u) = self.unknown.remove(&origin) {
+                    let latency_us = now_us.saturating_sub(u.received_at);
+                    tracing::info!(seq = b.seq, latency_us, "result (outcome was unknown)");
+                    self.reply(
+                        out,
+                        u.conn,
+                        &ServerMsg::Result {
+                            id: u.id,
+                            seq: b.seq,
+                            latency_us,
+                        },
+                    );
+                }
                 whose
             }
             // The probe's answer is its rejection, the last event: a leading chunk has none.
@@ -390,14 +499,21 @@ impl Hub {
         match flight.map(|f| &f.what) {
             Some(what) => {
                 // Ingress is one publication, in order: once a command sent after the engine
-                // went down has its batch, any answer to an older probe has come (or never will).
+                // went down has its batch, any answer to an older command has come (or never
+                // will).
                 self.orphan_probes.clear();
+                self.unknown.clear();
                 match what {
                     Flight::Command { .. } => Whose::Command,
                     Flight::Probe => Whose::Probe { answered: false },
                 }
             }
             None if self.orphan_probes.remove(&(actor, nonce)) => Whose::OrphanProbe,
+            None if (actor, nonce) == (LIVENESS_ACTOR, 0) && self.liveness.outstanding > 0 => {
+                self.liveness.outstanding -= 1;
+                Whose::Liveness
+            }
+            None if self.unknown.contains_key(&(actor, nonce)) => Whose::Unknown,
             None => Whose::Other,
         }
     }
@@ -507,51 +623,95 @@ impl Hub {
     }
 
     fn tick(&mut self, now_us: u64, out: &mut Vec<Effect>) {
-        if self.engine == EngineState::Down {
-            return;
+        if self.engine == EngineState::Up {
+            let late = self
+                .actors
+                .values()
+                .filter_map(|a| a.in_flight.as_ref())
+                .any(|f| now_us.saturating_sub(f.sent_at) > COMMAND_TIMEOUT_US);
+            if late {
+                self.go_down("no batch within 3 s of a command", out);
+            }
         }
-        let late = self
-            .actors
-            .values()
-            .filter_map(|a| a.in_flight.as_ref())
-            .any(|f| now_us.saturating_sub(f.sent_at) > COMMAND_TIMEOUT_US);
-        if late {
-            self.go_down("no batch within 3 s of a command", out);
+        // Down with a node connected (a hung engine, or one whose `Resume` was missed): commands
+        // are refused, so nothing would ever publish. A liveness probe finds out when it works.
+        let due = self
+            .liveness
+            .last_offered_at
+            .is_none_or(|at| now_us.saturating_sub(at) >= LIVENESS_EVERY_US);
+        if self.engine == EngineState::Down && self.connected && due {
+            tracing::debug!("liveness probe");
+            self.liveness.last_offered_at = Some(now_us);
+            self.liveness.outstanding = self.liveness.outstanding.saturating_add(1);
+            out.push(Effect::Offer(ClientCommand {
+                actor: LIVENESS_ACTOR,
+                nonce: 0,
+                action: probe_action(),
+            }));
         }
     }
 
-    fn offer_failed(&mut self, actor: AccountId, nonce: u64, now_us: u64, out: &mut Vec<Effect>) {
-        let Some(a) = self.actors.get_mut(&actor) else {
-            return;
-        };
-        if !a.in_flight.as_ref().is_some_and(|f| f.nonce == nonce) {
-            return;
-        }
-        let Some(f) = a.in_flight.take() else {
-            return;
-        };
-        match f.what {
-            Flight::Command { conn, id, .. } => {
-                tracing::warn!(actor = actor.0, nonce, "ingress back-pressured");
+    fn offer_failed(
+        &mut self,
+        actor: AccountId,
+        nonce: u64,
+        why: OfferFailure,
+        now_us: u64,
+        out: &mut Vec<Effect>,
+    ) {
+        let flight = self
+            .actors
+            .get_mut(&actor)
+            .and_then(|a| a.in_flight.take_if(|f| f.nonce == nonce));
+        match flight.map(|f| f.what) {
+            Some(Flight::Command { conn, id, .. }) => {
+                tracing::warn!(actor = actor.0, nonce, ?why, "offer to ingress failed");
+                let sentence = match why {
+                    OfferFailure::TooLarge(len) => too_large_for_ingress(len),
+                    OfferFailure::BackPressure => BACK_PRESSURED.to_string(),
+                    OfferFailure::Unconnected => UNAVAILABLE.to_string(),
+                };
                 if let Some(conn) = conn {
-                    self.reply(out, conn, &error(Some(id), BACK_PRESSURED));
+                    self.reply(out, conn, &error(Some(id), &sentence));
                 }
-                self.advance(actor, now_us, out);
+                if why == OfferFailure::Unconnected {
+                    // Never offer the next one into a dead ingress: it was never offered either.
+                    self.fail_waiting(actor, UNAVAILABLE, out);
+                } else {
+                    self.advance(actor, now_us, out);
+                }
             }
-            Flight::Probe => {
+            Some(Flight::Probe) => {
                 tracing::warn!(
                     actor = actor.0,
                     nonce,
-                    "ingress back-pressured during a nonce sync"
+                    ?why,
+                    "offer to ingress failed during a nonce sync"
                 );
                 self.book.forget(actor);
-                self.fail_waiting(actor, BACK_PRESSURED, out);
+                let sentence = match why {
+                    OfferFailure::TooLarge(_) => format!("nonce sync failed for account {}", actor.0),
+                    OfferFailure::BackPressure => BACK_PRESSURED.to_string(),
+                    OfferFailure::Unconnected => UNAVAILABLE.to_string(),
+                };
+                self.fail_waiting(actor, &sentence, out);
             }
+            None if (actor, nonce) == (LIVENESS_ACTOR, 0) => {
+                self.liveness.outstanding = self.liveness.outstanding.saturating_sub(1);
+            }
+            None => {}
+        }
+        // Whatever it was, an unconnected ingress means the engine is gone.
+        if why == OfferFailure::Unconnected {
+            self.ingress(false, out);
         }
     }
 
     /// The engine is down: every command in flight or waiting fails, and the actors with one in
     /// flight are forgotten by the nonce book, since that nonce may or may not have been consumed.
+    /// A command already offered may still be applied: its sender learns the outcome is unknown
+    /// and how to retry safely, and still gets the `result` if its batch comes. A command never
+    /// offered is `engine unavailable`.
     fn go_down(&mut self, why: &str, out: &mut Vec<Effect>) {
         self.fresh = false;
         for (actor, a) in std::mem::take(&mut self.actors) {
@@ -559,9 +719,21 @@ impl Hub {
                 self.book.forget(actor);
                 match f.what {
                     Flight::Command {
-                        conn: Some(conn), id, ..
+                        conn: Some(conn),
+                        id,
+                        received_at,
                     } => {
-                        self.reply(out, conn, &error(Some(id), UNAVAILABLE));
+                        self.reply(out, conn, &error(Some(id.clone()), &unknown_outcome(f.nonce)));
+                        if self.unknown.len() < MAX_UNKNOWN {
+                            self.unknown.insert(
+                                (actor, f.nonce),
+                                Unknown {
+                                    conn,
+                                    id,
+                                    received_at,
+                                },
+                            );
+                        }
                     }
                     Flight::Command { conn: None, .. } => {}
                     Flight::Probe => {
@@ -670,9 +842,11 @@ mod tests {
 
     use super::*;
     use crate::nonce_book::NonceState;
+    use crate::protocol::MAX_TEXT;
 
     const ALICE: AccountId = AccountId(10);
     const MM1: AccountId = AccountId(20);
+    const OPERATOR: AccountId = AccountId(1);
     /// The gateway's wall clock, in ms.
     const WALL: u64 = 1_700_000_000_000;
 
@@ -717,6 +891,22 @@ mod tests {
             events,
             balances: Vec::new(),
         }
+    }
+
+    fn failed(hub: &mut Hub, actor: AccountId, nonce: u64, why: OfferFailure) -> Vec<Effect> {
+        hub.handle(Input::OfferFailed { actor, nonce, why }, 0, WALL)
+    }
+
+    fn unknown_outcome(nonce: u64) -> String {
+        format!(
+            "outcome unknown: the engine stopped answering after this command was sent; resend \
+             it with nonce {nonce} to retry safely (a repeat is rejected as Duplicate)"
+        )
+    }
+
+    /// The liveness probe: always `Duplicate`, so it consumes nothing.
+    fn liveness() -> ClientCommand {
+        probe(OPERATOR, 0)
     }
 
     fn resume(seq: u64) -> EventBatch {
@@ -1087,10 +1277,11 @@ mod tests {
         assert_eq!(
             frames(&fx, 1),
             vec![
-                json!({"type": "error", "id": "c1", "error": "engine unavailable"}),
+                json!({"type": "error", "id": "c1", "error": unknown_outcome(5)}),
                 json!({"type": "error", "id": "c2", "error": "engine unavailable"}),
                 json!({"type": "status", "engine": "down", "last_seq": 20}),
-            ]
+            ],
+            "c1 was offered: it may still be applied; c2 never was"
         );
         assert_eq!(
             frames(&fx, 2),
@@ -1186,21 +1377,27 @@ mod tests {
         assert_eq!(
             frames(&fx, 1),
             vec![
-                json!({"type": "error", "id": "c1", "error": "engine unavailable"}),
+                json!({"type": "error", "id": "c1", "error": unknown_outcome(5)}),
                 json!({"type": "status", "engine": "down", "last_seq": 20}),
             ]
         );
         assert_eq!(hub.book.state(ALICE), NonceState::Unknown);
-        assert!(hub.handle(Input::Tick, 9_000_000, WALL).is_empty(), "down once");
+        let fx = hub.handle(Input::Tick, 9_000_000, WALL);
+        assert!(sends(&fx) == 0, "down once: {fx:?}");
 
-        // The late batch is the engine back: no result (c1 already failed), but up again, and
-        // the book learns the nonce it consumed.
+        // The late batch is the engine back: c1's sender still gets its result, the engine is up
+        // again, and the book learns the nonce it consumed.
         let fx = batch(
             &mut hub,
             user_batch(21, (ALICE, 5), vec![withdrawn(ALICE)]),
             9_500_000,
         );
-        assert_eq!(types(&frames(&fx, 1)), ["batch", "status"]);
+        let got = frames(&fx, 1);
+        assert_eq!(types(&got), ["batch", "result", "status"]);
+        assert_eq!(
+            got[1],
+            json!({"type": "result", "id": "c1", "seq": 21, "latency_us": 8_500_000})
+        );
         assert_eq!(hub.book.state(ALICE), NonceState::Known { last: 5 });
     }
 
@@ -1599,14 +1796,7 @@ mod tests {
         known(&mut hub, 20, ALICE, 4);
         command(&mut hub, 1, "c1", ALICE, 0);
         command(&mut hub, 1, "c2", ALICE, 0);
-        let fx = hub.handle(
-            Input::OfferFailed {
-                actor: ALICE,
-                nonce: 5,
-            },
-            0,
-            WALL,
-        );
+        let fx = failed(&mut hub, ALICE, 5, OfferFailure::BackPressure);
         let got = frames(&fx, 1);
         assert_eq!(
             got[0],
@@ -1618,17 +1808,7 @@ mod tests {
             "nonce 5 was never sequenced: c2 gets it"
         );
         // A stale report (not the command in flight) changes nothing.
-        assert!(
-            hub.handle(
-                Input::OfferFailed {
-                    actor: ALICE,
-                    nonce: 4
-                },
-                0,
-                WALL
-            )
-            .is_empty()
-        );
+        assert!(failed(&mut hub, ALICE, 4, OfferFailure::BackPressure).is_empty());
     }
 
     #[test]
@@ -1647,6 +1827,179 @@ mod tests {
         );
     }
 
+    /// A JSON frame within 64 KiB can still encode above the node's ingress limit: serde reads a
+    /// struct from an array too, so a pick can be `[0,1,1]` (8 bytes of JSON, 14 encoded). The
+    /// node would drop it unseen and the gateway would time out; it is refused before it is
+    /// offered instead, with no `sent` and no nonce probe.
+    #[test]
+    fn a_command_too_large_for_ingress_is_refused_before_it_is_offered() {
+        let mut hub = up();
+        open(&mut hub, 1, None);
+        let picks = vec!["[0,1,1]"; 8_181].join(",");
+        let frame = format!(
+            r#"{{"type":"command","id":"big","actor":10,"action":{{"Accept":{{"request":1,"picks":[{picks}]}}}}}}"#
+        );
+        assert!(frame.len() <= MAX_TEXT, "{} bytes of JSON", frame.len());
+        let fx = hub.handle(Input::Text(ConnId(1), frame), 0, WALL);
+        assert!(offers(&fx).is_empty(), "never offered: {:?}", offers(&fx));
+        assert_eq!(
+            frames(&fx, 1),
+            vec![json!({"type": "error", "id": "big",
+                "error": "bad request: command too large for ingress (114571 bytes, limit 65536)"})]
+        );
+        // Nothing is held up.
+        assert_eq!(
+            offers(&command(&mut hub, 1, "c", ALICE, 0)),
+            vec![probe(ALICE, 1)]
+        );
+    }
+
+    /// Every offer failure gets its own sentence; only back pressure says "try again".
+    #[test]
+    fn an_offer_failure_says_why() {
+        let mut hub = up();
+        open(&mut hub, 1, None);
+        known(&mut hub, 20, ALICE, 4);
+        known(&mut hub, 21, MM1, 9);
+        for id in ["c1", "c2", "c3", "c4"] {
+            command(&mut hub, 1, id, ALICE, 0);
+        }
+        command(&mut hub, 1, "m1", MM1, 0);
+
+        let fx = failed(&mut hub, ALICE, 5, OfferFailure::TooLarge(70_000));
+        assert_eq!(
+            frames(&fx, 1),
+            vec![
+                json!({"type": "error", "id": "c1",
+                    "error": "bad request: command too large for ingress (70000 bytes, limit 65536)"}),
+                json!({"type": "sent", "id": "c2", "actor": 10, "nonce": 5}),
+            ]
+        );
+        let fx = failed(&mut hub, ALICE, 5, OfferFailure::BackPressure);
+        assert_eq!(frames(&fx, 1)[0]["error"], "ingress back-pressured, try again");
+        assert_eq!(offers(&fx), vec![withdraw(ALICE, 5)], "c3 gets the free nonce");
+
+        // Unconnected: c3 never reached ingress, nor will c4 (it is not offered into a dead
+        // ingress); m1 did, so its outcome is unknown.
+        let fx = failed(&mut hub, ALICE, 5, OfferFailure::Unconnected);
+        assert!(offers(&fx).is_empty(), "{:?}", offers(&fx));
+        assert_eq!(
+            frames(&fx, 1),
+            vec![
+                json!({"type": "error", "id": "c3", "error": "engine unavailable"}),
+                json!({"type": "error", "id": "c4", "error": "engine unavailable"}),
+                json!({"type": "error", "id": "m1", "error": unknown_outcome(10)}),
+                json!({"type": "status", "engine": "down", "last_seq": 21}),
+            ]
+        );
+    }
+
+    /// A client that resends an unknown command with its nonce takes it over: the original's
+    /// batch, if it comes, answers the resend; the resend's own `Duplicate` answers nothing more.
+    #[test]
+    fn a_resend_with_the_same_nonce_takes_over_an_unknown_command() {
+        let mut hub = up();
+        open(&mut hub, 1, None);
+        known(&mut hub, 20, ALICE, 4);
+        command(&mut hub, 1, "c1", ALICE, 0);
+        hub.handle(Input::Tick, 3_000_001, WALL);
+        batch(&mut hub, resume(21), 3_100_000);
+        let resend = json!({"type": "command", "id": "r1", "actor": 10, "nonce": 5,
+            "action": {"Withdraw": {"amount": 1}}});
+        assert_eq!(
+            offers(&text(&mut hub, 1, resend, 3_200_000)),
+            vec![withdraw(ALICE, 5)]
+        );
+
+        let fx = batch(
+            &mut hub,
+            user_batch(22, (ALICE, 5), vec![withdrawn(ALICE)]),
+            3_300_000,
+        );
+        let got = frames(&fx, 1);
+        assert_eq!(types(&got), ["batch", "result"]);
+        assert_eq!(got[1]["id"], "r1");
+        let fx = batch(
+            &mut hub,
+            user_batch(23, (ALICE, 5), vec![rejected(ALICE, RejectReason::Duplicate)]),
+            3_400_000,
+        );
+        assert_eq!(types(&frames(&fx, 1)), ["batch"], "c1's entry is gone");
+    }
+
+    /// Down by a timeout with ingress still connected: a hung engine. Nothing else would ever
+    /// publish (commands are refused while down), so the hub offers a liveness probe about every
+    /// second: `Withdraw { amount: 0 }` as the operator with nonce 0, always `Duplicate`, which
+    /// consumes nothing. Its batch is internal, and it brings the engine back up.
+    #[test]
+    fn a_timeout_down_recovers_by_itself_through_a_liveness_probe() {
+        let mut hub = up();
+        open(&mut hub, 1, None);
+        open(&mut hub, 2, Some(json!({"account": 1})));
+        known(&mut hub, 20, ALICE, 4);
+        command(&mut hub, 1, "c1", ALICE, 0);
+
+        let fx = hub.handle(Input::Tick, 3_000_001, WALL);
+        assert_eq!(types(&frames(&fx, 1)), ["error", "status"]);
+        assert_eq!(offers(&fx), vec![liveness()], "the first probe at once");
+        assert!(offers(&hub.handle(Input::Tick, 3_500_000, WALL)).is_empty());
+        assert_eq!(
+            offers(&hub.handle(Input::Tick, 4_000_001, WALL)),
+            vec![liveness()],
+            "then every second"
+        );
+
+        let answer = |seq| {
+            user_batch(
+                seq,
+                (OPERATOR, 0),
+                vec![rejected(OPERATOR, RejectReason::Duplicate)],
+            )
+        };
+        let fx = batch(&mut hub, answer(21), 4_100_000);
+        assert_eq!(
+            frames(&fx, 1),
+            vec![json!({"type": "status", "engine": "up", "last_seq": 21})],
+            "up, and no batch: the probe is the gateway's own"
+        );
+        assert_eq!(
+            frames(&fx, 2),
+            vec![json!({"type": "status", "engine": "up", "last_seq": 21})],
+            "not even to the operator's view"
+        );
+        assert_eq!(
+            hub.book.state(OPERATOR),
+            NonceState::Unknown,
+            "the book learns nothing"
+        );
+        // The second probe's answer comes after up: internal too.
+        assert!(batch(&mut hub, answer(22), 4_200_000).is_empty());
+        assert!(
+            offers(&hub.handle(Input::Tick, 9_000_000, WALL)).is_empty(),
+            "up: no probes"
+        );
+    }
+
+    /// No liveness probe while up, nor while ingress is not connected (nobody would read it).
+    /// Once ingress connects again, a probe finds out whether the node there works, even if its
+    /// `Resume` was missed.
+    #[test]
+    fn liveness_probes_only_while_down_and_connected() {
+        let mut hub = up();
+        open(&mut hub, 1, None);
+        assert!(hub.handle(Input::Tick, 5_000_000, WALL).is_empty(), "up and idle");
+        hub.handle(Input::Ingress { connected: false }, 5_000_000, WALL);
+        assert!(offers(&hub.handle(Input::Tick, 6_000_000, WALL)).is_empty());
+        assert!(offers(&hub.handle(Input::Tick, 7_000_000, WALL)).is_empty());
+        hub.handle(Input::Ingress { connected: true }, 7_500_000, WALL);
+        assert_eq!(
+            offers(&hub.handle(Input::Tick, 8_000_000, WALL)),
+            vec![liveness()]
+        );
+        // A refused probe is simply forgotten.
+        assert!(failed(&mut hub, OPERATOR, 0, OfferFailure::BackPressure).is_empty());
+    }
+
     /// Odd but possible inputs: none panics, and the hub keeps working.
     #[test]
     fn odd_inputs_never_panic() {
@@ -1654,7 +2007,16 @@ mod tests {
         let odd = [
             Input::Close(ConnId(7)),
             Input::Tick,
-            Input::OfferFailed { actor: ALICE, nonce: 1 },
+            Input::OfferFailed {
+                actor: ALICE,
+                nonce: 1,
+                why: OfferFailure::Unconnected,
+            },
+            Input::OfferFailed {
+                actor: OPERATOR,
+                nonce: 0,
+                why: OfferFailure::TooLarge(usize::MAX),
+            },
             Input::Ingress { connected: true },
             Input::Open(ConnId(1)),
             Input::Open(ConnId(1)),

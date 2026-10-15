@@ -82,7 +82,7 @@ fn run() -> anyhow::Result<std::convert::Infallible> {
     let venue = aeron::AeronVenue::open(client)?;
     let listener = TcpListener::bind(config.addr).with_context(|| format!("listen on {}", config.addr))?;
     tracing::info!(addr = %listener.local_addr()?, "gateway listening");
-    let (inbox, items) = mpsc::channel();
+    let (inbox, items) = mpsc::sync_channel(ws::INBOX);
     ws::spawn(listener, inbox).context("start the WebSocket acceptor")?;
     hub_loop::HubLoop::new(venue, items).run()
 }

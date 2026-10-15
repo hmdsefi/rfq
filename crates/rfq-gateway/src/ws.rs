@@ -6,7 +6,10 @@
 //!   or `http://127.0.0.1[:port]`; any other Origin gets HTTP 403. A request without an Origin
 //!   is accepted: browsers always send one on a WebSocket upgrade, so it comes from a program
 //!   (a Node script, `websocat`), which could send any Origin it liked. The check protects
-//!   against other web sites in the user's browser, which is all an Origin check can do.
+//!   against other web sites in the user's browser, which is all an Origin check can do. Note
+//!   that browsers also send `Origin: null` from a sandboxed iframe (and some other opaque
+//!   origins), so any site could reach the gateway that way: acceptable for a local demo with
+//!   no authentication (gateway.md §7), not for production.
 //! - **Each connection's thread** alternates between writing its outbox and reading one frame,
 //!   with a socket timeout of [`POLL`], so a frame from the hub waits at most that long.
 //! - **Sizes.** A text frame over [`MAX_TEXT`] (64 KiB, the engine's ingress limit) is answered
@@ -16,6 +19,8 @@
 //!   gets the `error` frame and is closed (1009, message too big). A client that keeps sending
 //!   for longer than the 200 ms drain may lose that error frame to the TCP reset.
 //! - **Ping, pong and the close handshake** are tungstenite's.
+//! - **The inbox is bounded** ([`INBOX`] items): a connection's thread blocks on a full one, so
+//!   a client that sends faster than the hub loop works is slowed down by its own TCP window.
 //! - **Failures are per connection.** An I/O or protocol error, or a client too slow to read
 //!   ([`OUTBOX`] frames behind, or [`MAX_WRITE_BUFFER`] unsent), closes that connection only,
 //!   and the hub loop gets its `Close`.
@@ -23,7 +28,7 @@ use std::io::{self, ErrorKind, Read};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, Sender, SyncSender, TryRecvError, sync_channel};
+use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -49,6 +54,8 @@ pub const OUTBOX: usize = 8_192;
 pub const MAX_WRITE_BUFFER: usize = 64 << 20;
 /// Connections open at once; more are refused (one thread each).
 const MAX_CONNECTIONS: usize = 256;
+/// Items the hub loop's inbox holds; the connections' threads block when it is full.
+pub const INBOX: usize = 4_096;
 
 /// What a connection's thread tells the hub loop.
 #[derive(Debug)]
@@ -69,7 +76,8 @@ pub enum InboxItem {
     Close { why: String },
 }
 
-pub type Inbox = Sender<(ConnId, InboxItem)>;
+/// The hub loop's inbox: bounded, and every send blocks while it is full.
+pub type Inbox = SyncSender<(ConnId, InboxItem)>;
 
 /// Starts the acceptor thread on `listener`. Each accepted connection gets an id and a thread.
 pub fn spawn(listener: TcpListener, inbox: Inbox) -> io::Result<JoinHandle<()>> {
@@ -209,7 +217,8 @@ fn handshake(stream: TcpStream) -> Result<WebSocket<TcpStream>, String> {
     }
 }
 
-/// Whether an upgrade with this `Origin` header (or none) is allowed (gateway.md §7).
+/// Whether an upgrade with this `Origin` header (or none) is allowed (gateway.md §7). `null` is a
+/// page opened from disk, but also a sandboxed iframe on any site (see the module doc).
 pub fn origin_allowed(origin: Option<&str>) -> bool {
     let Some(origin) = origin else {
         return true; // not a browser
@@ -398,7 +407,7 @@ mod tests {
     fn server() -> (u16, Receiver<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        let (inbox, items) = mpsc::channel::<(ConnId, InboxItem)>();
+        let (inbox, items) = mpsc::sync_channel::<(ConnId, InboxItem)>(64);
         spawn(listener, inbox).unwrap();
         let (log, seen) = mpsc::channel();
         std::thread::spawn(move || {

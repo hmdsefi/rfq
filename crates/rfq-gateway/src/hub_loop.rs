@@ -5,7 +5,8 @@
 //! Each turn:
 //! 1. drains the WebSocket inbox (at most [`MAX_INBOX_PER_TURN`] items, so egress is never
 //!    starved: the node gives up on a subscriber that stops reading);
-//! 2. polls egress, and feeds each batch (or chunk of one) to the hub;
+//! 2. polls egress until it is drained (at most [`MAX_POLLS_PER_TURN`] polls), and feeds each
+//!    batch (or chunk of one) to the hub;
 //! 3. feeds `Ingress { connected }` when the venue's connection changes, the first connection at
 //!    start-up included (the hub starts down);
 //! 4. feeds a `Tick` every [`TICK`];
@@ -13,12 +14,15 @@
 //! and performs each effect in order: `Offer` puts the command on ingress, `Send` queues a text
 //! frame on its connection's outbox. A turn with nothing to do ends with a 1 ms sleep.
 //!
-//! - **Back pressure.** An offer retries for [`OFFER_PATIENCE`]; then the hub gets
-//!   `OfferFailed`, and the sender gets `ingress back-pressured, try again`. Within one pass over
-//!   the effects only the first offer waits; the others try once, so a stuck ingress can never
-//!   hold the loop for long.
+//! - **Back pressure.** Each turn has [`OFFER_BUDGET`] for retrying back-pressured offers, all
+//!   offers together. An offer still back-pressured when it runs out is refused: the hub gets
+//!   `OfferFailed { BackPressure }` and the sender `ingress back-pressured, try again`. Later
+//!   offers in that turn try once. So a stuck ingress holds a turn for at most the budget.
 //! - **Unconnected ingress** at the moment of an offer means the node is gone: the hub gets
-//!   `Ingress { connected: false }` at once, which fails the command with `engine unavailable`.
+//!   `OfferFailed { Unconnected }`; that command was never offered (`engine unavailable`), and
+//!   the hub goes down.
+//! - **Too large** for the publication: `OfferFailed { TooLarge }`, a bad request. (The hub
+//!   already refuses anything over the node's ingress limit, far below the publication's.)
 //! - **A slow client** whose outbox is full is closed (its outbox dropped), never waited for.
 //! - **Fatal** (`Err` out of [`HubLoop::run`]): the venue fails (a dead driver, a closed
 //!   publication or subscription), or the WebSocket server has stopped.
@@ -27,9 +31,11 @@ use std::convert::Infallible;
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use std::net::SocketAddr;
+
 use anyhow::bail;
 use rfq_app::{ClientCommand, EventBatch};
-use rfq_gateway::hub::{ConnId, Effect, Hub, Input};
+use rfq_gateway::hub::{ConnId, Effect, Hub, Input, OfferFailure};
 use rfq_gateway::protocol::{ServerMsg, encode_server};
 use rfq_gateway::view::View;
 
@@ -39,10 +45,12 @@ use crate::ws::InboxItem;
 pub const TICK: Duration = Duration::from_millis(100);
 /// Sleep after a turn that did nothing.
 const IDLE: Duration = Duration::from_millis(1);
-/// How long an offer retries back pressure before the command is refused.
-pub const OFFER_PATIENCE: Duration = Duration::from_millis(20);
+/// How long one turn may spend retrying back-pressured offers, all of them together.
+pub const OFFER_BUDGET: Duration = Duration::from_millis(50);
 /// Inbox items taken per turn.
 pub const MAX_INBOX_PER_TURN: usize = 1_024;
+/// Egress polls per turn at most, while egress still has fragments.
+pub const MAX_POLLS_PER_TURN: usize = 1_024;
 
 /// The engine's side of the gateway: ingress out, egress in.
 pub trait Venue {
@@ -62,6 +70,8 @@ pub enum Offered {
     BackPressured,
     /// Nobody subscribes to ingress.
     NotConnected,
+    /// The encoded command (this many bytes) is over the publication's max message.
+    TooLarge(usize),
 }
 
 pub struct HubLoop<V> {
@@ -69,11 +79,15 @@ pub struct HubLoop<V> {
     venue: V,
     inbox: Receiver<(ConnId, InboxItem)>,
     outboxes: BTreeMap<ConnId, SyncSender<String>>,
+    /// Each open connection's peer, for the close log.
+    peers: BTreeMap<ConnId, SocketAddr>,
     /// The venue's connection as last fed to the hub.
     connected: bool,
     /// The origin of the hub's monotonic clock (`now_us`).
     epoch: Instant,
     last_tick: Instant,
+    /// Until when this turn may retry back-pressured offers ([`OFFER_BUDGET`]).
+    offer_deadline: Instant,
 }
 
 impl<V: Venue> HubLoop<V> {
@@ -84,9 +98,11 @@ impl<V: Venue> HubLoop<V> {
             venue,
             inbox,
             outboxes: BTreeMap::new(),
+            peers: BTreeMap::new(),
             connected: false,
             epoch: now,
             last_tick: now,
+            offer_deadline: now,
         }
     }
 
@@ -102,6 +118,7 @@ impl<V: Venue> HubLoop<V> {
     /// One turn. Returns whether it had anything to do.
     pub fn turn(&mut self) -> anyhow::Result<bool> {
         let mut busy = false;
+        self.offer_deadline = Instant::now() + OFFER_BUDGET;
         for _ in 0..MAX_INBOX_PER_TURN {
             match self.inbox.try_recv() {
                 Ok((conn, item)) => {
@@ -113,12 +130,15 @@ impl<V: Venue> HubLoop<V> {
             }
         }
 
-        let mut batches = Vec::new();
-        if self.venue.poll(&mut |b| batches.push(b))? > 0 {
+        for _ in 0..MAX_POLLS_PER_TURN {
+            let mut batches = Vec::new();
+            if self.venue.poll(&mut |b| batches.push(b))? == 0 {
+                break;
+            }
             busy = true;
-        }
-        for b in batches {
-            self.feed(Input::Batch(b))?;
+            for b in batches {
+                self.feed(Input::Batch(b))?;
+            }
         }
 
         let connected = self.venue.connected();
@@ -139,6 +159,7 @@ impl<V: Venue> HubLoop<V> {
             InboxItem::Open { peer, outbox } => {
                 tracing::info!(%peer, conn = conn.0, "ws open");
                 self.outboxes.insert(conn, outbox);
+                self.peers.insert(conn, peer);
                 self.feed(Input::Open(conn))
             }
             InboxItem::Text(text) => self.feed(Input::Text(conn, text)),
@@ -149,7 +170,11 @@ impl<V: Venue> HubLoop<V> {
             }
             InboxItem::Close { why } => {
                 let view = self.hub.view(conn).map_or_else(|| "-".to_string(), view_name);
-                tracing::info!(conn = conn.0, view, why, "ws close");
+                let peer = self
+                    .peers
+                    .remove(&conn)
+                    .map_or_else(|| "-".to_string(), |p| p.to_string());
+                tracing::info!(peer = %peer, conn = conn.0, view, why, "ws close");
                 self.outboxes.remove(&conn);
                 self.feed(Input::Close(conn))
             }
@@ -172,37 +197,35 @@ impl<V: Venue> HubLoop<V> {
     /// `sent` before the `error`.
     fn perform(&mut self, effects: Vec<Effect>) -> anyhow::Result<()> {
         let mut queue = VecDeque::from(effects);
-        let mut patience = OFFER_PATIENCE;
         while let Some(effect) = queue.pop_front() {
             match effect {
                 Effect::Send(conn, frame) => {
                     let more = self.send(conn, frame);
                     queue.extend(more);
                 }
-                Effect::Offer(cmd) => match self.venue.offer(&cmd, patience)? {
-                    Offered::Sent => {}
-                    Offered::BackPressured => {
-                        patience = Duration::ZERO;
-                        let failed = Input::OfferFailed {
-                            actor: cmd.actor,
-                            nonce: cmd.nonce,
-                        };
-                        let more = self.handle(failed);
-                        queue.extend(more);
-                    }
-                    Offered::NotConnected => {
-                        self.connected = false;
-                        let more = self.handle(Input::Ingress { connected: false });
-                        queue.extend(more);
-                        // Down fails every command in flight. Should the hub have been down
-                        // already, this frees the actor instead (otherwise a no-op).
-                        let more = self.handle(Input::OfferFailed {
-                            actor: cmd.actor,
-                            nonce: cmd.nonce,
-                        });
-                        queue.extend(more);
-                    }
-                },
+                Effect::Offer(cmd) => {
+                    let patience = self.offer_deadline.saturating_duration_since(Instant::now());
+                    let why = match self.venue.offer(&cmd, patience)? {
+                        Offered::Sent => continue,
+                        Offered::BackPressured => {
+                            // It retried until the budget ran out: the rest of the turn tries once.
+                            self.offer_deadline = Instant::now();
+                            OfferFailure::BackPressure
+                        }
+                        Offered::NotConnected => {
+                            self.connected = false;
+                            OfferFailure::Unconnected
+                        }
+                        Offered::TooLarge(len) => OfferFailure::TooLarge(len),
+                    };
+                    let failed = Input::OfferFailed {
+                        actor: cmd.actor,
+                        nonce: cmd.nonce,
+                        why,
+                    };
+                    let more = self.handle(failed);
+                    queue.extend(more);
+                }
             }
         }
         Ok(())
@@ -252,7 +275,7 @@ mod tests {
     use std::sync::mpsc::{self, Sender, sync_channel};
 
     use rfq_app::BatchKind;
-    use rfq_domain::{AccountId, Emitted, Event};
+    use rfq_domain::{AccountId, Emitted, Event, RejectReason};
     use serde_json::{Value, json};
 
     use super::*;
@@ -268,6 +291,7 @@ mod tests {
         /// How the next offers go; `Sent` once empty.
         answers: VecDeque<Offered>,
         egress: VecDeque<EventBatch>,
+        polls: usize,
         fail: bool,
     }
 
@@ -276,13 +300,16 @@ mod tests {
             self.offered.push((cmd.clone(), patience));
             Ok(self.answers.pop_front().unwrap_or(Offered::Sent))
         }
+        /// One batch per poll, like a poll that reads one message's fragments.
         fn poll(&mut self, sink: &mut dyn FnMut(EventBatch)) -> anyhow::Result<usize> {
             if self.fail {
                 bail!("the egress subscription is closed");
             }
-            let n = self.egress.len();
-            self.egress.drain(..).for_each(sink);
-            Ok(n)
+            self.polls += 1;
+            Ok(self.egress.pop_front().map_or(0, |b| {
+                sink(b);
+                1
+            }))
         }
         fn connected(&self) -> bool {
             self.connected
@@ -378,7 +405,7 @@ mod tests {
         rig.turn();
         assert_eq!(rig.hub.venue.offered.len(), 1);
         assert_eq!(rig.hub.venue.offered[0].0.nonce, 5);
-        assert_eq!(rig.hub.venue.offered[0].1, OFFER_PATIENCE);
+        assert!(rig.hub.venue.offered[0].1 <= OFFER_BUDGET);
         assert_eq!(types(&drain(&frames)), ["sent"]);
 
         rig.hub.venue.egress.push_back(answer(7, ALICE, 5));
@@ -389,16 +416,18 @@ mod tests {
         assert!(got[1]["latency_us"].is_u64());
     }
 
-    /// The sender sees `sent`, then the `error`; only the first offer of a pass waits.
+    /// The sender sees `sent`, then the `error`. A turn has one budget for retrying back
+    /// pressure: once an offer has used it up, the others in that turn try once; the next turn
+    /// has a fresh budget.
     #[test]
-    fn back_pressure_is_reported_after_sent_and_waits_once() {
+    fn back_pressure_is_reported_after_sent_within_one_budget_per_turn() {
         let mut rig = Rig::new();
         rig.hub.venue.connected = true;
         let frames = rig.open(1, 64);
         rig.turn();
         rig.hub.venue.answers = VecDeque::from([Offered::BackPressured, Offered::BackPressured]);
         rig.text(1, withdraw("c1", ALICE, 5));
-        rig.text(1, withdraw("c2", ALICE, 6));
+        rig.text(1, withdraw("m1", MM1, 1));
         rig.turn();
         let got = drain(&frames);
         assert_eq!(types(&got), ["status", "sent", "error", "sent", "error"]);
@@ -406,31 +435,58 @@ mod tests {
             got[2],
             json!({"type": "error", "id": "c1", "error": "ingress back-pressured, try again"})
         );
-        assert_eq!(got[4]["id"], "c2");
+        assert_eq!(got[4]["id"], "m1");
         let patience: Vec<Duration> = rig.hub.venue.offered.iter().map(|o| o.1).collect();
-        assert_eq!(
-            patience,
-            [OFFER_PATIENCE, OFFER_PATIENCE],
-            "one pass per inbox item"
+        assert!(
+            patience[0] > OFFER_BUDGET / 2 && patience[0] <= OFFER_BUDGET,
+            "the first offer has the turn's budget: {patience:?}"
         );
+        assert_eq!(patience[1], Duration::ZERO, "the budget is spent");
 
-        // Within one pass: m1's batch sends m2, which is refused, and then m3, which only tries
-        // once.
         rig.hub.venue.offered.clear();
-        rig.text(1, withdraw("m1", MM1, 1));
-        rig.text(1, withdraw("m2", MM1, 2));
-        rig.text(1, withdraw("m3", MM1, 3));
+        rig.text(1, withdraw("c2", ALICE, 5));
         rig.turn();
-        assert_eq!(types(&drain(&frames)), ["sent"], "m2 and m3 wait behind m1");
-        rig.hub.venue.answers = VecDeque::from([Offered::BackPressured, Offered::Sent]);
-        rig.hub.venue.egress.push_back(answer(9, MM1, 1));
+        assert_eq!(types(&drain(&frames)), ["sent"]);
+        assert!(
+            rig.hub.venue.offered[0].1 > OFFER_BUDGET / 2,
+            "a new turn, a new budget"
+        );
+    }
+
+    /// The venue refusing a command as too large is a bad request, not "try again".
+    #[test]
+    fn too_large_for_the_publication_is_a_bad_request() {
+        let mut rig = Rig::new();
+        rig.hub.venue.connected = true;
+        let frames = rig.open(1, 64);
         rig.turn();
-        let patience: Vec<Duration> = rig.hub.venue.offered.iter().map(|o| o.1).collect();
-        assert_eq!(patience, [OFFER_PATIENCE, OFFER_PATIENCE, Duration::ZERO]);
+        drain(&frames);
+        rig.hub.venue.answers = VecDeque::from([Offered::TooLarge(70_000)]);
+        rig.text(1, withdraw("c1", ALICE, 5));
+        rig.turn();
         let got = drain(&frames);
-        assert_eq!(types(&got), ["batch", "result", "sent", "error", "sent"]);
-        assert_eq!(got[3]["id"], "m2");
-        assert_eq!(got[4]["id"], "m3");
+        assert_eq!(types(&got), ["sent", "error"]);
+        assert_eq!(
+            got[1]["error"],
+            "bad request: command too large for ingress (70000 bytes, limit 65536)"
+        );
+    }
+
+    /// Each turn polls egress until it has nothing more (here one batch per poll).
+    #[test]
+    fn egress_is_polled_until_drained() {
+        let mut rig = Rig::new();
+        rig.hub.venue.connected = true;
+        let frames = rig.open(1, 64);
+        rig.turn();
+        drain(&frames);
+        for seq in 10..13 {
+            rig.hub.venue.egress.push_back(answer(seq, MM1, seq));
+        }
+        rig.hub.venue.polls = 0;
+        rig.turn();
+        assert_eq!(types(&drain(&frames)), ["batch", "batch", "batch"]);
+        assert_eq!(rig.hub.venue.polls, 4, "three batches, then an empty poll");
     }
 
     #[test]
@@ -472,7 +528,28 @@ mod tests {
         rig.turn();
         let got = drain(&frames);
         assert_eq!(types(&got), ["error", "status"]);
-        assert_eq!(got[0]["error"], "engine unavailable");
+        assert!(
+            got[0]["error"].as_str().unwrap().starts_with("outcome unknown"),
+            "{got:?}"
+        );
+        // Down with ingress connected: a liveness probe goes out, and its answer brings the
+        // engine back up with no client traffic, and without showing the probe to anyone.
+        let probe = rig.hub.venue.offered.last().unwrap().0.clone();
+        assert_eq!((probe.actor, probe.nonce), (AccountId(1), 0));
+        rig.hub.venue.egress.push_back(EventBatch {
+            events: vec![Emitted::to(
+                AccountId(1),
+                Event::CommandRejected {
+                    reason: RejectReason::Duplicate,
+                },
+            )],
+            ..answer(9, AccountId(1), 0)
+        });
+        rig.turn();
+        assert_eq!(
+            drain(&frames),
+            vec![json!({"type": "status", "engine": "up", "last_seq": 9})]
+        );
     }
 
     #[test]

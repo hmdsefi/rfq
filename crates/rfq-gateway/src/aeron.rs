@@ -76,12 +76,9 @@ impl Venue for AeronVenue {
             Ok(Some(_)) => Ok(Offered::Sent),
             Ok(None) => Ok(Offered::NotConnected),
             Err(AeronError::GaveUp { .. }) => Ok(Offered::BackPressured),
-            // Cannot happen: a client frame is at most 64 KiB, far below the max message. Should
-            // it, the command is refused, not the gateway.
-            Err(e @ AeronError::TooLarge { .. }) => {
-                tracing::error!(error = %e, "a command too large for ingress");
-                Ok(Offered::BackPressured)
-            }
+            // Cannot happen: the hub refuses anything over the node's 64 KiB ingress limit, far
+            // below the max message. Should it, the command is refused, not the gateway.
+            Err(AeronError::TooLarge { len, .. }) => Ok(Offered::TooLarge(len)),
             Err(e) => Err(anyhow::Error::new(e).context("offer to ingress")),
         }
     }
