@@ -42,6 +42,17 @@ impl Ctx {
     pub fn contract(&self) -> ContractId {
         ContractId(self.t0)
     }
+    /// The run's `k`th extra market (`k` in 1..=9), for a multi-leg scenario: `ContractId(t0 * 10 + k)`.
+    ///
+    /// Distinct runs never collide: two start times that differ give `t0 * 10 + k` that differ (`k` is
+    /// below 10), and for real millisecond clocks it can't equal another run's own `ContractId(t0)`
+    /// either (that would need two start times a factor of 10 apart). The value stays below 2^53
+    /// (a millisecond timestamp is about 1.8e12, so about 1.8e13 here), so the dashboard page can
+    /// hold it in a JavaScript number. The run's scope owns these ids too (`rfq-demo/src/scope.rs`).
+    pub fn contract_n(&self, k: u64) -> ContractId {
+        assert!((1..=9).contains(&k), "a run has extra markets 1..=9, not {k}");
+        ContractId(self.t0 * 10 + k)
+    }
     pub fn record_label(&mut self, label: &'static str, seq: u64) {
         self.labels.insert(label, seq);
     }
@@ -117,9 +128,9 @@ fn tick(at: Duration) -> Step {
     }
 }
 
-/// Funds everyone and lists the scenario's contract (closes at +5 s, hard deadline at +15 s).
-fn setup() -> Vec<Step> {
-    let mut steps: Vec<Step> = [
+/// Deposits $1,000 for Alice, both market makers and Carol.
+fn fund() -> Vec<Step> {
+    [
         ("fund_alice", ALICE),
         ("fund_mm1", MM1),
         ("fund_mm2", MM2),
@@ -132,15 +143,50 @@ fn setup() -> Vec<Step> {
             amount: dollars(1_000),
         })
     })
-    .collect();
-    steps.push(send(0, "list", OPERATOR, |c| Action::ListContract {
-        id: c.contract(),
-        description: "Will it rain in Paris on 2026-11-01?".into(),
+    .collect()
+}
+
+/// The operator lists a market that closes at +5 s, with a hard deadline at +15 s.
+fn list(label: &'static str, id: fn(&Ctx) -> ContractId, description: &'static str) -> Step {
+    send(0, label, OPERATOR, move |c| Action::ListContract {
+        id: id(c),
+        description: description.into(),
         oracle: ORACLE,
         trading_close: c.at(5_000),
         resolution_deadline: c.at(15_000),
         dispute_window: 2_000,
-    }));
+    })
+}
+
+/// Funds everyone and lists the scenario's contract (closes at +5 s, hard deadline at +15 s).
+fn setup() -> Vec<Step> {
+    let mut steps = fund();
+    steps.push(list(
+        "list",
+        |c| c.contract(),
+        "Will it rain in Paris on 2026-11-01?",
+    ));
+    steps
+}
+
+/// Funds everyone and lists three markets (Paris, London, Rome), each closing at +5 s.
+fn three_markets() -> Vec<Step> {
+    let mut steps = fund();
+    steps.push(list(
+        "list_paris",
+        |c| c.contract_n(1),
+        "Will it rain in Paris on 2026-11-01?",
+    ));
+    steps.push(list(
+        "list_london",
+        |c| c.contract_n(2),
+        "Will it rain in London on 2026-11-01?",
+    ));
+    steps.push(list(
+        "list_rome",
+        |c| c.contract_n(3),
+        "Will it rain in Rome on 2026-11-01?",
+    ));
     steps
 }
 
@@ -185,6 +231,32 @@ fn filled() -> Vec<Step> {
     let mut s = quoted();
     s.push(accept(2_000));
     s
+}
+
+/// One request for 400 YES on each of the three markets (limit 0.70 each: $840 held), deadline +1.5 s.
+fn three_leg_request() -> Step {
+    send(100, "req", ALICE, |c| Action::SubmitRequest {
+        legs: (1..=3)
+            .map(|k| LegSpec {
+                contract: c.contract_n(k),
+                side: Side::BuyYes,
+                qty: 400,
+                limit_price: price(7_000),
+            })
+            .collect(),
+        response_deadline: c.at(1_500),
+    })
+}
+
+/// `mm` quotes leg `leg` of the request at `bps`, firm to +10 s (the engine clamps it to the accept window).
+fn leg_quote(at: Duration, label: &'static str, mm: AccountId, leg: u32, bps: u16) -> Step {
+    send(at, label, mm, move |c| Action::SubmitQuote {
+        request: c.request("req"),
+        leg,
+        price: price(bps),
+        size: 400,
+        expires_at: c.at(10_000),
+    })
 }
 
 pub fn all() -> Vec<Scenario> {
@@ -301,7 +373,70 @@ pub fn all() -> Vec<Scenario> {
             ],
         }
     };
-    vec![happy, withdraw, no_quotes, lapse, disputed, silent]
+    // Multi-leg (engine.md §8): three markets, one request, a quote on every leg, and one accept fills
+    // all three legs. MM1 backs legs 0 and 2, MM2 backs leg 1.
+    let multi_leg_happy = {
+        let mut s = three_markets();
+        s.push(three_leg_request());
+        s.push(leg_quote(300, "q1", MM1, 0, 6_200));
+        s.push(leg_quote(400, "q2", MM2, 1, 6_000));
+        s.push(leg_quote(500, "q3", MM1, 2, 6_400));
+        s.push(tick(1_600));
+        s.push(accept(2_000));
+        Scenario {
+            name: "multi_leg_happy",
+            steps: s,
+            expect: vec![
+                "RequestOpened",
+                "RequestOpened",
+                "RequestOpened",
+                "QuoteSubmitted",
+                "QuoteSubmitted",
+                "QuoteSubmitted",
+                "QuoteSelected",
+                "QuoteSelected",
+                "QuoteSelected",
+                "RequestPresented",
+                "QuoteFilled",
+                "QuoteFilled",
+                "QuoteFilled",
+                "RequestFilled",
+            ],
+        }
+    };
+    // Leg 2 of 3 fails: legs 1 and 3 are quoted, leg 2 is not, so at the deadline the whole request
+    // expires and the requester's and both MMs' holds are all released in that one command.
+    let multi_leg_leg2_fails = {
+        let mut s = three_markets();
+        s.push(three_leg_request());
+        s.push(leg_quote(300, "q1", MM1, 0, 6_200));
+        s.push(leg_quote(400, "q3", MM2, 2, 6_000));
+        s.push(tick(1_600));
+        Scenario {
+            name: "multi_leg_leg2_fails",
+            steps: s,
+            expect: vec![
+                "RequestOpened",
+                "RequestOpened",
+                "RequestOpened",
+                "QuoteSubmitted",
+                "QuoteSubmitted",
+                "QuoteLost",
+                "QuoteLost",
+                "RequestExpired",
+            ],
+        }
+    };
+    vec![
+        happy,
+        withdraw,
+        no_quotes,
+        lapse,
+        disputed,
+        silent,
+        multi_leg_happy,
+        multi_leg_leg2_fails,
+    ]
 }
 
 /// Runs a scenario on a fresh in-memory engine. Returns the harness and every emitted event.

@@ -85,6 +85,84 @@ fn oracle_silent_hard_deadline() {
     }
 }
 
+// The six brief scenarios keep their names and order; the two multi-leg ones come after them.
+#[test]
+fn the_scenarios_are_the_six_brief_ones_then_the_two_multi_leg_ones() {
+    let names: Vec<_> = all().iter().map(|s| s.name).collect();
+    assert_eq!(
+        names,
+        [
+            "happy_path",
+            "mm_cannot_withdraw_after_selection",
+            "no_quotes_expire",
+            "requester_lapses",
+            "disputed_ruled_invalid",
+            "oracle_silent_hard_deadline",
+            "multi_leg_happy",
+            "multi_leg_leg2_fails",
+        ]
+    );
+}
+
+// Three markets and one request for 400 YES on each: Alice's $840 hold pays $248 + $240 + $256
+// for the three picks (0.62, 0.60, 0.64) and the rest goes back; MM1 backs legs 0 and 2, MM2 leg 1.
+#[test]
+fn multi_leg_happy() {
+    let (h, events) = run("multi_leg_happy");
+    assert_eq!(free(&h, ALICE), dollars(1_000 - 744));
+    assert_eq!(h.engine.balance(ALICE).escrowed, dollars(744));
+    assert_eq!(free(&h, MM1), dollars(1_000 - 152 - 144));
+    assert_eq!(h.engine.balance(MM1).escrowed, dollars(152 + 144));
+    assert_eq!(free(&h, MM2), dollars(1_000 - 160));
+    assert_eq!(h.engine.balance(MM2).escrowed, dollars(160));
+    // One position per leg, each on its own market.
+    let ctx = Ctx::new(T0);
+    for k in 1..=3 {
+        let c = h.engine.contract(ctx.contract_n(k)).expect("listed");
+        assert_eq!(c.positions.len(), 1, "market {k}");
+    }
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| matches!(e.event, Event::RequestOpened { .. }))
+            .count(),
+        3,
+        "one RequestOpened per leg"
+    );
+}
+
+// Legs 1 and 3 are quoted, leg 2 is not: at the deadline the whole request expires and every hold
+// (Alice's and both MMs') is released in that one command. Nothing was escrowed, so nothing fills.
+#[test]
+fn multi_leg_leg2_fails() {
+    let (h, events) = run("multi_leg_leg2_fails");
+    for a in [ALICE, MM1, MM2] {
+        assert_eq!(free(&h, a), dollars(1_000));
+        assert_eq!(h.engine.balance(a).escrowed, 0);
+    }
+    let ctx = Ctx::new(T0);
+    for k in 1..=3 {
+        let c = h.engine.contract(ctx.contract_n(k)).expect("listed");
+        assert!(c.positions.is_empty(), "market {k}");
+    }
+    // The releases happen in the command that fires the deadline: the tick whose events end the request.
+    let expired = events
+        .iter()
+        .position(|e| matches!(e.event, Event::RequestExpired { .. }))
+        .expect("expired");
+    let lost: Vec<_> = events
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| matches!(e.event, Event::QuoteLost { .. }))
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        lost,
+        [expired - 2, expired - 1],
+        "both quotes lost right before the expiry"
+    );
+}
+
 #[test]
 fn replay_reproduces_state_hash() {
     for s in all() {
