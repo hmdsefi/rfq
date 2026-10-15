@@ -197,12 +197,19 @@ const RfqRecorder = (() => {
    * Keeps what the gateway sends. `onFrame(frame, meta)` takes every frame (`meta.at` is `Date.now()`
    * and `meta.t` is `performance.now()` at receipt; they are taken now if `meta` is left out), or
    * `attach(gateway)` feeds it from a `RfqGateway` connection.
+   *
+   * **Epochs.** Seqs only grow on one journal. A batch whose seq is below the newest one's is from a
+   * new journal (`docker compose down -v`): it starts a new epoch instead of being merged into an
+   * unrelated old batch. `batches`, `order` and `batchList()` are the current epoch's (results and
+   * origins name the current engine's seqs); `allBatches()` keeps every epoch.
    */
   function createRecorder() {
     const rec = {
       /** Every frame, in arrival order: `{ n, at, t, frame }`. */
       frames: [],
-      /** The batches merged by `seq`, by seq. */
+      /** The current epoch, from 0: how many times the seqs started again. */
+      epoch: 0,
+      /** The current epoch's batches, merged by `seq`, by seq. */
       batches: new Map(),
       /** The seqs of `batches`, in the order their first chunk arrived. */
       order: [],
@@ -214,10 +221,14 @@ const RfqRecorder = (() => {
       errors: [],
       onFrame,
       attach,
-      /** The merged batches in arrival order. */
+      /** The current epoch's merged batches in arrival order. */
       batchList: () => rec.order.map((seq) => rec.batches.get(seq)),
+      /** Every merged batch of every epoch, in arrival order (each carries its `epoch`). */
+      allBatches: () => all.slice(),
       clear,
     };
+    const all = [];
+    let newest = null; // the merged batch whose chunk arrived last
 
     function onFrame(frame, meta = {}) {
       const at = meta.at ?? Date.now();
@@ -246,36 +257,44 @@ const RfqRecorder = (() => {
 
     /**
      * A batch too big for one message arrives as chunks with the same `seq`, time, kind and origin
-     * (`split_batch`). Their events concatenate in arrival order; the balances travel once, on the
-     * last chunk (which may carry nothing else), so they are the last chunk's.
+     * (`split_batch`), one after the other. Their events concatenate in arrival order; the balances
+     * travel once, on the last chunk (which may carry nothing else), so they are the last chunk's.
+     * Only the newest batch can take a chunk: an older seq seen again is a new epoch.
      */
     function mergeBatch(frame, n, at, t) {
-      const have = rec.batches.get(frame.seq);
-      if (!have) {
-        const merged = {
-          seq: frame.seq,
-          time: frame.time,
-          kind: frame.kind,
-          origin: frame.origin ?? null,
-          events: [...frame.events],
-          balances: frame.balances ?? [],
-          chunks: 1,
-          firstN: n,
-          lastN: n,
-          firstAt: at,
-          lastAt: at,
-          firstT: t,
-        };
-        rec.batches.set(frame.seq, merged);
-        rec.order.push(frame.seq);
-        return merged;
+      if (newest && frame.seq === newest.seq && newest.epoch === rec.epoch) {
+        newest.events.push(...frame.events);
+        newest.balances = frame.balances ?? [];
+        newest.chunks++;
+        newest.lastN = n;
+        newest.lastAt = at;
+        return newest;
       }
-      have.events.push(...frame.events);
-      have.balances = frame.balances ?? [];
-      have.chunks++;
-      have.lastN = n;
-      have.lastAt = at;
-      return have;
+      if (newest && frame.seq < newest.seq) {
+        rec.epoch++;
+        rec.batches = new Map();
+        rec.order = [];
+      }
+      const merged = {
+        seq: frame.seq,
+        epoch: rec.epoch,
+        time: frame.time,
+        kind: frame.kind,
+        origin: frame.origin ?? null,
+        events: [...frame.events],
+        balances: frame.balances ?? [],
+        chunks: 1,
+        firstN: n,
+        lastN: n,
+        firstAt: at,
+        lastAt: at,
+        firstT: t,
+      };
+      rec.batches.set(frame.seq, merged);
+      rec.order.push(frame.seq);
+      all.push(merged);
+      newest = merged;
+      return merged;
     }
 
     function attach(gateway) {
@@ -284,8 +303,11 @@ const RfqRecorder = (() => {
 
     function clear() {
       rec.frames.length = 0;
-      rec.batches.clear();
-      rec.order.length = 0;
+      rec.epoch = 0;
+      rec.batches = new Map();
+      rec.order = [];
+      all.length = 0;
+      newest = null;
       rec.results.length = 0;
       rec.statuses.length = 0;
       rec.errors.length = 0;
@@ -294,8 +316,32 @@ const RfqRecorder = (() => {
     return rec;
   }
 
+  /**
+   * Feeds the frames of one gateway connection to the recorder of the view they were sent to:
+   * `recorderFor(view)` (`"admin"` or `{ account }`, as the `welcome` echoed it) returns a recorder,
+   * or null to drop them. The view is the one the last `welcome` on the current socket confirmed.
+   * Until a socket's first `welcome` its view is the gateway's default, `admin` (gateway.md §3), so
+   * those frames are never a participant's and are dropped; so is everything after a dropped
+   * connection until the new socket's `welcome`. The `welcome` itself goes to its view's recorder.
+   * Returns the function that detaches it.
+   */
+  function attachViews(gateway, recorderFor) {
+    let target = null; // the recorder of the confirmed view, or null
+    const offs = [
+      gateway.on("conn", (c) => {
+        if (!c.up) target = null;
+      }),
+      gateway.on("*", (frame, meta) => {
+        if (frame.type === "welcome") target = recorderFor(frame.view) ?? null;
+        target?.onFrame(frame, meta);
+      }),
+    ];
+    return () => offs.forEach((off) => off());
+  }
+
   return {
     createRecorder,
+    attachViews,
     Scope,
     GENESIS_ROLES,
     ACCOUNTS_PER_RUN,

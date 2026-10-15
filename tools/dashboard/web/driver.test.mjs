@@ -304,8 +304,13 @@ await test("unknown outcome, applied before: the engine rejects the retry as Dup
   assert.equal(run.commands[0].recovered, true);
   // A command that waited out an outage is not a latency sample.
   assert.equal(run.perf.commands, 0);
-  // The retry is a command of the run: its Duplicate batch is the run's own event, and the deposit is there once.
-  assert.deepEqual(run.own.map((o) => o.seq), [40, 41]);
+  // The retry's Duplicate is a recovery artifact, not the run's own event (ruling c): the deposit is
+  // there once. The timeline still shows the retry's batch, with the retry as its command.
+  assert.deepEqual(run.own.map((o) => o.seq), [40]);
+  assert.deepEqual(run.batches, [40, 41]);
+  assert.equal(driver.commandAt(41).id, `${run.id}.1.retry1`);
+  assert.equal(driver.commandAt(41).nonce, 7);
+  assert.equal(driver.commandAt(40).id, `${run.id}.1`, "the original's late result names its batch");
   gw.close();
 });
 
@@ -397,6 +402,33 @@ await test("unknown outcome, and the original's batch answers the resend (whiche
   const run = await driver.run(funding());
   assert.equal(run.pass, true, run.detail);
   assert.equal(run.labels.dep, 40);
+  // The retry's own Duplicate came after the result that answered it: still not the run's own event.
+  assert.deepEqual(run.own.map((o) => o.seq), [40]);
+  gw.close();
+});
+
+await test("a recovery artifact can't satisfy an expect: the retry's Duplicate is not the run's own event", async () => {
+  // Applied before the outage, but the original's batch was never heard here: all there is, is the
+  // retry's Duplicate. A scenario that expects a Duplicate must not pass on it.
+  const { gw, driver } = await connected((msg, s) => {
+    if (isRetry(msg)) {
+      s.deliver(sent(msg));
+      s.deliver(batch(41, { actor: msg.actor, nonce: 7 }, [duplicate]));
+      s.deliver(result(msg, 41));
+      return;
+    }
+    s.deliver(sent(msg, 7));
+    setTimeout(() => {
+      s.deliver({ type: "error", id: msg.id, error: UNKNOWN(7) });
+      s.deliver(status("down"));
+      setTimeout(() => s.deliver(status("up")), 20);
+    }, 10);
+  });
+  const run = await driver.run({ ...funding(), expect: ["CommandRejected(Duplicate)"] });
+  assert.equal(run.pass, false);
+  assert.match(run.detail, /expected event CommandRejected\(Duplicate\)/);
+  assert.deepEqual(run.own, []);
+  assert.deepEqual(run.batches, [41]);
   gw.close();
 });
 
@@ -508,6 +540,98 @@ await test("runMany: bad arguments are refused; t0 is distinct for runs started 
   assert.equal(new Set(many.runs.map((r) => r.accounts.alice)).size, 6);
   assert.equal(many.perf.runs, 6);
   assert.equal(many.perf.commands, 6);
+  gw.close();
+});
+
+// ---- one driver per page: progress, stop, dispose, the clock (ruling b) ---------------------------
+
+/** Answers every command at once: nonce 3, a deposit batch at the next seq, its result. */
+function answering() {
+  let seq = 100;
+  return (msg, s) => {
+    seq++;
+    s.deliver(sent(msg, msg.nonce ?? 3));
+    s.deliver(batch(seq, { actor: msg.actor, nonce: msg.nonce ?? 3 }, [deposited(msg)]));
+    s.deliver(result(msg, seq));
+  };
+}
+
+/** A two-command scenario whose second command waits `later` ms. */
+const twoSteps = (later) => ({
+  ...funding(),
+  steps: [
+    { at: 0, label: "dep", actor: 1, action: () => ({ Deposit: { to: 10, amount: 5 } }) },
+    { at: later, label: "dep2", actor: 1, action: () => ({ Deposit: { to: 10, amount: 6 } }) },
+  ],
+});
+
+await test("progress: a run says which step it is on, of how many, and the batches that are its own", async () => {
+  const seen = [];
+  const { gw, driver } = await connected(answering(), { onStep: (run) => seen.push([run.step, run.steps]) });
+  const run = await driver.run({ ...twoSteps(10), steps: [...twoSteps(10).steps, { at: 20, wait: true }] });
+  assert.equal(run.pass, true, run.detail);
+  assert.deepEqual(seen, [[1, 3], [2, 3], [3, 3]]);
+  assert.deepEqual(run.batches, [run.labels.dep, run.labels.dep2]);
+  // Each batch's command, as the page sent it (the model joins on it): actor, nonce, the whole action.
+  const c = driver.commandAt(run.labels.dep2);
+  assert.deepEqual([c.run, c.step, c.actor, c.nonce], [run.id, "dep2", 1, 3]);
+  assert.deepEqual(c.action, { Deposit: { to: run.t0 * 100 + 10, amount: 6 } });
+  assert.equal(driver.commandAt(99_999), undefined);
+  gw.close();
+});
+
+await test("stop: the runs in progress send nothing more and say so; runs not started never start", async () => {
+  const { server, gw, driver } = await connected(answering());
+  const many = driver.runMany([twoSteps(300)], 3, 1);
+  await sleep(80);
+  const before = server.received.filter((m) => m.type === "command").length;
+  assert.equal(before, 1);
+  driver.stop();
+  const out = await many;
+  await sleep(350);
+  assert.equal(server.received.filter((m) => m.type === "command").length, before, "nothing sent after Stop");
+  assert.equal(out.stopped, true);
+  assert.equal(out.runs.length, 1, "only the run that had started");
+  assert.equal(out.runs[0].pass, false);
+  assert.equal(out.runs[0].stopped, true);
+  assert.match(out.runs[0].detail, /stopped/);
+  // The driver stays usable after a Stop.
+  const again = await driver.run(funding());
+  assert.equal(again.pass, true, again.detail);
+  gw.close();
+});
+
+await test("dispose: the driver lets go of the connection, stops its runs, and a new driver can take it", async () => {
+  const { server, gw, driver } = await connected(answering());
+  assert.throws(() => S.createDriver(gw), /already has a driver/);
+  const running = driver.run(twoSteps(300));
+  await sleep(80);
+  driver.dispose();
+  const run = await running;
+  assert.equal(run.stopped, true);
+  const frames = driver.recorder.frames.length;
+  server.deliver(batch(500, null, [], "Tick"));
+  assert.equal(driver.recorder.frames.length, frames, "a disposed driver records nothing more");
+  await assert.rejects(driver.run(funding()), /disposed/);
+  const next = S.createDriver(gw, { startMarginMs: 0, graceMs: 30 });
+  const ok = await next.run(funding());
+  assert.equal(ok.pass, true, ok.detail);
+  next.dispose();
+  gw.close();
+});
+
+await test("the clock is measured again only when no run is active: a run in progress keeps its schedule", async () => {
+  const { server, gw, driver } = await connected(answering());
+  const hellos = () => server.received.filter((m) => m.type === "hello").length;
+  const first = driver.run(twoSteps(250));
+  await sleep(60);
+  const during = hellos();
+  const second = await driver.run(funding());
+  assert.equal(second.pass, true, second.detail);
+  assert.equal(hellos(), during, "no hello (no clock sample) while another run was active");
+  assert.equal((await first).pass, true);
+  await driver.run(funding());
+  assert.equal(hellos(), during + 3, "an idle driver measures the clock afresh before a run");
   gw.close();
 });
 

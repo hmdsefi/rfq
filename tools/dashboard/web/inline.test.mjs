@@ -49,6 +49,14 @@ test("a marker echoed by a script's text is caught, in the later and in the earl
   assert.throws(() => inline(page, "x", scripts({ A: "'__WASM_BASE64__'", B: "2" })), /__WASM_BASE64__ still occurs/);
 });
 
+test("no wasm (null, or `-` on the command line): the page has scripts only, and a wasm marker is refused", () => {
+  const live = "<script>/*__A_JS__*/</script>";
+  assert.equal(inline(live, null, scripts({ A: "1" })), "<script>1</script>");
+  assert.throws(() => inline(page, null, scripts({ A: "1", B: "2" })), /__WASM_BASE64__ but no wasm was given/);
+  // The wasm marker is still guarded when echoed by a script of a page that has no wasm.
+  assert.throws(() => inline(live, null, scripts({ A: "'__WASM_BASE64__'" })), /__WASM_BASE64__ still occurs/);
+});
+
 test("a bad script name is refused", () => {
   assert.throws(() => inline(page, "x", scripts({ a: "1" })), /bad script name a/);
 });

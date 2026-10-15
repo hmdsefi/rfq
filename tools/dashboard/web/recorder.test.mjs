@@ -42,9 +42,11 @@ test("the chunks of a split batch merge by seq, events in arrival order", () => 
   const a = pub(ev("RequestOpened", { request: 12 }));
   const b = pub(ev("QuoteSubmitted", { quote: 13 }));
   const c = pub(ev("QuoteLost", { quote: 14 }));
+  // The node publishes one batch's chunks one after the other (an older seq after a newer one is a
+  // new journal: see the epoch tests).
   rec.onFrame(batch(12, [a, b], { origin }));
-  rec.onFrame(batch(13, [pub(ev("Deposited", { account: 1, amount: 5 }))]));
   rec.onFrame(batch(12, [c], { origin }));
+  rec.onFrame(batch(13, [pub(ev("Deposited", { account: 1, amount: 5 }))]));
   assert.equal(rec.batches.size, 2);
   assert.deepEqual(rec.order, [12, 13]);
   const merged = rec.batches.get(12);
@@ -87,6 +89,106 @@ test("a batch that is not split is kept as it came", () => {
   assert.deepEqual(merged.events, frame.events);
   assert.deepEqual(merged.balances, frame.balances);
   assert.equal(merged.time, frame.time);
+});
+
+// ---- epochs: a journal reset starts the seqs again --------------------------------------------------
+
+test("a seq that goes backwards starts a new epoch: the old batches are kept and never merged with the new", () => {
+  const rec = R.createRecorder();
+  const old2 = pub(ev("Deposited", { account: 10, amount: 1 }));
+  rec.onFrame(batch(1, [pub(ev("Initialized"))]));
+  rec.onFrame(batch(2, [old2], { balances: [bal(10, 1)] }));
+  rec.onFrame(batch(3, [pub(ev("ContractListed", { contract: 7 }))]));
+  assert.equal(rec.epoch, 0);
+  // `docker compose down -v`: a fresh journal, seq 2 again, about something else.
+  const new2 = pub(ev("Deposited", { account: 99, amount: 5 }));
+  rec.onFrame(batch(2, [new2], { balances: [bal(99, 5)] }));
+  assert.equal(rec.epoch, 1);
+  // The current epoch is what `batches`, `order` and `batchList` (and so the driver's lookups by seq) see.
+  assert.deepEqual(rec.batches.get(2).events, [new2]);
+  assert.deepEqual(rec.batches.get(2).balances, [bal(99, 5)]);
+  assert.equal(rec.batches.get(2).chunks, 1);
+  assert.equal(rec.batches.has(3), false);
+  assert.deepEqual(rec.order, [2]);
+  assert.deepEqual(rec.batchList().map((b) => [b.epoch, b.seq]), [[1, 2]]);
+  // Nothing recorded is lost: every batch of every epoch, in arrival order, the old seq 2 as it was.
+  assert.deepEqual(rec.allBatches().map((b) => [b.epoch, b.seq]), [[0, 1], [0, 2], [0, 3], [1, 2]]);
+  assert.deepEqual(rec.allBatches()[1].events, [old2]);
+  assert.deepEqual(rec.allBatches()[1].balances, [bal(10, 1)]);
+});
+
+test("a chunk merges only into the newest batch: an older seq seen again is a new epoch, an equal one a chunk", () => {
+  const rec = R.createRecorder();
+  rec.onFrame(batch(3, [pub(ev("RequestOpened", { request: 3 }))]));
+  rec.onFrame(batch(4, [pub(ev("RequestOpened", { request: 4 }))]));
+  rec.onFrame(batch(4, [pub(ev("QuoteLost", { quote: 9 }))]));
+  assert.equal(rec.batches.get(4).chunks, 2);
+  assert.equal(rec.epoch, 0);
+  // Seq 3 again, after 4: not a late chunk of 3 (chunks of one batch arrive together), a new journal.
+  rec.onFrame(batch(3, [pub(ev("RequestCancelled", { request: 3 }))]));
+  assert.equal(rec.epoch, 1);
+  assert.equal(rec.allBatches()[0].events.length, 1);
+  assert.deepEqual(rec.allBatches().map((b) => [b.epoch, b.seq, b.chunks]), [[0, 3, 1], [0, 4, 2], [1, 3, 1]]);
+  // clear() forgets every epoch.
+  rec.clear();
+  assert.deepEqual([rec.epoch, rec.allBatches().length, rec.batchList().length], [0, 0, 0]);
+});
+
+// ---- a view connection: only what the gateway sent that view ----------------------------------------
+
+/** A stand-in for an `RfqGateway` connection: `fire(type, payload)` calls what `on` registered. */
+function fakeConnection() {
+  const listeners = new Map();
+  return {
+    on(type, fn) {
+      if (!listeners.has(type)) listeners.set(type, new Set());
+      listeners.get(type).add(fn);
+      return () => listeners.get(type).delete(fn);
+    },
+    fire(type, payload) {
+      for (const t of type === "conn" ? ["conn"] : [type, "*"]) for (const fn of listeners.get(t) ?? []) fn(payload, {});
+    },
+    frame(f) {
+      this.fire(f.type, f);
+    },
+    count: () => [...listeners.values()].reduce((n, s) => n + s.size, 0),
+  };
+}
+
+test("attachViews: frames go to the recorder of the view the last welcome confirmed; none before the first welcome", () => {
+  const gw = fakeConnection();
+  const recs = { 10: R.createRecorder(), 20: R.createRecorder() };
+  const asked = [];
+  const off = R.attachViews(gw, (view) => {
+    asked.push(view);
+    return view === "admin" ? null : recs[view.account] ?? null;
+  });
+  // Until its first hello a connection has the admin view: what it gets then is never a participant's.
+  gw.frame(batch(1, [pub(ev("Deposited", { account: 21, amount: 5 }))], { balances: [bal(21, 5)] }));
+  assert.equal(recs[10].frames.length + recs[20].frames.length, 0);
+  gw.frame({ type: "welcome", view: { account: 20 }, engine: "up", now: 1 });
+  gw.frame(batch(2, [to(20, ev("QuoteSubmitted", { quote: 2 }))], { balances: [bal(20, 9)] }));
+  assert.deepEqual(recs[20].batchList().map((b) => b.seq), [2]);
+  assert.equal(recs[20].statuses.length, 1, "the welcome itself is recorded for its view");
+  // The view switches: what follows the new welcome belongs to the new view.
+  gw.frame({ type: "welcome", view: { account: 10 }, engine: "up", now: 2 });
+  gw.frame(batch(3, [to(10, ev("RequestPresented", { request: 1, picks: [], accept_by: 5 }))]));
+  assert.deepEqual(recs[10].batchList().map((b) => b.seq), [3]);
+  assert.deepEqual(recs[20].batchList().map((b) => b.seq), [2]);
+  // A dropped connection: the next socket starts in the admin view again, so nothing until a welcome.
+  gw.fire("conn", { up: false });
+  gw.frame(batch(4, [pub(ev("Deposited", { account: 21, amount: 5 }))], { balances: [bal(21, 5)] }));
+  assert.equal(recs[10].batches.has(4) || recs[20].batches.has(4), false);
+  gw.frame({ type: "welcome", view: { account: 10 }, engine: "up", now: 3 });
+  gw.frame(batch(5, [pub(ev("ContractClosed", { contract: 1 }))]));
+  assert.deepEqual(recs[10].batchList().map((b) => b.seq), [3, 5]);
+  // An admin welcome has no recorder here: its frames are dropped.
+  gw.frame({ type: "welcome", view: "admin", engine: "up", now: 4 });
+  gw.frame(batch(6, [pub(ev("ContractClosed", { contract: 2 }))]));
+  assert.equal(recs[10].batches.has(6), false);
+  assert.ok(asked.some((v) => v === "admin"));
+  off();
+  assert.equal(gw.count(), 0, "off() removes every listener");
 });
 
 // ---- what the recorder keeps -----------------------------------------------------------------------

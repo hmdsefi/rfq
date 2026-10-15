@@ -393,39 +393,95 @@ const RfqScenarios = (() => {
   const unconsumed = (events) =>
     events.some((e) => R.eventName(e) === "CommandRejected" && ["Duplicate", "NonceGap"].includes(R.eventBody(e).reason));
 
+  /** Connections that have a driver: one driver per connection (and so per page) until `dispose()`. */
+  const DRIVEN = new WeakSet();
+
+  /** What a run throws when the presenter stops it (or the driver is disposed). */
+  class Stopped extends Error {
+    constructor() {
+      super("stopped by the presenter: nothing more was sent; the engine finishes what was already sent");
+      this.name = "Stopped";
+    }
+  }
+
   /**
    * Plays scenarios through `gateway` (an `RfqGateway.connect` connection, in the `admin` view: the
-   * verdict needs every event, sealed ones too). One driver per connection: it listens to the frames.
+   * verdict needs every event, sealed ones too). One driver per connection: it listens to the frames,
+   * and a second `createDriver` on the same connection is refused until the first is `dispose()`d.
    *
    * `opts`: `recorder` (default: a new one, attached to `gateway`; do not attach it yourself),
-   * `onLog(run, line)` for each line of a run's log as it is written, `onRunStart(run)`, `onRunEnd(run)`;
-   * and the timings, for tests: `startMarginMs`, `graceMs`, `engineWaitMs` (defaults above).
+   * `onLog(run, line)` for each line of a run's log as it is written, `onRunStart(run)`, `onRunEnd(run)`,
+   * `onStep(run)` when a run moves to its next step (`run.step` of `run.steps`); and the timings, for
+   * tests: `startMarginMs`, `graceMs`, `engineWaitMs` (defaults above).
+   *
+   * Besides `run` and `runMany`: `stop()` abandons the runs in progress (they send nothing more; the
+   * engine finishes what was already sent) and keeps the driver usable; `dispose()` stops and lets go
+   * of the connection; `commandAt(seq)` is the command the driver sent that made batch `seq`.
    */
   function createDriver(gateway, opts = {}) {
+    if (DRIVEN.has(gateway)) throw new Error("this gateway connection already has a driver: dispose() it first");
+    DRIVEN.add(gateway);
     const startMargin = opts.startMarginMs ?? START_MARGIN_MS;
     const grace = opts.graceMs ?? GRACE_MS;
     const engineWait = opts.engineWaitMs ?? ENGINE_WAIT_MS;
     const recorder = opts.recorder ?? R.createRecorder();
-    recorder.attach(gateway);
     const active = new Set();
+    /** Every command id this driver sent: `{ id, run, step, actor, action, nonce }` (nonce once `sent`). */
+    const sentById = new Map();
+    /** seq -> the command whose `result` named that batch. */
+    const bySeq = new Map();
     let lastT0 = 0;
     let runNumber = 0;
+    let disposed = false;
+    let measuring = null; // the clock measurement in progress
+    // A Stop ends a generation: runs and run sets of an older one stop at their next await.
+    let generation = 0;
+    let stopSignal = signal();
 
-    // One listener each for all the runs: a `sent` frame tells its run the nonce of its command (so
-    // that the batch of that command counts as the run's), and every batch goes to every run's scope.
-    gateway.on("sent", (frame) => {
-      for (const run of active) if (run.ids.has(frame.id)) run.scope.sent(frame.actor, frame.nonce);
-    });
-    gateway.on("batch", (frame) => {
-      for (const run of active) run.onBatch(frame);
-    });
+    function signal() {
+      let fire;
+      const promise = new Promise((resolve) => (fire = resolve));
+      return { promise, fire };
+    }
+
+    const offs = [
+      recorder.attach(gateway),
+      // One listener each for all the runs: a `sent` frame tells its run the nonce of its command (so
+      // that the batch of that command counts as the run's), and every batch goes to every run's scope.
+      gateway.on("sent", (frame) => {
+        const cmd = sentById.get(frame.id);
+        if (cmd) cmd.nonce = frame.nonce;
+        for (const run of active) if (run.ids.has(frame.id)) run.scope.sent(frame.actor, frame.nonce);
+      }),
+      gateway.on("batch", (frame) => {
+        for (const run of active) run.onBatch(frame);
+      }),
+      // A result (a late one too, after an unknown outcome) names the batch its command made.
+      gateway.on("result", (frame) => {
+        const cmd = sentById.get(frame.id);
+        if (cmd) bySeq.set(frame.seq, cmd);
+      }),
+    ];
 
     const engineNow = () => gateway.engineNow();
-    async function sleepUntil(engineMs) {
+
+    /** Throws `Stopped` if the run's generation was stopped. */
+    function check(run) {
+      if (run.generation !== generation) throw new Stopped();
+    }
+
+    /** `promise`, or `Stopped` as soon as the run is stopped. */
+    function orStop(run, promise) {
+      check(run);
+      return Promise.race([promise, run.stopped.then(() => Promise.reject(new Stopped()))]);
+    }
+
+    async function sleepUntil(run, engineMs) {
       for (;;) {
+        check(run);
         const ms = engineMs - engineNow();
         if (ms <= 0) return;
-        // In pieces: the clock offset is measured again on a reconnect.
+        // In pieces: the clock offset is measured again on a reconnect, and a Stop ends the wait.
         await sleep(Math.min(ms, 100));
       }
     }
@@ -437,19 +493,28 @@ const RfqScenarios = (() => {
       return t0;
     }
 
-    /** Before runs: the admin view, the engine up, and the clocks measured against each other afresh (they drift). */
+    /**
+     * Before runs: the admin view, the engine up, and the clocks measured against each other afresh
+     * (they drift). Only while no run is active: a run in progress schedules its steps by the offset,
+     * so it must not move under it.
+     */
     async function prepare() {
+      if (disposed) throw new Error("this driver is disposed");
       if (gateway.view !== "admin") {
         throw new Error("scenarios need the admin view: the verdict reads every event, sealed ones too");
       }
       if (gateway.engine !== "up") await gateway.untilEngineUp({ timeoutMs: engineWait });
-      await gateway.syncClock(3);
+      if (measuring) await measuring;
+      else if (active.size === 0) {
+        measuring = gateway.syncClock(3).finally(() => (measuring = null));
+        await measuring;
+      }
     }
 
-    async function runOne(which, t0 = allocT0()) {
+    async function runOne(which, gen, t0 = allocT0()) {
       const scenario = typeof which === "string" ? byName(which) : which;
       if (!scenario) throw new Error(`no scenario named ${which}; the scenarios are ${scenarios.map((s) => s.name).join(", ")}`);
-      const run = newRun(scenario, t0);
+      const run = newRun(scenario, t0, gen);
       active.add(run);
       opts.onRunStart?.(run.result);
       try {
@@ -464,7 +529,7 @@ const RfqScenarios = (() => {
       return run.result;
     }
 
-    function newRun(scenario, t0) {
+    function newRun(scenario, t0, gen) {
       const scope = new R.Scope(t0);
       const accounts = {};
       const ctx = new Ctx(t0, (a) => {
@@ -483,9 +548,13 @@ const RfqScenarios = (() => {
         accounts,
         expect: scenario.expect,
         pass: false,
+        stopped: false,
         detail: null,
         error: null,
+        step: 0,
+        steps: scenario.steps.length,
         own: [], // the run's own events: { seq, time, kind, audience, event }
+        batches: [], // the seqs of the run's batches, in arrival order: its commands' (retries too) and those with its own events
         labels: {},
         commands: [], // every command with its numbers; see `command`
         recoveries: [],
@@ -493,6 +562,7 @@ const RfqScenarios = (() => {
         startedAt,
         wall_ms: 0,
         perf: null,
+        done: false,
       };
       const run = {
         key,
@@ -500,8 +570,16 @@ const RfqScenarios = (() => {
         scope,
         ctx,
         result,
+        generation: gen,
+        stopped: stopSignal.promise,
         ids: new Set(), // the ids of the run's commands, to tell its `sent` frames from another run's
         lastNonce: new Map(), // actor -> nonce of its last ordinary command
+        /**
+         * Origins (`actor:nonce`) whose unknown outcome was retried. Of the two copies, the engine applies
+         * the first and rejects the other as Duplicate: that Duplicate is a recovery artifact, never the
+         * run's own event (so it cannot satisfy an expect), whichever copy it was. Armed once per retry.
+         */
+        artifacts: new Set(),
         commandCount: 0,
         failure: null,
         log(line) {
@@ -510,15 +588,25 @@ const RfqScenarios = (() => {
         },
         onBatch(frame) {
           ctx.observe(frame.events);
-          for (const e of frame.events) {
-            if (scope.owns(frame, e)) {
-              result.own.push({ seq: frame.seq, time: frame.time, kind: frame.kind, audience: e.audience, event: e.event });
+          const origin = frame.origin == null ? null : `${frame.origin.actor}:${frame.origin.nonce}`;
+          let mine = origin != null && scope.origins.has(origin);
+          if (origin != null && run.artifacts.has(origin) && unconsumed(frame.events)) {
+            run.artifacts.delete(origin);
+            for (const e of frame.events) scope.owns(frame, e); // keeps the scope's bookkeeping; owns nothing new
+          } else {
+            for (const e of frame.events) {
+              if (scope.owns(frame, e)) {
+                mine = true;
+                result.own.push({ seq: frame.seq, time: frame.time, kind: frame.kind, audience: e.audience, event: e.event });
+              }
             }
           }
+          if (mine && result.batches.at(-1) !== frame.seq) result.batches.push(frame.seq);
         },
         fail(e) {
           run.failure ??= e instanceof Error ? e : new Error(String(e));
           result.error = run.failure.message;
+          if (run.failure instanceof Stopped) result.stopped = true;
         },
         finish() {
           const v = R.containsInOrder(result.own, scenario.expect);
@@ -534,7 +622,8 @@ const RfqScenarios = (() => {
             result.commands.filter((c) => !c.recovered),
             result.wall_ms,
           );
-          run.log(result.pass ? "PASS" : `FAIL: ${result.detail}`);
+          result.done = true;
+          run.log(result.stopped ? "STOPPED" : result.pass ? "PASS" : `FAIL: ${result.detail}`);
         },
       };
       return run;
@@ -542,20 +631,33 @@ const RfqScenarios = (() => {
 
     /** Plays every step at its time, then waits for the timer-driven events, as rfq-demo's `scenario`. */
     async function play(run) {
-      const { scenario, ctx } = run;
+      const { scenario, ctx, result } = run;
       const t0 = ctx.t0;
       run.log(`${scenario.name}: t0=${t0} (engine now + ${startMargin} ms), contract ${t0}`);
-      for (const step of scenario.steps) {
+      for (const [i, step] of scenario.steps.entries()) {
+        check(run);
+        result.step = i + 1;
+        opts.onStep?.(result);
         if (step.wait) {
-          await sleepUntil(t0 + step.at + WAIT_GRACE_MS);
+          await sleepUntil(run, t0 + step.at + WAIT_GRACE_MS);
           continue;
         }
-        await sleepUntil(t0 + step.at);
+        await sleepUntil(run, t0 + step.at);
         await runStep(run, step);
       }
       // The events the engine's timers produce after the last step.
       const deadline = Date.now() + grace;
-      while (!R.containsInOrder(run.result.own, scenario.expect).ok && Date.now() < deadline) await sleep(20);
+      while (!R.containsInOrder(result.own, scenario.expect).ok && Date.now() < deadline) {
+        check(run);
+        await sleep(20);
+      }
+    }
+
+    /** Sends one command for `run` (step `label`) and remembers it, so `commandAt` can name its batch. */
+    function send(run, label, id, cmd) {
+      run.ids.add(id);
+      sentById.set(id, { id, run: run.key, step: label, actor: cmd.actor, action: cmd.action, nonce: cmd.nonce ?? null });
+      return orStop(run, gateway.command({ id, ...cmd }));
     }
 
     /** Sends one command step and waits for its `result`; records its seq as the step's label. */
@@ -569,15 +671,17 @@ const RfqScenarios = (() => {
       }
       const what = `${step.label} (${ACCOUNT_NAMES[step.actor] ?? step.actor} ${actionName(cmd.action)})`;
       const id = `${run.key}.${++run.commandCount}`;
-      run.ids.add(id);
+      // A replay or a gap the script sends on purpose: its rejection is the step's answer, never an artifact.
+      if (cmd.nonce !== undefined) run.artifacts.delete(`${cmd.actor}:${cmd.nonce}`);
       const late_ms = Math.round(engineNow() - (ctx.t0 + step.at));
       let answer;
       let recovered = false;
       try {
-        const done = await gateway.command({ id, ...cmd });
+        const done = await send(run, step.label, id, cmd);
         if (!done.sent) throw new Error("its result came without a `sent` before it");
         answer = { seq: done.result.seq, nonce: done.sent.nonce, latency_us: done.result.latency_us, rtt_ms: done.rtt_ms };
       } catch (e) {
+        if (e instanceof Stopped) throw e;
         if (e.kind !== "unknown_outcome") throw new Error(`${what}: ${e.message}`);
         answer = await recover(run, step, what, id, cmd, e);
         recovered = true;
@@ -609,6 +713,7 @@ const RfqScenarios = (() => {
       const timing = recovered ? "recovered" : `${answer.latency_us} us, rtt ${answer.rtt_ms.toFixed(1)} ms`;
       const late = late_ms > 50 ? `, ${late_ms} ms late` : "";
       run.log(`+${step.at} ${what} nonce ${nonce} -> seq ${seq ?? "unknown"} (${timing}${late})${rejection ? ` rejected: ${rejection}` : ""}`);
+      check(run);
     }
 
     /**
@@ -623,12 +728,13 @@ const RfqScenarios = (() => {
       for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         const nonce = err.nonce;
         run.log(`${what}: outcome unknown (the engine stopped answering after nonce ${nonce} was sent); waiting for the engine`);
-        await gateway.untilEngineUp({ after: err.frameNo, timeoutMs: engineWait });
-        run.ids.add(`${id}.retry${attempt}`);
+        await orStop(run, gateway.untilEngineUp({ after: err.frameNo, timeoutMs: engineWait }));
+        run.artifacts.add(`${cmd.actor}:${nonce}`);
         let answer;
         try {
-          answer = await gateway.command({ id: `${id}.retry${attempt}`, ...cmd, nonce });
+          answer = await send(run, step.label, `${id}.retry${attempt}`, { ...cmd, nonce });
         } catch (e) {
+          if (e instanceof Stopped) throw e;
           if (e.kind === "unknown_outcome" && attempt < MAX_RETRIES) {
             err = e;
             continue;
@@ -660,7 +766,7 @@ const RfqScenarios = (() => {
           how = "applied on retry";
         }
         run.log(`${what}: outcome recovered: ${how}`);
-        run.result.recoveries.push({ step: step.label, nonce, outcome: how, seq });
+        run.result.recoveries.push({ step: step.label, nonce, outcome: how, seq, retry_seq: answer.result.seq });
         return { seq, nonce, latency_us: answer.result.latency_us, rtt_ms: answer.rtt_ms };
       }
       throw new Error(`${what}: the outcome stayed unknown after ${MAX_RETRIES} retries`);
@@ -668,15 +774,17 @@ const RfqScenarios = (() => {
 
     /**
      * Runs each of `names` `n` times, `k` at a time, and returns every run's verdict and the aggregate
-     * perf: `{ runs, passed, failed, pass, perf }`. Runs are scoped (accounts `t0 * 100 + id`, contract
-     * `t0`, distinct `t0` 1 ms apart at least), so none sees another's events. `runs` is in the order
-     * the jobs were given (names interleaved: each name once, then again, ...).
+     * perf: `{ runs, passed, failed, pass, stopped, perf }`. Runs are scoped (accounts `t0 * 100 + id`,
+     * contract `t0`, distinct `t0` 1 ms apart at least), so none sees another's events. `runs` is in the
+     * order the jobs were given (names interleaved: each name once, then again, ...); after a Stop it
+     * holds only the runs that had started.
      */
     async function runMany(names, n, k) {
       if (!Number.isInteger(n) || n < 1) throw new RangeError(`n must be a whole number of runs, got ${n}`);
       if (!Number.isInteger(k) || k < 1) throw new RangeError(`k must be a whole number of runs at a time, got ${k}`);
       if (names.length === 0) throw new RangeError("no scenarios to run");
       for (const name of names) if (typeof name === "string" && !byName(name)) throw new Error(`no scenario named ${name}`);
+      const gen = generation;
       await prepare();
       const jobs = [];
       for (let i = 0; i < n; i++) jobs.push(...names);
@@ -684,22 +792,24 @@ const RfqScenarios = (() => {
       let next = 0;
       const started = Date.now();
       const worker = async () => {
-        while (next < jobs.length) {
+        while (next < jobs.length && gen === generation) {
           const i = next++;
-          runs[i] = await runOne(jobs[i]);
+          runs[i] = await runOne(jobs[i], gen);
         }
       };
       await Promise.all(Array.from({ length: Math.min(k, jobs.length) }, worker));
       const wall_ms = Date.now() - started;
-      const passed = runs.filter((r) => r.pass).length;
+      const done = runs.filter(Boolean);
+      const passed = done.filter((r) => r.pass).length;
       return {
-        runs,
+        runs: done,
         passed,
-        failed: runs.length - passed,
-        pass: passed === runs.length,
+        failed: done.length - passed,
+        pass: passed === jobs.length,
+        stopped: gen !== generation,
         concurrency: k,
         perf: R.aggregatePerf(
-          runs.map((r) => ({ commands: r.commands.filter((c) => !c.recovered) })),
+          done.map((r) => ({ commands: r.commands.filter((c) => !c.recovered) })),
           wall_ms,
         ),
       };
@@ -707,11 +817,43 @@ const RfqScenarios = (() => {
 
     /** One run of `scenario` (a name, or a scenario object like the ones in `scenarios`): its verdict, as in `runMany(...).runs`. */
     async function run(scenario) {
+      const gen = generation;
       await prepare();
-      return runOne(scenario);
+      return runOne(scenario, gen);
     }
 
-    return { recorder, scenarios, run, runMany, engineNow };
+    /** Abandons the runs in progress and the run sets' jobs not started yet. The driver stays usable. */
+    function stop() {
+      generation++;
+      stopSignal.fire();
+      stopSignal = signal();
+    }
+
+    /** Stops, and lets go of the connection: no more listening, recording or running. */
+    function dispose() {
+      if (disposed) return;
+      disposed = true;
+      stop();
+      for (const off of offs) off();
+      DRIVEN.delete(gateway);
+    }
+
+    return {
+      recorder,
+      scenarios,
+      run,
+      runMany,
+      stop,
+      dispose,
+      engineNow,
+      commandAt: (seq) => bySeq.get(seq),
+      get active() {
+        return [...active].map((r) => r.result);
+      },
+      get disposed() {
+        return disposed;
+      },
+    };
   }
 
   return {

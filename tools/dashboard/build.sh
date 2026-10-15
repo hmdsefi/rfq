@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Builds dist/rfq-dashboard.html: the engine compiled to wasm, smoke-tested in Node, and inlined
-# into one self-contained page. Demo aid; not part of the engine.
+# Builds dist/rfq-dashboard.html, the live page (DESIGN §11): one self-contained file that drives the
+# real stack through rfq-gateway. The engine is still compiled to wasm here: the Node smoke test and the
+# check that the JS scenario scripts match the Rust presets run it. The page itself carries no wasm.
+# Demo aid; not part of the engine.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -19,10 +21,11 @@ node web/smoke.mjs "$WASM"
 # against the Docker stack by web/live-smoke.mjs.
 node web/inline.test.mjs
 node web/recorder.test.mjs
+node web/model.test.mjs
 node web/driver.test.mjs
 node web/scenarios.test.mjs "$WASM"
 mkdir -p dist
 # Each NAME=file.js fills the template's /*__NAME_JS__*/ marker (web/inline.mjs). The page template
-# carries one marker per file listed here, no more and no fewer.
-node web/inline.mjs "$WASM" web/index.html dist/rfq-dashboard.html \
-  RUNTIME=web/runtime.js
+# carries one marker per file listed here, no more and no fewer; `-` means no wasm in the page.
+node web/inline.mjs - web/index.html dist/rfq-dashboard.html \
+  RECORDER=web/recorder.js GATEWAY=web/gateway.js SCENARIOS=web/scenarios.js MODEL=web/model.js

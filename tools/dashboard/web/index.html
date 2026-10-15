@@ -315,15 +315,93 @@ a.idlink, button.idlink { color: var(--accent); text-decoration: underline; text
   form.form-row { grid-template-columns: 1fr 1fr !important; } /* the request form sets five columns inline */
 }
 </style>
+<style>
+/* Live mode (v2, DESIGN §11): status bar, run controls, timeline, runs, perf and failure drills.
+   Same tokens, lines and radii as the approved design; nothing here changes the blocks above. */
+.runctl { flex-wrap: wrap; }
+.runctl .num-in { width: 64px; min-height: 32px; padding: 0 8px; border: 1px solid var(--line-2); border-radius: var(--r); background: var(--surface); color: var(--ink); }
+.runctl label { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink-2); }
+#scenario-pick { min-width: 250px; }
+.health .clock { min-width: 0; font-size: 14px; }
+.conn { display: inline-flex; align-items: center; gap: 6px; }
+.banner { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; padding: 9px 14px; border-radius: var(--r); font-size: 13px; border: 1px solid transparent; }
+.banner-warn { background: var(--warn-tint); color: var(--warn); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
+.banner-info { background: var(--accent-tint); color: var(--escrow-ink); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+.banner-bad { background: var(--bad-tint); color: var(--bad); }
+.banner b { font-weight: 600; }
+#banners { display: grid; gap: 8px; }
+#banners:empty { display: none; }
+/* Timeline scrubber */
+.timeline-panel { display: grid; gap: 8px; padding: 12px 16px; }
+.scrub { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.scrub input[type="range"] { flex: 1 1 260px; min-width: 0; accent-color: var(--accent); height: 28px; }
+.scrub select { min-height: 32px; max-width: 300px; }
+.scrub-label { font-size: 13px; color: var(--ink-2); display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.scrub-label b { color: var(--ink); font-weight: 600; }
+.btn[aria-pressed="true"] { background: var(--accent-tint); border-color: var(--accent); color: var(--escrow-ink); font-weight: 600; }
+/* Trace: a Resume is the engine coming back, not a timer */
+.row.is-resume { background: var(--warn-tint); }
+.row.is-resume .what { color: var(--warn); }
+.row-note { display: block; font-size: 12.5px; color: var(--warn); font-weight: 600; }
+.row-events li.row-bal { color: var(--ink-2); }
+.row-events li.row-bal b { color: var(--ink); font-weight: 600; }
+.delta-inline { font-weight: 600; }
+.delta-inline.up { color: var(--ok); }
+.delta-inline.down { color: var(--bad); }
+.trace-more { padding: 6px 16px; font-size: 12.5px; color: var(--ink-3); border-bottom: 1px solid var(--line); }
+/* Live times are t+ within a run, or the wall clock (HH:MM:SS.mmm) over every batch: a wider time column. */
+.row-head, .log-cols { grid-template-columns: 40px 92px 34px minmax(0, 1fr) auto; }
+/* Events and balances indent under the time column: the 440 px sidebar leaves too little room under the command. */
+.row-events { padding-left: 64px; }
+.row-events li { overflow-wrap: anywhere; }
+@media (max-width: 720px) { .row-events { padding-left: 16px; } }
+/* Runs, perf and drills */
+.two { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.runs-table td, .runs-table th { white-space: nowrap; }
+.runs-table td.detail { white-space: normal; min-width: 180px; }
+.runs-table td.num, .runs-table th.num { text-align: right; }
+.runs-table tr.is-current td { background: color-mix(in srgb, var(--new) 70%, transparent); }
+.runs-empty { padding: 12px 16px; font-size: 13px; color: var(--ink-3); }
+.progress-line { font-size: 13px; color: var(--ink-2); display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.progress-line b { color: var(--ink); }
+.runlog { margin: 0; max-height: 240px; overflow: auto; padding: 8px 16px; border-top: 1px solid var(--line); background: var(--inset); font: 12px/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--ink-2); }
+.runlog .l-warn { color: var(--warn); font-weight: 600; }
+.runlog .l-bad { color: var(--bad); font-weight: 600; }
+.runlog .l-good { color: var(--ok); font-weight: 600; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); gap: 8px; }
+.tile { border: 1px solid var(--line); border-radius: var(--r); padding: 7px 10px; display: grid; gap: 1px; }
+.tile span { font-size: 12.5px; color: var(--ink-3); }
+.tile b { font-size: 17px; font-weight: 600; }
+.histo { width: 100%; height: auto; display: block; }
+.histo .bar { fill: var(--accent); }
+.histo .hit { fill: transparent; cursor: default; }
+.histo .bin:hover .bar { fill: var(--escrow-ink); }
+.histo .base { stroke: var(--line-2); stroke-width: 1; }
+.histo .tick { fill: var(--ink-3); font: 400 12px var(--sans); }
+.histo .mark { stroke: var(--ink-2); stroke-width: 1.5; stroke-dasharray: 3 3; }
+.histo .mark-label { fill: var(--ink-2); font: 600 12px var(--sans); }
+.histo .count { fill: var(--ink-2); font: 600 12px var(--sans); }
+.tip { position: fixed; z-index: 30; pointer-events: none; padding: 5px 9px; border-radius: var(--r); background: var(--ink); color: var(--surface); font-size: 12.5px; white-space: nowrap; }
+.drills { display: grid; gap: 12px; }
+.drill { border: 1px solid var(--line); border-radius: var(--r); padding: 10px 12px; display: grid; gap: 8px; background: var(--inset); }
+.drill h3 { font-size: 14px; }
+.cmd-row { display: flex; gap: 8px; align-items: stretch; }
+.cmd-row code { flex: 1; min-width: 0; padding: 6px 9px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); font: 12.5px/1.5 var(--mono); overflow-wrap: anywhere; user-select: all; }
+.drill ul { margin: 0; padding-left: 18px; display: grid; gap: 2px; font-size: 13px; color: var(--ink-2); }
+.copied { font-size: 12.5px; color: var(--ok); font-weight: 600; }
+@media (max-width: 1100px) { .two { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 720px) { #scenario-pick { min-width: 0; max-width: 100%; } .runs-panel { overflow-x: auto; } }
+</style>
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
-  <symbol id="i-step" viewBox="0 0 16 16"><path d="M4 3l6 5-6 5V3zm8 0h1.5v10H12z" fill="currentColor"/></symbol>
   <symbol id="i-play" viewBox="0 0 16 16"><path d="M4 2.5l9.5 5.5L4 13.5z" fill="currentColor"/></symbol>
-  <symbol id="i-pause" viewBox="0 0 16 16"><path d="M4 2.5h3v11H4zm5 0h3v11H9z" fill="currentColor"/></symbol>
   <symbol id="i-end" viewBox="0 0 16 16"><path d="M2 3l5 5-5 5zm6 0l5 5-5 5z" fill="currentColor"/></symbol>
-  <symbol id="i-reset" viewBox="0 0 16 16"><path d="M8 3a5 5 0 1 1-4.6 3H1.8A6.5 6.5 0 1 0 3.5 3.3V1.5H2v4h4V4H4.5A5 5 0 0 1 8 3z" fill="currentColor"/></symbol>
-  <symbol id="i-hand" viewBox="0 0 16 16"><path d="M6 2.5a1 1 0 0 1 2 0V7h.5V3.5a1 1 0 0 1 2 0V7h.5V5a1 1 0 0 1 2 0v4.5A5 5 0 0 1 8 14.5 4.5 4.5 0 0 1 3.6 11L2.2 7.7a1 1 0 0 1 1.8-.8L5 9V3.5a1 1 0 0 1 1-1z" fill="currentColor"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 16 16"><path d="M3.5 3.5h9v9h-9z" fill="currentColor"/></symbol>
+  <symbol id="i-left" viewBox="0 0 16 16"><path d="M10.5 3L5 8l5.5 5z" fill="currentColor"/></symbol>
+  <symbol id="i-right" viewBox="0 0 16 16"><path d="M5.5 3L11 8l-5.5 5z" fill="currentColor"/></symbol>
+  <symbol id="i-live" viewBox="0 0 16 16"><circle cx="8" cy="8" r="3.2" fill="currentColor"/><path d="M3.3 3.3a6.6 6.6 0 0 0 0 9.4l1-1a5.2 5.2 0 0 1 0-7.4zm9.4 0l-1 1a5.2 5.2 0 0 1 0 7.4l1 1a6.6 6.6 0 0 0 0-9.4z" fill="currentColor"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 16 16"><path d="M5 2h7v9H5zm1.5 1.5v6h4v-6zM3 5h1v7.5h6.5v1H3z" fill="currentColor"/></symbol>
   <symbol id="i-lock" viewBox="0 0 16 16"><path d="M5 7V5a3 3 0 0 1 6 0v2h1v7H4V7zm1.5 0h3V5a1.5 1.5 0 0 0-3 0z" fill="currentColor"/></symbol>
   <symbol id="i-theme" viewBox="0 0 16 16"><path d="M8 1.5a6.5 6.5 0 1 0 0 13zm0 1.5v10a5 5 0 0 0 0-10z" fill="currentColor"/></symbol>
 </svg>
@@ -332,21 +410,27 @@ a.idlink, button.idlink { color: var(--accent); text-decoration: underline; text
   <header class="topbar" id="topbar">
     <div class="brand">
       <strong>RFQ engine console</strong>
-      <span>Demo aid — not part of the engine</span>
+      <span>Demo aid — not part of the engine · live</span>
     </div>
-    <div class="group" role="group" aria-label="Scenario">
-      <label class="sr-only" for="preset">Scenario</label>
-      <select id="preset" class="btn" style="padding-right:8px" disabled><option>Loading the engine…</option></select>
-      <span id="tb-run" style="display:contents"></span>
+    <div class="group runctl" role="group" aria-label="Run scenarios" id="tb-run">
+      <label class="sr-only" for="scenario-pick">Scenario</label>
+      <select id="scenario-pick" class="btn" style="padding-right:8px"></select>
+      <button class="btn btn-primary" type="button" id="run-one" data-action="run-one"><svg aria-hidden="true"><use href="#i-play"/></svg>Run</button>
+      <button class="btn" type="button" id="run-n" data-action="run-n"><svg aria-hidden="true"><use href="#i-end"/></svg>Run ×N</button>
+      <label for="run-n-count"><span aria-hidden="true">N</span> <input class="num-in" id="run-n-count" inputmode="numeric" autocomplete="off" value="20" aria-label="N, the number of runs for Run ×N" aria-describedby="runctl-err"></label>
+      <button class="btn" type="button" id="run-all" data-action="run-all">Run all</button>
+      <label for="run-k"><span aria-hidden="true">at</span> <input class="num-in" id="run-k" inputmode="numeric" autocomplete="off" value="4" aria-label="Runs at a time (concurrency)" aria-describedby="runctl-err"> <span aria-hidden="true">at a time</span></label>
+      <button class="btn btn-danger" type="button" id="run-stop" data-action="stop" disabled><svg aria-hidden="true"><use href="#i-stop"/></svg>Stop</button>
+      <span id="runctl-err" class="field-error" role="alert"></span>
     </div>
-    <div class="group" role="group" aria-label="Clock" id="tb-clock"></div>
     <div class="group" role="group" aria-label="View as" id="tb-view"></div>
-    <div class="health" role="status" aria-label="Engine health" id="tb-health"></div>
+    <div class="health" role="status" aria-label="Gateway and engine status" id="tb-status"></div>
   </header>
 
   <main class="stage" id="main">
-    <div id="errors" hidden></div>
-    <section class="panel scenario" id="scenario" aria-label="Scenario"><p class="muted">Loading the engine…</p></section>
+    <div id="banners"></div>
+    <section class="panel scenario" id="scenario" aria-label="Scenario"><p class="muted">Connecting to the gateway…</p></section>
+    <section class="panel timeline-panel" id="timeline" aria-label="Timeline"></section>
 
     <div class="arena">
       <!-- Requesters: the side that asks -->
@@ -357,7 +441,6 @@ a.idlink, button.idlink { color: var(--accent); text-decoration: underline; text
       <section class="side makers" id="mm-lane" aria-labelledby="mm-h"></section>
     </div>
 
-    <!-- Ledger and deliverable panels: filled by renderLedger and renderPanels -->
     <section class="panel ledger" id="ledger" aria-labelledby="ledger-h">
       <div class="panel-head">
         <h2 id="ledger-h">Ledger</h2>
@@ -368,197 +451,342 @@ a.idlink, button.idlink { color: var(--accent); text-decoration: underline; text
         </div>
       </div>
       <div id="ledger-table"></div>
-      <div class="ledger-foot">
-        <span id="ledger-inv"></span>
-        <span style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-          <!-- One persistent live region: only its text changes, so the result is announced once. -->
-          <span id="replay-result" role="status" aria-live="polite"></span>
-          <button class="btn btn-sm" type="button" id="replay-check" data-action="replay" title="Rebuild the state from the command log in a fresh engine and compare state hashes">Replay check</button>
-        </span>
-      </div>
-      <p id="ledger-note" class="muted" style="font-size:13px;padding:0 16px 10px" hidden>Only your own account is shown. The ledger total is shown to admin.</p>
+      <p id="ledger-note" class="muted" style="font-size:13px;padding:10px 16px"></p>
     </section>
+
+    <section class="panel runs-panel" id="runs" aria-labelledby="runs-h">
+      <div class="panel-head"><h2 id="runs-h">Runs</h2><div class="progress-line" id="run-progress" role="status" aria-live="polite"></div></div>
+      <div id="runs-table"></div>
+      <pre class="runlog" id="runlog" aria-label="Run log"></pre>
+    </section>
+
+    <div class="two">
+      <section class="panel" id="perf" aria-labelledby="perf-h"></section>
+      <section class="panel" id="drills" aria-labelledby="drills-h"></section>
+    </div>
+
     <section class="panel" id="panels" aria-label="Deliverables"></section>
   </main>
 
-  <!-- Admin trace: filled by renderTrace and renderInspector -->
+  <!-- Trace: one row per batch, filled by renderTrace and renderInspector -->
   <aside class="trace" aria-labelledby="trace-h">
     <div id="trace" style="display:contents">
       <div class="trace-head" id="trace-head"></div>
-      <div class="log" id="log" role="log" aria-label="Command log"></div>
+      <div class="log" id="log" role="log" aria-label="Batch log"></div>
     </div>
     <div class="inspector" id="inspector" aria-labelledby="insp-h"></div>
   </aside>
 </div>
+<div class="tip" id="tip" hidden></div>
 
-<script>/*__RUNTIME_JS__*/</script>
+<script>/*__RECORDER_JS__*/</script>
+<script>/*__GATEWAY_JS__*/</script>
+<script>/*__SCENARIOS_JS__*/</script>
+<script>/*__MODEL_JS__*/</script>
 <script>
-const WASM_BASE64 = "__WASM_BASE64__";
-const T0 = 1000; // presets::T0; times are shown as t+ from here
-const ACCOUNTS = { OPERATOR: 1, ARBITER: 2, TREASURY: 3, ORACLE: 4, ALICE: 10, MM1: 20, MM2: 21, CAROL: 30 };
-let engine, state = null, prev = null, presets = [], selected = null, playing = null;
+// Live mode (DESIGN §11): the page drives the real stack and shows what comes back.
+//   page -> WebSocket -> rfq-gateway -> Aeron -> rfq-node -> Aeron -> rfq-gateway -> WebSocket -> page
+// Every panel renders RfqModel.modelAt(recording, position): the recorded gateway frames, at the
+// scrubber's position. The page never computes money (amounts are `balances` values or event fields;
+// a delta is a display diff of two of them) and never fires a timer (the engine does).
 
-function send(request) {
-  const out = engine.call(request);
-  if (out.error) { showError(out.error); return null; }
-  if (out.snapshot) { prev = state; state = out; }
-  render();
-  return out;
+const DEFAULT_GATEWAY = "ws://127.0.0.1:18080";
+const PER_RUN = RfqRecorder.ACCOUNTS_PER_RUN;
+/** The node's genesis roles, shared by every run. */
+const GENESIS = { 1: "Operator", 2: "Arbiter", 3: "Treasury" };
+/** Scenario accounts (`id % 100` of a run's account): display name and role. */
+const SCENARIO_ACCOUNT = { 4: ["Oracle", "system"], 10: ["Alice", "requester"], 30: ["Carol", "requester"], 20: ["MM1", "market_maker"], 21: ["MM2", "market_maker"] };
+/** View as: key, label, scenario account. */
+const VIEWS = [["admin", "Admin", null], ["alice", "Alice", 10], ["carol", "Carol", 30], ["mm1", "MM1", 20], ["mm2", "MM2", 21]];
+const VIEW_ACCOUNT = Object.fromEntries(VIEWS.filter(([, , id]) => id != null).map(([k, , id]) => [k, id]));
+const viewLabel = (key) => VIEWS.find(([k]) => k === key)?.[1] ?? key;
+const TRACE_ROWS = 400;
+const RENDER_EVERY_MS = 120;
+const MAX_N = 500;
+const MAX_K = 16;
+
+function gatewayUrl() {
+  const q = new URLSearchParams(location.search).get("gateway");
+  if (q == null) return { url: DEFAULT_GATEWAY };
+  if (!/^wss?:\/\/\S+$/i.test(q)) return { url: DEFAULT_GATEWAY, error: `Ignored ?gateway=${q}: it must be a ws:// or wss:// URL. Using ${DEFAULT_GATEWAY}.` };
+  return { url: q };
+}
+const { url: GATEWAY, error: URL_ERROR } = gatewayUrl();
+
+// ---- The connection, the driver, the views --------------------------------------------------------
+
+const gw = RfqGateway.connect(GATEWAY);
+const page = {
+  conn: "disconnected", // connected | reconnecting | disconnected
+  everUp: false,
+  lastSeq: null,
+  lastBatch: null, // { time, t }: the newest batch's engine time and when it came, for the clock
+  runs: [], // every run's result (the driver's), in start order
+  runsById: new Map(),
+  runsByT0: new Map(),
+  set: null, // the run set in progress: { label, kind, total, k, started, runs, stopping, hidden }
+  lastSet: null,
+  errors: URL_ERROR ? [URL_ERROR] : [],
+  view: "admin", // or a VIEWS key
+  viewConn: null,
+  viewOff: null,
+  viewTarget: null, // the account the view connection's hello names
+  viewRun: null, // the run that account belongs to
+  viewRecs: new Map(), // view key -> recorder of what the gateway sent that view
+  viewAccounts: new Map(), // account -> view key, for every hello sent
+};
+const driver = RfqScenarios.createDriver(gw, {
+  onRunStart(run) {
+    run.epoch = driver.recorder.epoch;
+    page.runs.push(run);
+    page.runsById.set(run.id, run);
+    page.runsByT0.set(run.t0, run);
+    page.set?.runs.push(run);
+    if (page.view !== "admin") aimView(run);
+    schedule();
+  },
+  onRunEnd: () => schedule(),
+  onLog: () => schedule(),
+  onStep: () => schedule(),
+});
+const rec = driver.recorder;
+
+gw.on("conn", (c) => {
+  page.conn = c.up ? "connected" : "reconnecting";
+  if (c.up) page.everUp = true;
+  schedule();
+});
+gw.on("status", (f) => {
+  if (f.last_seq != null) page.lastSeq = f.last_seq;
+  schedule();
+});
+gw.on("batch", (f) => {
+  page.lastSeq = f.seq;
+  page.lastBatch = { time: f.time, t: performance.now() };
+  schedule();
+});
+gw.on("welcome", () => schedule());
+
+/** Switches what the panels show: the driver's own (admin) recording, or a second connection's. */
+function setView(key) {
+  if (key === page.view) return;
+  page.view = key;
+  selected = null;
+  if (key === "admin") {
+    closeViewConn();
+  } else {
+    if (!page.viewRecs.has(key)) page.viewRecs.set(key, RfqRecorder.createRecorder());
+    const newest = page.runs.at(-1);
+    page.viewTarget = null;
+    page.viewRun = null;
+    if (newest) aimView(newest);
+  }
+  schedule();
 }
 
+/**
+ * Points the view connection at the current view's account in `run` (each run has its own accounts):
+ * a `hello` with that account. The second connection is opened on first use. What it receives from
+ * then on is recorded under the view; earlier frames stay as they were recorded.
+ */
+function aimView(run) {
+  const account = run.t0 * PER_RUN + VIEW_ACCOUNT[page.view];
+  page.viewTarget = account;
+  page.viewRun = run.id;
+  page.viewAccounts.set(account, page.view);
+  if (!page.viewConn) {
+    const conn = RfqGateway.connect(GATEWAY, { view: { account } });
+    page.viewConn = conn;
+    page.viewOff = RfqRecorder.attachViews(conn, (v) => (v === "admin" ? null : page.viewRecs.get(page.viewAccounts.get(v.account)) ?? null));
+    conn.on("*", () => schedule());
+    conn.on("conn", () => schedule());
+  } else if (page.viewConn.connected) {
+    page.viewConn.hello({ account }).catch((e) => addError(`View as ${viewLabel(page.view)}: ${e.message}`));
+  }
+  // Not connected: the connection's own reconnect sends the last view; set it for the next hello.
+  else page.viewConn.hello({ account }).catch(() => {});
+}
+
+function closeViewConn() {
+  page.viewOff?.();
+  page.viewConn?.close();
+  page.viewConn = null;
+  page.viewOff = null;
+  page.viewTarget = null;
+  page.viewRun = null;
+}
+
+/** Display names: the run-scoped account ids with their scenario names. In an account view, only the viewer's own. */
+function accountInfo(id) {
+  if (GENESIS[id]) return { name: GENESIS[id], role: "system" };
+  const run = page.runsByT0.get(Math.floor(id / PER_RUN));
+  const who = SCENARIO_ACCOUNT[id % PER_RUN];
+  if (!run || !who) return undefined;
+  if (page.view !== "admin" && id % PER_RUN !== VIEW_ACCOUNT[page.view]) return undefined;
+  return { name: `${who[0]} (run …${String(run.t0).slice(-4)})`, role: who[1] };
+}
+const name = (id) => (id == null ? "?" : accountInfo(id)?.name ?? `#${id}`);
+
+// ---- What the panels show: the recording, the position, the model ---------------------------------
+
+/** Page-only state: never engine data. */
+const ui = {
+  sel: "follow", // "follow" (the newest run), "all", or a run id
+  pos: null, // null: live (the newest batch); a number: pinned
+  rows: new Map(), // trace row key -> expanded
+  filter: "all",
+  logPinned: true,
+  tab: "d1",
+  copied: null,
+  lastRunKey: null,
+};
+let selected = null; // { kind, id } the presenter clicked; D1 lights it (else the run's own objects)
+let V = null; // this render's { r, run, n, pos, M, T0 }
+
+function selectedRun() {
+  if (ui.sel === "all") return null;
+  if (ui.sel === "follow") return page.runs.at(-1) ?? null;
+  return page.runsById.get(ui.sel) ?? null;
+}
+
+/**
+ * The part of a batch that belongs to `run`: its own events (the verdict's), its commands' rejections
+ * (a retry's Duplicate too: shown, never counted), and the balances of its accounts. A batch can carry
+ * other runs' events: timers of concurrent runs fire in the same apply. A Resume that came while the
+ * run was going is kept too (with only the run's part of it).
+ */
+function runFilter(run) {
+  const own = new Set(run.own.map((o) => `${o.seq}|${JSON.stringify(o.event)}`));
+  const origins = new Set(run.commands.map((c) => `${c.actor}:${c.nonce}`));
+  const seqs = new Set(run.batches);
+  const lo = run.t0 * PER_RUN;
+  const mine = (a) => (a >= lo && a < lo + PER_RUN) || GENESIS[a] != null;
+  // A Resume (the engine restarted or stalled) is everyone's: it belongs to the runs active when it came.
+  const during = (b) => b.kind === "Resume" && b.firstAt >= run.startedAt && (!run.done || b.firstAt <= run.startedAt + run.wall_ms);
+  return (b) => {
+    if (!seqs.has(b.seq) && !during(b)) return null;
+    const fromRun = b.origin != null && origins.has(`${b.origin.actor}:${b.origin.nonce}`);
+    const events = b.events.filter((e) => own.has(`${b.seq}|${JSON.stringify(e.event)}`) || (fromRun && RfqRecorder.eventName(e) === "CommandRejected"));
+    return { ...b, events, balances: (b.balances ?? []).filter((x) => mine(x.account)) };
+  };
+}
+
+function recordingNow() {
+  const run = selectedRun();
+  const admin = page.view === "admin";
+  const source = admin ? rec.allBatches() : page.viewRecs.get(page.view)?.allBatches() ?? [];
+  let batches = source;
+  if (run) {
+    const f = runFilter(run);
+    batches = source.filter((b) => !admin || b.epoch === run.epoch).map(f).filter(Boolean);
+  }
+  return { batches, commandAt: driver.commandAt, viewer: admin ? "admin" : { account: page.viewTarget }, accountInfo, run };
+}
+
+function computeView() {
+  const r = recordingNow();
+  const n = r.batches.length;
+  const pos = ui.pos == null ? n - 1 : Math.max(0, Math.min(ui.pos, n - 1));
+  const M = RfqModel.modelAt(r, n ? pos : -1);
+  return { r, run: r.run, n, pos: n ? pos : -1, M, T0: r.run?.t0 ?? null };
+}
+
+// ---- Formatting (display only) --------------------------------------------------------------------
+
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const fmtUsd = (micro) => {
   const v = Math.abs(micro), sign = micro < 0 ? "−" : "";
   const dollars = Math.floor(v / 1e6), cents = Math.floor((v % 1e6) / 1e4);
   return `${sign}$${dollars.toLocaleString("en-US")}.${String(cents).padStart(2, "0")}${v % 1e4 ? "+" : ""}`;
 };
 const fmtPrice = (bps) => (bps / 10000).toFixed(4).replace(/0{1,2}$/, ""); // 6000 → "0.60"
-const fmtT = (ms) => `t+${((ms - T0) / 1000).toFixed(3)} s`;
-const DISPLAY_NAMES = { 1: "Operator", 2: "Arbiter", 3: "Treasury", 4: "Oracle", 10: "Alice", 20: "MM1", 21: "MM2", 30: "Carol" };
-const name = (id) => state?.snapshot.accounts.find((a) => a.id === id)?.name ?? DISPLAY_NAMES[id] ?? `#${id}`;
-const variant = (v) => (typeof v === "string" ? v : Object.keys(v)[0]); // serde enum → its variant name
-
-(async () => {
-  const bytes = Uint8Array.from(atob(WASM_BASE64), (c) => c.charCodeAt(0));
-  engine = await createEngine(bytes);
-  presets = engine.call({ op: "presets" }).presets;
-  send({ op: "reset", mode: "sandbox" });
-})().catch((e) => showError(`The engine failed to start: ${e}`));
-
-// ---------------------------------------------------------------------------------------------
-// Everything below only formats what the engine returned and turns clicks into engine requests.
-// It never computes money or fires a timer: amounts and prices are the engine's integers.
-
-const root = document.documentElement;
-const app = document.getElementById("app");
-const PLAY_MS = 700;
-const TOAST_MS = 4000;
-const LIVE_QUOTE = ["Active", "Selected"];
-const LIVE_REQUEST = ["Open", "Presented"];
-const VIEWS = [["Admin", "admin"], ["Alice", ACCOUNTS.ALICE], ["Carol", ACCOUNTS.CAROL], ["MM1", ACCOUNTS.MM1], ["MM2", ACCOUNTS.MM2]];
-const MSG = {
-  price: "Enter a price between 0.01 and 99.99.",
-  shares: "Enter a whole number of shares.",
-  seconds: "Enter a number of seconds above 0.",
+const pad = (n, w = 2) => String(n).padStart(w, "0");
+/** An engine timestamp as the local wall clock (engine time is the sequencer's wall-clock ms). */
+const clockOf = (ms) => {
+  const d = new Date(ms);
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
 };
-// Badges encode meaning, never sequence, and always carry their text (DESIGN §10).
+/** Engine time relative to the selected run's t0 (its contract id), or the wall clock with no run. */
+const fmtT = (ms) => (ms == null ? "—" : V?.T0 != null ? `t+${((ms - V.T0) / 1000).toFixed(3)} s` : clockOf(ms));
+const qty = (n) => (n == null ? "?" : n.toLocaleString("en-US"));
+const sideName = (s) => (s === "BuyYes" ? "YES" : s === "BuyNo" ? "NO" : "?");
+const outcomeName = (o) => String(o).toUpperCase();
+const secs = (ms) => `${(ms / 1000).toFixed(3)} s`;
+const ms = (us) => (us == null ? "—" : (us / 1000).toFixed(2));
+const variant = RfqModel.variant;
+const icon = (id) => `<svg aria-hidden="true"><use href="#i-${id}"/></svg>`;
+const sealedMark = (text) => `<span class="sealed">${icon("lock")}${esc(text)}</span>`;
 const BADGE = {
   Open: "b-live", Active: "b-live", Presented: "b-live", Trading: "b-live", Closed: "b-live", Proposed: "b-live",
   Selected: "b-warn", Disputed: "b-warn",
-  Filled: "b-good", Final: "b-good",
-  Lost: "b-gone", Released: "b-gone", Expired: "b-gone", Cancelled: "b-gone", Replaced: "b-gone",
-  Rejected: "b-bad",
+  Filled: "b-good", Final: "b-good", PASS: "b-good",
+  Lost: "b-gone", Released: "b-gone", Expired: "b-gone", Cancelled: "b-gone", Replaced: "b-gone", STOPPED: "b-gone",
+  Rejected: "b-bad", FAIL: "b-bad",
 };
-
-// Page-only state: open forms, typed drafts, inline errors and rejection toasts. Never engine data.
-const ui = {
-  open: new Set(), drafts: new Map(), errors: new Map(),
-  rows: new Map(),     // trace seq → expanded (true) or collapsed (false), when the presenter chose
-  filter: "all",       // trace filter chip
-  logPinned: true,     // the log follows new rows until the presenter scrolls up
-  tab: "d1",           // deliverables tab
-  replay: null,        // the last replay check, shown until the next command
-  ledgerBase: null,    // balances before the last response that ran commands, for the ledger's deltas
-};
-const toasts = new Map(); // card key → { texts, timer }
-let rendered = null;      // the response the last render collected toasts from
-
-// ---- Formatting helpers --------------------------------------------------------------------
-
-const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
-const qty = (n) => n.toLocaleString("en-US");
-const sideName = (s) => (s === "BuyYes" ? "YES" : "NO");
-const outcomeName = (o) => String(o).toUpperCase();
-const secs = (ms) => `${(ms / 1000).toFixed(3)} s`;
-const clockText = (ms) => (ms < T0 ? "start" : fmtT(ms));
-const due = (ts) => (ts > state.snapshot.now ? `in ${secs(ts - state.snapshot.now)}` : "now");
-const isAdmin = () => state.viewer === "admin";
-const viewerId = () => (state.viewer === "admin" ? null : state.viewer.account);
-const icon = (id) => `<svg aria-hidden="true"><use href="#i-${id}"/></svg>`;
-const sealedMark = (text) => `<span class="sealed">${icon("lock")}${esc(text)}</span>`;
 const badge = (text, cls) => `<span class="badge ${cls ?? BADGE[text] ?? "b-gone"}">${esc(text)}</span>`;
 const byIdDesc = (a, b) => b.id - a.id;
 const disabledIf = (off, why) => (off ? ` disabled${why ? ` title="${esc(why)}"` : ""}` : "");
+const isAdmin = () => page.view === "admin";
+const verdictOf = (run) => (!run.done ? "running" : run.stopped ? "STOPPED" : run.pass ? "PASS" : "FAIL");
+const runTag = (run) => `${run.id} · …${String(run.t0).slice(-4)}`;
 
-/** An id that selects its object for the inspector. `where` keeps the focus key unique per card. */
+/** An id that selects its object for the inspector and D1. `where` keeps the focus key unique. */
 const idlink = (kind, id, text, where) =>
   `<button class="idlink" type="button" data-action="select" data-kind="${kind}" data-id="${id}" data-key="sel-${where}-${kind}-${id}">${esc(text)}</button>`;
 
+// ---- Render ---------------------------------------------------------------------------------------
+
+const root = document.documentElement;
+const app = document.getElementById("app");
+let dirty = true;
+let lastRender = 0;
+let timer = null;
+
 /**
- * The new rows: seqs this response appended that the current viewer can see in its trace.
- * `new_seqs` may name seqs hidden from the viewer; those are ignored. Empty after a reset.
+ * Coalesces renders: frames can come in bursts, and the driver's timers share this thread. A timer, not
+ * requestAnimationFrame: a tab that paints no frames (hidden, or a background pane) must still keep its
+ * DOM current, controls included.
  */
-function newSeqs() {
-  const fresh = new Set(state.new_seqs);
-  return new Set(state.trace.filter((e) => fresh.has(e.seq)).map((e) => e.seq));
+function schedule() {
+  dirty = true;
+  if (timer) return;
+  const wait = Math.max(0, RENDER_EVERY_MS - (performance.now() - lastRender));
+  timer = setTimeout(() => {
+    timer = null;
+    if (dirty) render();
+  }, wait);
 }
-
-/** The last nonce the engine consumed for an account: Duplicate and NonceGap consume nothing. */
-function lastNonce(id) {
-  let n = 0;
-  for (const e of state.trace) {
-    if (e.actor !== id || e.nonce == null) continue;
-    const unconsumed = e.events.some((ev) => ["Duplicate", "NonceGap"].includes(ev.event?.CommandRejected?.reason));
-    if (!unconsumed && e.nonce > n) n = e.nonce;
-  }
-  return n;
-}
-
-/** The dispute bond from this run's Genesis config, when the trace carries it. */
-function disputeBond() {
-  const g = state.trace.find((e) => e.kind === "genesis")?.command?.Genesis;
-  return g?.config?.dispute_bond ?? null;
-}
-
-/** Every visible event of one variant, with the trace entry it came in. */
-function eventsNamed(variantName) {
-  const out = [];
-  for (const e of state.trace) for (const ev of e.events) if (variant(ev.event) === variantName) out.push({ entry: e, data: ev.event[variantName] });
-  return out;
-}
-
-// ---- Render ----------------------------------------------------------------------------------
 
 function render() {
-  if (!state) return;
-  const focus = rememberFocus();
-  if (rendered !== state) {
-    rendered = state;
-    clearError();
-    collectToasts();
-    trackResponse();
+  dirty = false;
+  lastRender = performance.now();
+  V = computeView();
+  // A new run in view: the presenter's pick of an object belonged to the old one.
+  const runKey = V.run?.id ?? "all";
+  if (runKey !== ui.lastRunKey) {
+    ui.lastRunKey = runKey;
+    selected = null;
+    ui.rows.clear();
   }
-  root.dataset.view = isAdmin() ? "admin" : (VIEWS.find(([, v]) => v === viewerId())?.[0] ?? "account").toLowerCase();
+  const focus = rememberFocus();
+  root.dataset.view = page.view;
   renderTopBar();
+  renderBanners();
+  renderScenario();
+  renderTimeline();
   renderUsers();
   renderContract();
   renderMarketMakers();
-  renderTrace();
   renderLedger();
+  renderRuns();
+  renderPerf();
+  renderDrills();
+  renderTrace();
   renderInspector();
   renderPanels();
   followLog();
   restoreFocus(focus);
-}
-
-function select(kind, id) {
-  selected = { kind, id };
-  render();
-}
-
-/**
- * Once per engine response. The ledger's delta baseline is the snapshot before the last response
- * that ran commands (one step, or a whole Run to end), taken for the same viewer. A replay check
- * runs none and keeps the deltas; a view switch or a reset drops them. A replay check's result
- * stays until the next command.
- */
-function trackResponse() {
-  const s = state.snapshot, p = prev?.snapshot;
-  // A baseline from another viewer's snapshot would give a partial set of deltas: drop it.
-  const sameViewer = JSON.stringify(prev?.viewer) === JSON.stringify(state.viewer);
-  if (!p || prev.mode !== state.mode || !sameViewer || s.seq < p.seq) ui.ledgerBase = null;
-  else if (s.seq > p.seq) ui.ledgerBase = { seq: p.seq, total: p.total, balances: new Map(p.accounts.map((a) => [a.id, a.balance])) };
-  if (state.replay) ui.replay = { ...state.replay, seq: s.seq, mode: state.mode };
-  else if (ui.replay && (ui.replay.seq !== s.seq || ui.replay.mode !== state.mode)) ui.replay = null;
+  updateTitle();
 }
 
 /** Containers are rebuilt with innerHTML, so keep keyboard focus (and the caret) on the same control. */
@@ -579,65 +807,101 @@ function restoreFocus(f) {
   if (f.range && el.setSelectionRange) try { el.setSelectionRange(...f.range); } catch { /* not a text field */ }
 }
 
-// ---- Top bar and scenario strip --------------------------------------------------------------
-
-function renderTopBar() {
-  const s = state.snapshot, p = state.preset;
-  const picker = document.getElementById("preset");
-  if (picker.dataset.ready !== "1" && presets.length) {
-    const group = (label, kind, text) => `<optgroup label="${label}">${presets.filter((x) => x.kind === kind)
-      .map((x) => `<option value="${esc(x.name)}">${esc(text(x))}</option>`).join("")}</optgroup>`;
-    picker.innerHTML = group("Sandbox", "sandbox", () => "Sandbox: drive it by hand")
-      + group("Brief scenarios", "brief", (x) => x.name) + group("Attacks", "attack", (x) => x.name);
-    picker.dataset.ready = "1";
-    picker.disabled = false;
-  }
-  picker.value = state.mode;
-
-  const why = !p ? "Pick a scenario to step through it"
-    : p.taken_over ? "Taken over: reset to replay the script"
-    : p.finished ? "The script has finished: reset to run it again" : "";
-  document.getElementById("tb-run").innerHTML = `
-    <button class="btn btn-primary" type="button" id="tb-step" data-action="step"${disabledIf(why, why)}>${icon("step")}Step</button>
-    <button class="btn" type="button" id="tb-play" data-action="play"${disabledIf(why && !playing, why)}>${playing ? `${icon("pause")}Pause` : `${icon("play")}Play`}</button>
-    <button class="btn" type="button" id="tb-end" data-action="run-all"${disabledIf(why, why)}>${icon("end")}Run to end</button>
-    <button class="btn btn-quiet" type="button" id="tb-reset" data-action="reset">${icon("reset")}Reset</button>
-    <button class="btn btn-quiet" type="button" id="tb-takeover" data-action="take-over"${disabledIf(why, why)}>${icon("hand")}Take over</button>`;
-
-  const nextWhy = !isAdmin() ? "Switch to Admin to jump to the next timer"
-    : s.next_timer == null ? "No timer is pending" : "";
-  document.getElementById("tb-clock").innerHTML = `
-    <span class="clock num" title="Engine time. It moves only when a command is stamped.">${clockText(s.now)}</span>
-    <button class="btn btn-sm" type="button" id="tb-100ms" data-action="advance" data-ms="100">+100 ms</button>
-    <button class="btn btn-sm" type="button" id="tb-1s" data-action="advance" data-ms="1000">+1 s</button>
-    <button class="btn btn-sm" type="button" id="tb-next" data-action="next-timer"${nextWhy ? disabledIf(true, nextWhy) : ` title="Fire the next timer, at ${fmtT(s.next_timer)}"`}>Next timer</button>`;
-
-  const me = viewerId();
-  document.getElementById("tb-view").innerHTML = `<span class="group-label" id="viewas-label">View as</span>
-    <div class="seg-ctl" id="viewas" role="group" aria-labelledby="viewas-label">${VIEWS.map(([label, v]) =>
-      `<button type="button" id="view-${label}" data-action="view" data-viewer="${v}" aria-pressed="${v === "admin" ? me === null : me === v}">${label}</button>`).join("")}</div>`;
-
-  const inv = s.invariants.ok
-    ? badge("I1–I5 hold", "b-good")
-    : `<span class="badge b-bad" title="${esc(s.invariants.error ?? "")}">I1–I5 BROKEN<span class="sr-only">: ${esc(s.invariants.error ?? "")}</span></span>`;
-  document.getElementById("tb-health").innerHTML = `<dl>
-      <div><dt>seq</dt><dd class="num">${s.seq}</dd></div>
-      <div><dt>state hash</dt><dd class="mono" title="${esc(s.state_hash)}">${esc(s.state_hash.slice(0, 8))}</dd></div>
-    </dl>${inv}
-    <button class="btn btn-quiet btn-sm" type="button" id="theme" data-action="theme">${icon("theme")}Theme</button>`;
-
-  renderScenario();
+/** Sets innerHTML only when it changed, so focus, selection and hover survive a re-render. */
+function setHtml(el, html) {
+  if (el.patched === html) return;
+  el.innerHTML = html;
+  el.patched = html;
 }
 
-/**
- * Which expected events this viewer has seen, matched in order like the runner's verdict. One the
- * viewer can't see (or that hasn't happened) stays unlit without hiding the ones after it.
- */
-function seenExpect(expect) {
-  const names = state.trace.flatMap((e) => e.events.map((ev) => {
+// ---- Top bar: run controls, view as, status --------------------------------------------------------
+
+function renderTopBar() {
+  const picker = document.getElementById("scenario-pick");
+  if (picker.dataset.ready !== "1") {
+    const group = (label, kind) => `<optgroup label="${label}">${RfqScenarios.scenarios.filter((s) => s.kind === kind)
+      .map((s) => `<option value="${esc(s.name)}">${esc(s.name)}</option>`).join("")}</optgroup>`;
+    picker.innerHTML = group("Brief scenarios", "brief") + group("Attacks", "attack");
+    picker.dataset.ready = "1";
+  }
+  const busy = page.set != null;
+  const why = busy ? "A run is in progress: Stop it, or wait for it to finish" : page.conn !== "connected" ? "Not connected to the gateway" : "";
+  for (const id of ["run-one", "run-n", "run-all"]) {
+    const b = document.getElementById(id);
+    b.disabled = Boolean(why);
+    b.title = why;
+  }
+  picker.disabled = busy;
+  const stop = document.getElementById("run-stop");
+  stop.disabled = !busy || page.set.stopping;
+
+  setHtml(document.getElementById("tb-view"), `<span class="group-label" id="viewas-label">View as</span>
+    <div class="seg-ctl" id="viewas" role="group" aria-labelledby="viewas-label">${VIEWS.map(([key, label]) =>
+      `<button type="button" id="view-${key}" data-action="view" data-view="${key}" aria-pressed="${page.view === key}">${label}</button>`).join("")}</div>`);
+
+  const conn = page.conn === "connected" ? badge("Connected", "b-good")
+    : page.conn === "reconnecting" ? badge("Reconnecting", "b-warn")
+    : badge("Disconnected", "b-bad");
+  const engine = page.conn !== "connected" || gw.engine == null ? badge("engine ?", "b-gone")
+    : gw.engine === "up" ? badge("engine up", "b-good") : badge("engine down", "b-bad");
+  setHtml(document.getElementById("tb-status"), `<span class="conn" title="${esc(GATEWAY)}">${conn}${engine}</span>
+    <dl>
+      <div><dt>last seq</dt><dd class="num" id="tb-seq">${page.lastSeq ?? "—"}</dd></div>
+      <div><dt>engine clock</dt><dd class="num clock" id="tb-clock" title="The last batch's engine time, ticking here between batches (display only)">—</dd></div>
+    </dl>
+    <button class="btn btn-quiet btn-sm" type="button" id="theme" data-action="theme">${icon("theme")}Theme</button>`);
+  tickClock();
+}
+
+/** The engine clock: the last batch's time, ticking locally between batches. Display only. */
+function tickClock() {
+  const el = document.getElementById("tb-clock");
+  if (!el) return;
+  const b = page.lastBatch;
+  const text = b ? clockOf(b.time + (performance.now() - b.t)).slice(0, -2) : "—";
+  if (el.textContent !== text) el.textContent = text;
+}
+setInterval(tickClock, 100);
+
+// ---- Banners: errors, the view-as note, a hidden tab during a run -------------------------------
+
+function addError(msg) {
+  page.errors.push(msg);
+  schedule();
+}
+
+function renderBanners() {
+  const out = [];
+  if (page.conn !== "connected") {
+    out.push(`<div class="banner banner-warn" role="status"><span><b>${page.everUp ? "Reconnecting" : "Disconnected"}</b>: no connection to the gateway at ${esc(GATEWAY)}. ${page.everUp ? "Retrying." : "Is the stack up? <code class=\"mono\">docker compose up -d aeron engine gateway</code>. Retrying."}</span></div>`);
+  }
+  if (page.set && (document.hidden || page.set.hidden)) {
+    out.push(`<div class="banner banner-warn" role="alert"><span><b>Keep this tab in front during a run.</b> It was in the background while runs were going: browsers slow a hidden tab's timers, so steps go out late and a run can fail on timing.</span></div>`);
+  }
+  if (!isAdmin()) {
+    const label = viewLabel(page.view);
+    const run = page.runsById.get(page.viewRun);
+    out.push(run
+      ? `<div class="banner banner-info" role="status"><span><b>From now on you see what the gateway sends ${esc(label)} (run …${esc(String(run.t0).slice(-4))}, account ${esc(page.viewTarget)}).</b> A second connection asked for this view; earlier frames stay as they were recorded. Each new run moves it to that run's ${esc(label)}.</span><button class="btn btn-sm" type="button" data-action="view" data-view="admin">Back to Admin</button></div>`
+      : `<div class="banner banner-info" role="status"><span><b>View as ${esc(label)} starts with the next run.</b> Each run has its own accounts, so the view connection says hello as that run's ${esc(label)} when it starts. From then on you see what the gateway sends ${esc(label)}.</span></div>`);
+  }
+  page.errors.forEach((e, i) => out.push(`<div class="banner banner-bad" role="alert"><span>${esc(e)}</span><button class="btn btn-quiet btn-sm" type="button" data-action="dismiss-error" data-index="${i}" data-key="dismiss-${i}">Dismiss</button></div>`));
+  setHtml(document.getElementById("banners"), out.join(""));
+}
+
+function updateTitle() {
+  const t = page.set && document.hidden ? "Run in progress: keep this tab in front · RFQ Engine Console" : "RFQ Engine Console";
+  if (document.title !== t) document.title = t;
+}
+
+// ---- Scenario strip ------------------------------------------------------------------------------
+
+/** Which expected events have happened by the position, matched in order like the verdict. */
+function seenExpect(expect, events) {
+  const names = events.map((ev) => {
     const v = variant(ev.event);
     return v === "CommandRejected" ? [v, `${v}(${ev.event.CommandRejected.reason})`] : [v];
-  }));
+  });
   let from = 0;
   return expect.map((want) => {
     const at = names.findIndex((n, k) => k >= from && n.includes(want));
@@ -649,55 +913,110 @@ function seenExpect(expect) {
 
 function renderScenario() {
   const el = document.getElementById("scenario");
-  const p = state.preset;
-  if (!p) {
-    const sandbox = presets.find((x) => x.kind === "sandbox");
-    el.innerHTML = `<div>
-        <div class="scenario-title"><h2>Sandbox</h2>${badge("Sandbox", "b-live")}</div>
-        <p>${esc(sandbox?.summary ?? "")}</p>
-      </div>
-      <div class="progress"><div>No script</div><div>Every command here is yours.</div></div>`;
-    return;
-  }
-  const v = p.finished ? p.verdict : null;
+  const run = V.run;
+  const name = run?.name ?? document.getElementById("scenario-pick").value;
+  const s = RfqScenarios.byName(name);
+  if (!s) return setHtml(el, '<p class="muted">Pick a scenario.</p>');
+  const v = run ? verdictOf(run) : null;
   const title = [
-    `<h2>${esc(p.name)}</h2>`,
-    badge(p.kind === "attack" ? "Attack" : "Brief scenario", "b-live"),
-    p.taken_over ? badge("Taken over", "b-warn") : "",
-    v ? badge(v.pass ? "PASS" : "FAIL", v.pass ? "b-good" : "b-bad") : "",
+    `<h2>${esc(s.name)}</h2>`,
+    badge(s.kind === "attack" ? "Attack" : "Brief scenario", "b-live"),
+    run ? `<span class="muted" style="font-size:13px">${esc(runTag(run))}</span>` : "",
+    v === "running" ? badge("Running", "b-live") : v ? badge(v) : "",
   ].join("");
-  const progress = p.taken_over
-    ? `<div>Script stopped after step <strong>${p.step}</strong> of ${p.steps}</div><div>You're driving by hand. Reset to replay the script.</div>`
-    : p.finished
-      ? `<div>Finished: step <strong>${p.step}</strong> of ${p.steps}</div><div>${v && !v.pass ? esc(v.detail ?? "An expected event is missing.") : "Every expected event happened in order."}</div>`
-      : `<div>Step <strong>${p.step}</strong> of ${p.steps}</div><div>Next: <strong>${esc(p.next ?? "")}</strong></div>`;
-  const seen = seenExpect(p.expect);
-  const chips = p.expect.map((x, i) => `<span class="chip${seen[i] ? " seen" : ""}">${esc(x)}${seen[i] ? '<span class="sr-only"> (seen)</span>' : ""}</span>`).join("");
-  el.innerHTML = `<div>
+  let progress;
+  if (!run) progress = "<div>Not run yet</div><div>Press <strong>Run</strong>: the page acts as every participant through the gateway.</div>";
+  else if (!run.done) progress = `<div>Step <strong>${run.step}</strong> of ${run.steps}</div><div>${run.commands.length} command${run.commands.length === 1 ? "" : "s"} answered</div>`;
+  else progress = `<div>${v === "PASS" ? "Every expected event happened in order." : esc(run.detail ?? "")}</div><div>${run.commands.length} commands · ${(run.wall_ms / 1000).toFixed(1)} s</div>`;
+  // The admin view lights the chips from the run's own events (the verdict's input) up to the position;
+  // an account view from what that view received.
+  const events = !run ? [] : isAdmin()
+    ? run.own.filter((o) => V.M.trace.some((e) => e.seq === o.seq))
+    : V.M.trace.flatMap((e) => e.events);
+  const seen = seenExpect(s.expect, events);
+  const chips = s.expect.map((x, i) => `<span class="chip${seen[i] ? " seen" : ""}">${esc(x)}${seen[i] ? '<span class="sr-only"> (seen)</span>' : ""}</span>`).join("");
+  setHtml(el, `<div>
       <div class="scenario-title">${title}</div>
-      ${isAdmin() ? `<p>${esc(p.summary)}</p>` : '<p class="muted">Script narration is shown in the Admin view.</p>'}
+      ${isAdmin() ? `<p>${esc(s.summary)}</p>` : '<p class="muted">The script\'s narration names sealed prices and limits, so it is shown in the Admin view.</p>'}
     </div>
     <div class="progress">${progress}</div>
-    <div class="expect" role="group" aria-label="Expected events, in order">${chips}</div>`;
+    <div class="expect" role="group" aria-label="Expected events, in order${isAdmin() ? "" : ", as this view saw them"}">${chips}</div>`);
 }
 
-// ---- Shared card parts -----------------------------------------------------------------------
+// ---- Timeline: the scrubber -----------------------------------------------------------------------
+
+function renderTimeline() {
+  const el = document.getElementById("timeline");
+  // Built once and updated in place: a scrubber rebuilt under the pointer would drop the drag.
+  if (el.dataset.built !== "1") {
+    el.innerHTML = `<div class="scrub">
+        <label class="sr-only" for="tl-run">Which batches</label>
+        <select id="tl-run" class="btn" style="padding-right:8px"></select>
+        <button class="btn btn-sm" type="button" id="tl-prev" data-action="step-back">${icon("left")}<span class="sr-only">Previous batch</span></button>
+        <label class="sr-only" for="tl-range">Position in the timeline</label>
+        <input type="range" id="tl-range" min="0" max="0" step="1" value="0">
+        <button class="btn btn-sm" type="button" id="tl-next" data-action="step-fwd">${icon("right")}<span class="sr-only">Next batch</span></button>
+        <button class="btn btn-sm" type="button" id="tl-live" data-action="live" title="Follow the newest batch">${icon("live")}Live</button>
+      </div>
+      <div class="scrub-label" id="tl-label"></div>`;
+    el.dataset.built = "1";
+  }
+  const { n, pos } = V;
+  const live = ui.pos == null;
+  const sel = document.getElementById("tl-run");
+  const options = [`<option value="follow">Follow the newest run</option>`, `<option value="all">All batches</option>`,
+    ...page.runs.slice().reverse().slice(0, 200).map((r) => `<option value="${esc(r.id)}">${esc(`${runTag(r)} ${r.name}${r.done ? ` · ${verdictOf(r)}` : " · running"}`)}</option>`)].join("");
+  if (document.activeElement !== sel) {
+    if (sel.patched !== options) {
+      sel.innerHTML = options;
+      sel.patched = options;
+    }
+    if (sel.value !== ui.sel) sel.value = ui.sel;
+  }
+  const range = document.getElementById("tl-range");
+  range.max = String(Math.max(0, n - 1));
+  range.value = String(Math.max(0, pos));
+  range.disabled = !n;
+  const cur = n ? V.r.batches[pos] : null;
+  range.setAttribute("aria-valuetext", cur ? `batch ${pos + 1} of ${n}, seq ${cur.seq}` : "no batches");
+  const prev = document.getElementById("tl-prev"), next = document.getElementById("tl-next");
+  prev.disabled = !n || pos <= 0;
+  next.disabled = !n || pos >= n - 1;
+  document.getElementById("tl-live").setAttribute("aria-pressed", String(live));
+  const what = !cur ? "<span>No batches yet.</span>" : `<span>Batch <b>${pos + 1}</b> of ${n}</span><span>seq <b>${cur.seq}</b></span><span><b>${esc(cur.kind)}</b></span><span>${esc(fmtT(cur.time))}</span>${live ? "<span><b>Live</b>: following the newest batch</span>" : "<span>Pinned: press Live to follow again</span>"}`;
+  const scope = V.run ? `the batches of ${esc(runTag(V.run))} ${esc(V.run.name)}` : "every batch recorded";
+  setHtml(document.getElementById("tl-label"), `${what}<span class="muted">Over ${scope}${isAdmin() ? "" : ` as ${esc(viewLabel(page.view))} received them`}. Every panel shows the state at this batch. ←/→ step.</span>`);
+}
+
+// ---- Shared card parts ----------------------------------------------------------------------------
+
+/** The last nonce this view saw consumed for an account: Duplicate and NonceGap consume nothing. */
+function lastNonce(id) {
+  let n = null;
+  for (const e of V.M.trace) {
+    if (e.actor !== id || e.nonce == null) continue;
+    const unconsumed = e.events.some((ev) => ["Duplicate", "NonceGap"].includes(ev.event?.CommandRejected?.reason));
+    if (!unconsumed && (n == null || e.nonce > n)) n = e.nonce;
+  }
+  return n;
+}
 
 function partyHead(a) {
-  return `<div class="party-head"><h3>${esc(a.name)}</h3><span class="meta">account ${a.id}, nonce ${lastNonce(a.id)}</span></div>`;
+  const n = lastNonce(a.id);
+  return `<div class="party-head"><h3>${esc(a.name)}</h3><span class="meta">account ${a.id}${n != null ? `, nonce ${n}` : ""}</span></div>`;
 }
 
 /** The free / reserved / escrowed split as a bar. Widths are layout only. */
 function splitBar(balance) {
   const { free, reserved, escrowed } = balance;
-  const total = free + reserved + escrowed;
+  const total = free + reserved + escrowed; // layout only: the share each bucket takes of the bar
   const segs = [["free", free], ["reserved", reserved], ["escrowed", escrowed]]
     .filter(([, v]) => v > 0)
     .map(([k, v]) => `<div class="seg ${k}" style="width:${((v / total) * 100).toFixed(2)}%"></div>`).join("");
   return `<div class="bar" role="img" aria-label="Free ${fmtUsd(free)}, reserved ${fmtUsd(reserved)}, escrowed ${fmtUsd(escrowed)}">${segs}</div>`;
 }
 
-function balances(a) {
+function balancesHtml(a) {
   const { free, reserved, escrowed } = a.balance;
   return `<div class="balances">
       ${splitBar(a.balance)}
@@ -705,384 +1024,193 @@ function balances(a) {
     </div>`;
 }
 
-/** The side of a position an account holds, and its lock: display only, from the engine's numbers. */
-const lockOf = (p, id) => (p.yes_holder === id ? p.yes_lock : p.no_lock);
-
-function toastHtml(card) {
-  const t = toasts.get(card);
-  return t ? t.texts.map((text) => `<p class="toast" role="status" data-toast="${card}">${esc(text)}</p>`).join("") : "";
+/** A rejection at the current position, shown in the acting card (and as a red row in the trace). */
+function toastFor(actor) {
+  const e = V.M.trace.at(-1);
+  if (actor == null || !e || e.actor !== actor) return "";
+  return e.events.filter((ev) => ev.event?.CommandRejected).map((ev) => {
+    const a = e.command?.User?.action;
+    const kind = a ? variant(a) : "command";
+    const args = a ? Object.values(a)[0] : null;
+    const field = ["quote", "request", "contract"].find((f) => args?.[f] != null);
+    return `<p class="toast" role="status">Rejected: ${esc(ev.event.CommandRejected.reason)} (${esc(kind)}${field ? `, ${field} #${esc(args[field])}` : ""})</p>`;
+  }).join("");
 }
 
-/** Which card a command's actor acts from: requesters and market makers have one; the rest use the contract's. */
-function cardOf(actor) {
-  if (actor === ACCOUNTS.ALICE || actor === ACCOUNTS.CAROL) return `user-${actor}`;
-  if (actor === ACCOUNTS.MM1 || actor === ACCOUNTS.MM2) return `mm-${actor}`;
-  return "contract";
-}
+const LIVE_QUOTE = ["Active", "Selected"];
+const LIVE_REQUEST = ["Open", "Presented"];
+/** Open to quotes in this view: no event ended it, and its public deadline is still ahead of the engine time at this position. */
+const openForQuotes = (r) => variant(r.state) === "Open" && (V.M.now == null || V.M.now < r.response_deadline);
 
-/** A rejection is not an error: it shows as a short toast in the acting card for 4 s (and in the trace). */
-function collectToasts() {
-  const fresh = newSeqs();
-  const batch = new Map();
-  for (const e of state.trace) {
-    if (!fresh.has(e.seq) || e.actor == null) continue;
-    for (const ev of e.events) {
-      const reason = ev.event?.CommandRejected?.reason;
-      if (!reason) continue;
-      const args = e.command?.User?.action ? Object.values(e.command.User.action)[0] : null;
-      const field = ["quote", "request", "contract"].find((f) => args?.[f] != null);
-      const what = `${e.kind}${field ? `, ${field} #${args[field]}` : ""}`;
-      const card = cardOf(e.actor);
-      batch.set(card, [...(batch.get(card) ?? []), `Rejected: ${reason} (${what})`]);
-    }
-  }
-  for (const [card, texts] of batch) {
-    clearTimeout(toasts.get(card)?.timer);
-    const entry = { texts };
-    entry.timer = setTimeout(() => {
-      if (toasts.get(card) !== entry) return;
-      toasts.delete(card);
-      document.querySelectorAll(`[data-toast="${card}"]`).forEach((n) => n.remove());
-    }, TOAST_MS);
-    toasts.set(card, entry);
-  }
-}
-
-function clearToasts() {
-  for (const t of toasts.values()) clearTimeout(t.timer);
-  toasts.clear();
-}
-
-// ---- Forms -----------------------------------------------------------------------------------
-
-function draft(key, defaults) {
-  return { ...defaults, ...(ui.drafts.get(key) ?? {}) };
-}
-
-function field(key, fieldName, label, value, inputmode, unit, help) {
-  const id = `${key}-${fieldName}`;
-  const err = ui.errors.get(key)?.[fieldName];
-  const describedBy = [err ? `${id}-err` : "", help ?? ""].filter(Boolean).join(" ");
-  const input = `<input id="${id}" name="${fieldName}" inputmode="${inputmode}" autocomplete="off" value="${esc(value)}"`
-    + `${err ? ' aria-invalid="true"' : ""}${describedBy ? ` aria-describedby="${describedBy}"` : ""}>`;
-  return `<label class="field">${label}${unit ? `<span class="unit">${input}<span>${unit}</span></span>` : input}</label>`;
-}
-
-function fieldErrors(key, order) {
-  const errs = ui.errors.get(key) ?? {};
-  return order.filter((f) => errs[f]).map((f) => `<p class="field-error" id="${key}-${f}-err" role="alert">${esc(errs[f])}</p>`).join("");
-}
-
-/** Cents → bps, or null outside 0.01–99.99. */
-function parseCents(text) {
-  const t = text.trim();
-  if (!/^(\d+\.?\d*|\.\d+)$/.test(t)) return null;
-  const cents = Number(t);
-  return cents >= 0.01 && cents <= 99.99 ? Math.round(cents * 100) : null;
-}
-function parseWhole(text) {
-  const t = text.replace(/[,_\s]/g, "");
-  if (!/^\d+$/.test(t)) return null;
-  const n = Number(t);
-  return n >= 1 && Number.isSafeInteger(n) ? n : null;
-}
-/** Seconds from now → ms, or null. The engine turns `now + ms` into its own timer. */
-function parseSeconds(text) {
-  const t = text.trim();
-  if (!/^(\d+\.?\d*|\.\d+)$/.test(t)) return null;
-  const ms = Math.round(Number(t) * 1000);
-  return ms >= 1 && Number.isSafeInteger(state.snapshot.now + ms) ? ms : null;
-}
-
-/** Inline errors block sending; the first invalid field takes focus. */
-function rejectForm(key, errs) {
-  ui.errors.set(key, errs);
-  render();
-  document.getElementById(`${key}-${Object.keys(errs)[0]}`)?.focus();
-}
-
-function submitQuote(form) {
-  const key = form.dataset.key, mm = Number(form.dataset.actor), request = Number(form.dataset.request);
-  const v = Object.fromEntries(new FormData(form));
-  const errs = {};
-  const price = parseCents(v.price ?? "");
-  if (price == null) errs.price = MSG.price;
-  const size = parseWhole(v.size ?? "");
-  if (size == null) errs.size = MSG.shares;
-  const ms = parseSeconds(v.expiry ?? "");
-  if (ms == null) errs.expiry = MSG.seconds;
-  if (Object.keys(errs).length) return rejectForm(key, errs);
-  ui.errors.delete(key);
-  const action = { SubmitQuote: { request, leg: 0, price, size, expires_at: state.snapshot.now + ms } };
-  if (act(mm, action)) {
-    ui.drafts.delete(key);
-    render();
-  }
-}
-
-function submitRequest(form) {
-  const key = form.dataset.key, actor = Number(form.dataset.actor);
-  const contract = state.snapshot.contracts[0];
-  const v = Object.fromEntries(new FormData(form));
-  const errs = {};
-  const n = parseWhole(v.qty ?? "");
-  if (n == null) errs.qty = MSG.shares;
-  const limit = parseCents(v.limit ?? "");
-  if (limit == null) errs.limit = MSG.price;
-  const ms = parseSeconds(v.deadline ?? "");
-  if (ms == null) errs.deadline = MSG.seconds;
-  if (Object.keys(errs).length) return rejectForm(key, errs);
-  ui.errors.delete(key);
-  if (!contract) return;
-  act(actor, {
-    SubmitRequest: {
-      legs: [{ contract: contract.id, side: v.side === "BuyNo" ? "BuyNo" : "BuyYes", qty: n, limit_price: limit }],
-      response_deadline: state.snapshot.now + ms,
-    },
-  });
-}
-
-// ---- Requesters lane -------------------------------------------------------------------------
+// ---- Requesters lane ------------------------------------------------------------------------------
 
 function renderUsers() {
   const el = document.getElementById("user-lane");
-  const mine = state.snapshot.accounts.filter((a) => a.role === "requester");
-  const who = esc(name(viewerId()));
-  const body = mine.length ? mine.map(requesterCard).join("")
-    : `<article class="party" aria-label="Requesters as ${who} sees them">
-        <p class="empty">As ${who} you don't see who asks or their limits. Open requests appear in your card.</p>
-      </article>`;
-  el.innerHTML = `<div class="side-head"><h2 id="req-h">Requesters</h2><span>ask for a price</span></div>${body}`;
+  const mine = V.M.accounts.filter((a) => a.role === "requester");
+  const empty = isAdmin()
+    ? "No requester has money yet: each run's setup funds its Alice and Carol."
+    : `As ${esc(viewLabel(page.view))} you don't see who asks or their limits: the gateway sends each account only its own.${["alice", "carol"].includes(page.view) ? " Your card appears once your account's balance arrives." : " Open requests appear in your card."}`;
+  const body = mine.length ? mine.map(requesterCard).join("") : `<article class="party"><p class="empty">${empty}</p></article>`;
+  setHtml(el, `<div class="side-head"><h2 id="req-h">Requesters</h2><span>ask for a price</span></div>${body}`);
 }
 
 function requesterCard(a) {
-  const s = state.snapshot;
-  const theirs = s.requests.filter((r) => r.requester === a.id).sort(byIdDesc);
+  const theirs = V.M.requests.filter((r) => r.requester === a.id).sort(byIdDesc);
   const live = theirs.filter((r) => LIVE_REQUEST.includes(variant(r.state)));
   const ended = theirs.filter((r) => !LIVE_REQUEST.includes(variant(r.state)));
-  const proposed = s.contracts.filter((c) => variant(c.state) === "Proposed");
+  const proposed = V.M.contracts.filter((c) => variant(c.state) === "Proposed");
   const items = [...proposed.map((c) => disputeItem(a, c)), ...live.map((r) => requestItem(a, r)), ...ended.map((r) => requestItem(a, r))].join("");
   return `<article class="party" aria-label="${esc(a.name)}">
       ${partyHead(a)}
-      ${balances(a)}
+      ${balancesHtml(a)}
       ${items || '<p class="empty">No requests yet.</p>'}
-      ${toastHtml(`user-${a.id}`)}
-      ${requestForm(a)}
+      ${toastFor(a.id)}
     </article>`;
 }
 
 function requestItem(a, r) {
-  const s = state.snapshot, st = variant(r.state), leg = r.legs[0], where = `u${a.id}`;
+  const st = variant(r.state), leg = r.legs[0] ?? {}, where = `u${a.id}`;
   const head = [idlink("request", r.id, `Request #${r.id}`, where), badge(st)];
   if (st === "Rejected") head.push(`<span class="muted" style="font-size:13px">cause: ${esc(r.state.Rejected)}</span>`);
   const facts = [`<span>Buy <b>${sideName(leg.side)}</b> × <b>${qty(leg.qty)}</b></span>`];
-  if (leg.limit_price != null) facts.push(`<span>Limit <b>${fmtPrice(leg.limit_price)}</b></span>`);
-  facts.push(`<span>${idlink("contract", leg.contract, `Contract #${leg.contract}`, `${where}r${r.id}`)}</span>`);
+  facts.push(leg.limit_price != null ? `<span>Limit <b>${fmtPrice(leg.limit_price)}</b></span>` : sealedMark("limit sealed"));
+  if (leg.contract != null) facts.push(`<span>${idlink("contract", leg.contract, `Contract #${leg.contract}`, `${where}r${r.id}`)}</span>`);
   const rows = [`<div class="item-facts">${facts.join("")}</div>`];
-  const btn = (action, label, cls) =>
-    `<button class="btn ${cls}" type="button" data-action="${action}" data-actor="${a.id}" data-request="${r.id}" data-key="${action}-${r.id}">${label}</button>`;
   if (st === "Open") {
-    rows.push(`<div class="item-facts"><span>Quotes due <span class="countdown">${due(r.response_deadline)}</span> (${fmtT(r.response_deadline)})</span></div>`);
-    rows.push(`<div class="item-actions">${btn("cancel-request", "Cancel request", "btn-sm")}</div>`);
+    rows.push(`<div class="item-facts"><span>Quotes due <span class="countdown">${esc(fmtT(r.response_deadline))}</span></span></div>`);
   } else if (st === "Presented") {
     const acceptBy = r.state.Presented.accept_by;
     const picks = r.picks.map((k) => `<span>Best quote ${idlink("quote", k.quote, `#${k.quote}`, `${where}r${r.id}`)} at <b>${fmtPrice(k.price)}</b></span>`).join("");
-    rows.push(`<div class="item-facts">${picks}<span>Accept within <span class="countdown">${acceptBy > s.now ? secs(acceptBy - s.now) : "0.000 s"}</span> (${fmtT(acceptBy)})</span></div>`);
-    const at = r.picks.length === 1 ? ` at ${fmtPrice(r.picks[0].price)}` : "";
-    rows.push(`<div class="item-actions">${btn("accept", `Accept${at}`, "btn-primary")}${btn("reject", "Reject", "")}</div>`);
+    rows.push(`<div class="item-facts">${picks}<span>Accept by <span class="countdown">${esc(fmtT(acceptBy))}</span></span></div>`);
   } else if (st === "Filled") {
-    const p = s.positions.find((x) => x.request === r.id);
-    if (p) rows.push(`<div class="item-facts"><span>Position #${p.id}</span><span>${p.settled ? "Settled" : `Escrowed <b>${fmtUsd(lockOf(p, a.id))}</b>`}</span></div>`);
+    for (const p of V.M.positions.filter((x) => x.request === r.id)) {
+      rows.push(`<div class="item-facts"><span>Position #${p.id}</span><span>${p.settled ? "Settled" : "Escrowed (see the ledger)"}</span></div>`);
+    }
   }
   return `<div class="item"><div class="item-head">${head.join("")}</div>${rows.join("")}</div>`;
 }
 
 function disputeItem(a, c) {
   const { outcome, dispute_until } = c.state.Proposed;
-  const bond = disputeBond();
   return `<div class="item">
       <div class="item-head">${idlink("contract", c.id, `Contract #${c.id}`, `u${a.id}d`)}${badge("Proposed")}<span class="muted" style="font-size:13px">oracle says ${outcomeName(outcome)}</span></div>
-      <div class="item-facts"><span>Dispute until <b>${fmtT(dispute_until)}</b></span>${bond != null ? `<span>Bond <b>${fmtUsd(bond)}</b></span>` : ""}</div>
-      <div class="item-actions"><button class="btn btn-sm btn-danger" type="button" data-action="dispute" data-actor="${a.id}" data-contract="${c.id}" data-key="dispute-${a.id}-${c.id}">Dispute</button></div>
+      <div class="item-facts"><span>Anyone may dispute until <b>${esc(fmtT(dispute_until))}</b></span></div>
     </div>`;
 }
 
-function requestForm(a) {
-  const key = `req-${a.id}`;
-  const open = ui.open.has(key);
-  const toggle = `<button class="btn btn-quiet btn-sm" type="button" id="${key}-toggle" data-action="toggle" data-target="${key}" aria-expanded="${open}"${open ? ` aria-controls="${key}-form"` : ""}>New request</button>`;
-  if (!open) return `<div>${toggle}</div>`;
-  const contract = state.snapshot.contracts[0];
-  const d = draft(key, { side: "BuyYes", qty: "1000", limit: "70", deadline: "1.5" });
-  const option = (v, label) => `<option value="${v}"${d.side === v ? " selected" : ""}>${label}</option>`;
-  return `<div>${toggle}
-      <form class="form-row" id="${key}-form" data-form="request" data-key="${key}" data-actor="${a.id}" novalidate style="margin-top:8px;grid-template-columns:repeat(4,minmax(0,1fr)) auto">
-        <label class="field">Side<select id="${key}-side" name="side">${option("BuyYes", "Buy YES")}${option("BuyNo", "Buy NO")}</select></label>
-        ${field(key, "qty", "Shares", d.qty, "numeric")}
-        ${field(key, "limit", "Limit", d.limit, "decimal", "¢", `${key}-help`)}
-        ${field(key, "deadline", "Due in", d.deadline, "decimal", "s")}
-        <button class="btn btn-primary" type="submit"${disabledIf(!contract, "No contract is listed yet")}>Ask</button>
-      </form>
-      ${fieldErrors(key, ["qty", "limit", "deadline"])}
-      <p id="${key}-help" class="muted" style="font-size:13px;margin-top:4px">Your limit stays sealed: market makers never see it.</p>
-    </div>`;
-}
-
-// ---- Market makers lane ----------------------------------------------------------------------
+// ---- Market makers lane ---------------------------------------------------------------------------
 
 function renderMarketMakers() {
   const el = document.getElementById("mm-lane");
-  const mine = state.snapshot.accounts.filter((a) => a.role === "market_maker");
-  const who = esc(name(viewerId()));
-  const body = mine.length ? mine.map(makerCard).join("")
-    : `<article class="party" aria-label="Market makers as ${who} sees them">
-        <p class="empty">As ${who} you don't see market makers or their quotes. The best quote is presented in your card.</p>
-      </article>`;
-  el.innerHTML = `<div class="side-head"><h2 id="mm-h">Market makers</h2><span>answer with sealed quotes</span></div>${body}`;
+  const mine = V.M.accounts.filter((a) => a.role === "market_maker");
+  const empty = isAdmin()
+    ? "No market maker has money yet: each run's setup funds its MM1 and MM2."
+    : `As ${esc(viewLabel(page.view))} you don't see market makers or their quotes. ${["alice", "carol"].includes(page.view) ? "The best quote is presented in your card." : "Your card appears once your account's balance arrives."}`;
+  const body = mine.length ? mine.map(makerCard).join("") : `<article class="party"><p class="empty">${empty}</p></article>`;
+  setHtml(el, `<div class="side-head"><h2 id="mm-h">Market makers</h2><span>answer with sealed quotes</span></div>${body}`);
 }
 
 function makerCard(a) {
-  const s = state.snapshot;
-  const quotes = s.quotes.filter((q) => q.mm === a.id).sort(byIdDesc);
+  const quotes = V.M.quotes.filter((q) => q.mm === a.id).sort(byIdDesc);
   const live = quotes.filter((q) => LIVE_QUOTE.includes(q.state));
   const ended = quotes.filter((q) => !LIVE_QUOTE.includes(q.state));
-  const open = s.requests.filter((r) => r.public_state === "open")
+  const quoted = new Set(live.map((q) => q.request));
+  const open = V.M.requests.filter((r) => openForQuotes(r) && r.requester !== a.id && !quoted.has(r.id))
     .sort((x, y) => x.response_deadline - y.response_deadline || x.id - y.id);
   const items = [...live.map((q) => quoteItem(a, q)), ...open.map((r) => openRequestItem(a, r)), ...ended.map((q) => quoteItem(a, q))].join("");
   return `<article class="party" aria-label="${esc(a.name)}">
       ${partyHead(a)}
-      ${balances(a)}
+      ${balancesHtml(a)}
       ${items || '<p class="empty">No open requests to quote on.</p>'}
-      ${toastHtml(`mm-${a.id}`)}
+      ${toastFor(a.id)}
     </article>`;
 }
 
 /** An open request as every MM sees it: contract, side, qty and deadline. Never the limit, even as admin. */
 function openRequestItem(a, r) {
-  const leg = r.legs[0], key = `q-${a.id}-${r.id}`, where = `m${a.id}`;
-  const replacing = state.snapshot.quotes.some((q) => q.mm === a.id && q.request === r.id && LIVE_QUOTE.includes(q.state));
-  const verb = replacing ? "Replace" : "Quote";
-  const head = `<div class="item-head">${idlink("request", r.id, `Request #${r.id}`, where)}${badge("Open")}<span class="muted" style="font-size:13px">quotes due ${due(r.response_deadline)}</span></div>`;
-  const facts = `<div class="item-facts"><span>Buy <b>${sideName(leg.side)}</b> × <b>${qty(leg.qty)}</b></span><span>${idlink("contract", leg.contract, `Contract #${leg.contract}`, `${where}r${r.id}`)}</span>${sealedMark("limit sealed")}</div>`;
-  // The quote form sits inline on every open request, as in the mockup.
-  const d = draft(key, { price: "", size: String(leg.qty), expiry: "10" });
-  return `<div class="item">${head}${facts}
-      <form class="form-row" id="${key}-form" data-form="quote" data-key="${key}" data-actor="${a.id}" data-request="${r.id}" novalidate aria-label="${verb} on request #${r.id}">
-        ${field(key, "price", "Price", d.price, "decimal", "¢")}
-        ${field(key, "size", "Shares", d.size, "numeric")}
-        ${field(key, "expiry", "Expires in", d.expiry, "decimal", "s")}
-        <button class="btn btn-primary" type="submit" id="${key}-submit">${verb}</button>
-      </form>
-      ${fieldErrors(key, ["price", "size", "expiry"])}
+  const leg = r.legs[0] ?? {}, where = `m${a.id}`;
+  return `<div class="item">
+      <div class="item-head">${idlink("request", r.id, `Request #${r.id}`, where)}${badge("Open")}<span class="muted" style="font-size:13px">quotes due ${esc(fmtT(r.response_deadline))}</span></div>
+      <div class="item-facts"><span>Buy <b>${sideName(leg.side)}</b> × <b>${qty(leg.qty)}</b></span>${leg.contract != null ? `<span>${idlink("contract", leg.contract, `Contract #${leg.contract}`, `${where}r${r.id}`)}</span>` : ""}${sealedMark("limit sealed")}</div>
     </div>`;
 }
 
 function quoteItem(a, q) {
-  const s = state.snapshot, where = `m${a.id}`;
-  const leg = s.requests.find((r) => r.id === q.request)?.legs[q.leg];
+  const where = `m${a.id}`;
+  const leg = V.M.requests.find((r) => r.id === q.request)?.legs[q.leg ?? 0];
   const facts = [`<span>Sell ${leg ? sideName(leg.side) : ""} at <b>${fmtPrice(q.price)}</b> × <b>${qty(q.size)}</b></span>`];
-  const live = LIVE_QUOTE.includes(q.state);
-  if (live) {
-    // What the quote's hold reserves, as the engine computed it (on the leg's qty, not the size).
-    if (q.reserved != null) facts.push(`<span>Holds <b>${fmtUsd(q.reserved)}</b></span>`);
-    facts.push(`<span>${q.state === "Selected" ? "Firm until" : "Expires"} ${fmtT(q.expires_at)}</span>`);
-  } else if (q.state === "Filled") {
-    const p = s.positions.find((x) => x.request === q.request);
-    facts.push(p ? `<span>Position #${p.id}</span><span>${p.settled ? "Settled" : `Escrowed <b>${fmtUsd(lockOf(p, a.id))}</b>`}</span>` : "<span>Hold moved to escrow</span>");
-  } else {
-    facts.push("<span>Hold released</span>");
-  }
-  // Cancel shows on every live quote: the engine answers for a Selected one, which is part of the demo.
-  const actions = live
-    ? `<div class="item-actions"><button class="btn btn-sm btn-danger" type="button" data-action="cancel-quote" data-actor="${a.id}" data-quote="${q.id}" data-key="cancel-quote-${q.id}">Cancel quote</button></div>`
-    : "";
+  if (LIVE_QUOTE.includes(q.state)) facts.push(`<span>${q.state === "Selected" ? "Firm until" : "Expires"} ${esc(fmtT(q.expires_at))}</span>`);
+  else if (q.state === "Filled") {
+    const p = V.M.positions.find((x) => x.request === q.request && (x.yes_holder === a.id || x.no_holder === a.id));
+    facts.push(p ? `<span>Position #${p.id}</span><span>${p.settled ? "Settled" : "Escrowed (see the ledger)"}</span>` : "<span>Hold moved to escrow</span>");
+  } else facts.push("<span>Hold released</span>");
   return `<div class="item">
       <div class="item-head">${idlink("quote", q.id, `Quote #${q.id}`, where)}${badge(q.state)}<span class="muted" style="font-size:13px">on request ${idlink("request", q.request, `#${q.request}`, `${where}q${q.id}`)}</span></div>
       <div class="item-facts">${facts.join("")}</div>
-      ${actions}
     </div>`;
 }
 
-// ---- Contract card ---------------------------------------------------------------------------
+// ---- Contract card --------------------------------------------------------------------------------
 
 function renderContract() {
   const el = document.getElementById("contract");
-  const list = state.snapshot.contracts;
-  el.innerHTML = list.length ? list.map(contractCard).join("")
-    : `<article class="panel contract"><div class="contract-main">
-        <p class="empty">No contract is listed yet. The operator lists one during setup.</p>
-        ${toastHtml("contract")}
-      </div></article>`;
-}
-
-/** When the oracle proposed and how long the dispute window ran, from the public OutcomeProposed event. */
-function proposalOf(c) {
-  const last = eventsNamed("OutcomeProposed").filter((x) => x.data.contract === c.id).pop();
-  if (last) return { at: last.entry.time, until: last.data.dispute_until, outcome: last.data.outcome };
-  return null;
+  const list = V.M.contracts;
+  setHtml(el, list.length ? list.slice().reverse().map(contractCard).join("")
+    : `<article class="panel contract"><div class="contract-main"><p class="empty">${V.n ? "No contract listed in these batches." : "No batches yet. Pick a scenario and press Run: the operator lists the run's contract during setup."}</p></div></article>`);
 }
 
 function timeline(c) {
-  const now = state.snapshot.now;
-  const span = Math.max(1, c.resolution_deadline - T0);
+  if (c.trading_close == null || c.resolution_deadline == null) return "";
+  const base = c.id; // a run's contract id is its t0
+  const now = V.M.now ?? base;
+  const span = Math.max(1, c.resolution_deadline - base);
+  const rel = (t) => `t+${((t - base) / 1000).toFixed(3)} s`;
   // Layout only: where each engine timestamp sits between t+0 and the hard deadline.
-  const at = (t) => Math.min(100, Math.max(0, ((t - T0) / span) * 100));
+  const at = (t) => Math.min(100, Math.max(0, ((t - base) / span) * 100));
   const pct = (t) => `${at(t).toFixed(2)}%`;
-  const p = proposalOf(c);
-  const parts = [
-    '<div class="tl-track"></div>',
-    `<div class="tl-trading" style="width:${pct(c.trading_close)}"></div>`,
-  ];
-  if (p) {
-    parts.push(`<div class="tl-trading" style="left:${pct(p.at)};width:${(at(p.until) - at(p.at)).toFixed(2)}%;background:var(--warn);border-radius:0" title="Dispute window: proposed ${fmtT(p.at)}, open until ${fmtT(p.until)}"></div>`);
-  }
+  const p = c.proposal;
+  const parts = ['<div class="tl-track"></div>', `<div class="tl-trading" style="width:${pct(c.trading_close)}"></div>`];
+  if (p) parts.push(`<div class="tl-trading" style="left:${pct(p.at)};width:${(at(p.until) - at(p.at)).toFixed(2)}%;background:var(--warn);border-radius:0" title="Dispute window: proposed ${rel(p.at)}, open until ${rel(p.until)}"></div>`);
   const flip = at(now) > 70 ? ' style="left:auto;right:6px"' : "";
-  parts.push(`<div class="tl-now" style="left:${pct(now)}"><span${flip}>now ${fmtT(now)}</span></div>`);
-  parts.push(`<div class="tl-mark" style="left:${pct(c.trading_close)}"><span>trading closes ${fmtT(c.trading_close)}</span></div>`);
+  parts.push(`<div class="tl-now" style="left:${pct(now)}"><span${flip}>now ${rel(now)}</span></div>`);
+  parts.push(`<div class="tl-mark" style="left:${pct(c.trading_close)}"><span>trading closes ${rel(c.trading_close)}</span></div>`);
   if (p) {
-    parts.push(`<div class="tl-mark" style="left:${pct(p.at)};height:14px;top:26px;opacity:.7" title="Proposed ${fmtT(p.at)}"></div>`);
-    parts.push(`<div class="tl-mark" style="left:${pct(p.until)}" title="Dispute window ends ${fmtT(p.until)}"></div>`);
+    parts.push(`<div class="tl-mark" style="left:${pct(p.at)};height:14px;top:26px;opacity:.7" title="Proposed ${rel(p.at)}"></div>`);
+    parts.push(`<div class="tl-mark" style="left:${pct(p.until)}" title="Dispute window ends ${rel(p.until)}"></div>`);
   }
-  parts.push(`<div class="tl-mark end" style="left:calc(100% - 2px)"><span>hard deadline ${fmtT(c.resolution_deadline)}</span></div>`);
-  const label = [`Now ${fmtT(now)}.`, `Trading closes ${fmtT(c.trading_close)}.`];
-  if (p) label.push(`Proposed ${outcomeName(p.outcome)} at ${fmtT(p.at)}, dispute window until ${fmtT(p.until)}.`);
-  label.push(`Hard deadline ${fmtT(c.resolution_deadline)}.`);
-  return `<div class="timeline" role="img" aria-label="${label.join(" ")}">${parts.join("")}</div>`;
+  parts.push(`<div class="tl-mark end" style="left:calc(100% - 2px)"><span>hard deadline ${rel(c.resolution_deadline)}</span></div>`);
+  const label = [`Now ${rel(now)}.`, `Trading closes ${rel(c.trading_close)}.`];
+  if (p) label.push(`Proposed ${outcomeName(p.outcome)} at ${rel(p.at)}, dispute window until ${rel(p.until)}.`);
+  label.push(`Hard deadline ${rel(c.resolution_deadline)}.`);
+  return `<div class="timeline" role="img" aria-label="${esc(label.join(" "))}">${parts.join("")}</div>`;
 }
 
 function contractCard(c) {
   const st = variant(c.state);
-  const meta = [badge(st), idlink("contract", c.id, `Contract #${c.id}`, "cc"), `<span>Oracle: account ${c.oracle}</span>`];
-  if (st === "Proposed") meta.push(`<span>Proposed <b>${outcomeName(c.state.Proposed.outcome)}</b>, dispute until ${fmtT(c.state.Proposed.dispute_until)}</span>`);
-  if (st === "Disputed") meta.push(`<span>Proposed <b>${outcomeName(c.state.Disputed.proposed)}</b>, disputed by ${esc(name(c.dispute?.disputer))}${c.dispute?.hold != null ? ", bond held" : ""}</span>`);
-  if (st === "Final") meta.push(`<span>Outcome <b>${outcomeName(c.state.Final)}</b></span>`);
-  const bond = disputeBond();
-  const windowS = (c.dispute_window / 1000).toLocaleString("en-US", { maximumFractionDigits: 3 });
-  // The engine answers the oracle and arbiter only, so only admin sees what their buttons did.
-  const actorWhy = isAdmin() ? "" : "Switch to Admin to act as the oracle or arbiter";
-  const outcomes = (action, actor) => [["Yes", "YES", "btn-yes"], ["No", "NO", "btn-no"], ["Invalid", "INVALID", ""]]
-    .map(([o, label, cls]) => `<button class="btn btn-sm ${cls}" type="button" data-action="${action}" data-actor="${actor}" data-contract="${c.id}" data-outcome="${o}" data-key="${action}-${c.id}-${o}"${actorWhy ? disabledIf(true, actorWhy) : ""}>${label}</button>`).join("");
+  const meta = [badge(st), idlink("contract", c.id, `Contract #${c.id}`, "cc")];
+  if (c.oracle != null) meta.push(`<span>Oracle: ${esc(name(c.oracle))}</span>`);
+  if (st === "Proposed") meta.push(`<span>Proposed <b>${outcomeName(c.state.Proposed.outcome)}</b>, dispute until ${esc(fmtT(c.state.Proposed.dispute_until))}</span>`);
+  if (st === "Disputed") meta.push(`<span>Proposed <b>${outcomeName(c.state.Disputed.proposed)}</b>, disputed by ${esc(name(c.dispute?.disputer))}</span>`);
+  if (st === "Final") meta.push(`<span>Outcome <b>${outcomeName(c.state.Final)}</b>${c.ruling ? ` (ruled by the arbiter, bond ${c.ruling.bond_returned ? "returned" : "forfeited"})` : ""}</span>`);
+  const known = c.description != null;
+  const why = isAdmin()
+    ? `${sealedMark("terms unknown")} Another client listed it (or this page wasn't connected yet): its question, oracle and deadlines travel in that listing command, which this page didn't send.`
+    : `${sealedMark("terms not sent to this view")} The question, oracle and deadlines travel in the operator's listing command, whose origin the gateway forwards to the operator only.`;
+  const terms = known
+    ? `<h2 class="contract-q" id="contract-q-${c.id}">${esc(c.description)}</h2>`
+    : `<h2 class="contract-q" id="contract-q-${c.id}">Contract #${esc(c.id)}</h2><p class="muted" style="font-size:13px">${why}</p>`;
+  const windowS = c.dispute_window != null ? (c.dispute_window / 1000).toLocaleString("en-US", { maximumFractionDigits: 3 }) : null;
   return `<article class="panel contract">
       <div class="contract-main">
         <div>
           <div class="contract-meta" style="margin-bottom:6px">${meta.join("")}</div>
-          <h2 class="contract-q" id="contract-q-${c.id}">${esc(c.description)}</h2>
+          ${terms}
         </div>
         ${timeline(c)}
-        <p class="muted" style="font-size:13px">After close the oracle proposes; anyone can dispute for ${windowS} s${bond != null ? ` with a ${fmtUsd(bond)} bond` : ""}. If the oracle never proposes by the hard deadline, it ends INVALID and each side gets its lock back. An unruled dispute ends as proposed and the bond is returned.</p>
+        ${known ? `<p class="muted" style="font-size:13px">After close the oracle proposes; anyone can dispute for ${windowS} s with a bond. If the oracle never proposes by the hard deadline, it ends INVALID and each side gets its lock back. The scenario script plays the oracle, the disputer and the arbiter.</p>` : ""}
       </div>
       <div class="contract-side">
-        <div class="roles">
-          <div class="role" role="group" aria-label="Oracle proposes">
-            <span class="role-name">Oracle proposes</span>
-            <div class="item-actions">${outcomes("propose", c.oracle)}</div>
-          </div>
-          <div class="role" role="group" aria-label="Arbiter rules">
-            <span class="role-name">Arbiter rules (after a dispute)</span>
-            <div class="item-actions">${outcomes("rule", ACCOUNTS.ARBITER)}</div>
-          </div>
-        </div>
-        ${toastHtml("contract")}
+        ${toastFor(c.oracle)}
         <div class="positions">
           <h3 style="margin-bottom:6px">Positions</h3>
           ${positionsTable(c)}
@@ -1092,36 +1220,267 @@ function contractCard(c) {
 }
 
 function positionsTable(c) {
-  const list = state.snapshot.positions.filter((p) => p.contract === c.id);
+  const list = V.M.positions.filter((p) => p.contract === c.id);
   if (!list.length) {
     return isAdmin() ? '<p class="empty">No positions yet. One opens when a requester accepts a quote.</p>'
       : '<p class="empty">You hold no positions in this contract. Other parties\' fills stay private.</p>';
   }
-  // Payouts come from the PositionSettled events this viewer was sent (the engine names both holders there).
-  const settled = new Map(eventsNamed("PositionSettled").map((x) => [x.data.position, x.data]));
   const line = (text) => `<span class="muted" style="display:block">${text}</span>`;
-  const holder = (id, lock, paid) => (id == null ? sealedMark("counterparty sealed until settlement") : `<b>${esc(name(id))}</b>`)
-    + line(`locks ${fmtUsd(lock)}`) + (paid != null ? line(`paid ${fmtUsd(paid)}`) : "");
-  const rows = list.map((p) => {
-    const pay = settled.get(p.id);
-    return `<tr style="vertical-align:top">
-        <td><b>#${p.id}</b>${line(`${qty(p.qty)} shares`)}${p.settled ? badge("Settled", "b-good") : badge("Escrowed", "b-live")}</td>
-        <td>${holder(p.yes_holder, p.yes_lock, pay?.yes_payout)}</td>
-        <td>${holder(p.no_holder, p.no_lock, pay?.no_payout)}</td>
-      </tr>`;
-  }).join("");
+  // Payouts are PositionSettled's fields; the engine names both holders only there.
+  const holder = (id, paid) => (id == null ? sealedMark("counterparty sealed until settlement") : `<b>${esc(name(id))}</b>`)
+    + (paid != null ? line(`paid ${fmtUsd(paid)}`) : "");
+  const rows = list.map((p) => `<tr style="vertical-align:top">
+      <td><b>#${p.id}</b>${line(`${qty(p.qty)} shares`)}${p.settled ? badge("Settled", "b-good") : badge("Escrowed", "b-live")}</td>
+      <td>${holder(p.yes_holder, p.yes_payout)}</td>
+      <td>${holder(p.no_holder, p.no_payout)}</td>
+    </tr>`).join("");
   return `<div style="overflow-x:auto"><table>
       <thead><tr><th scope="col">Position</th><th scope="col">YES side</th><th scope="col">NO side</th></tr></thead>
       <tbody>${rows}</tbody>
     </table></div>`;
 }
 
-// ---- Trace: the command log ------------------------------------------------------------------
+// ---- Ledger ---------------------------------------------------------------------------------------
 
-const MONEY_EVENTS = ["Deposited", "Withdrawn", "QuoteFilled", "PositionSettled", "Disputed", "Ruled", "DisputeBondReturned"];
+const LEDGER_ORDER = ["requester", "market_maker"];
+const roleText = (role) => (role === "market_maker" ? "market maker" : role);
+
+/** A cell's change against the previous position: a display diff of two `balances` values. */
+function deltaHtml(now, before) {
+  if (before == null || now === before) return "";
+  const d = now - before;
+  return `<span class="delta ${d > 0 ? "up" : "down"}">${d > 0 ? "+" : ""}${fmtUsd(d)}</span>`;
+}
+
+function renderLedger() {
+  const prev = V.M.previous;
+  const rank = (a) => { const i = LEDGER_ORDER.indexOf(a.role); return i < 0 ? LEDGER_ORDER.length : i; };
+  const sorted = [...V.M.accounts].sort((a, b) => rank(a) - rank(b) || a.id - b.id);
+  const rows = sorted.map((a) => {
+    const b = a.balance, was = prev.get(a.id);
+    const cells = [[b.free, was?.free], [b.reserved, was?.reserved], [b.escrowed, was?.escrowed]];
+    const changed = !was || cells.some(([now, before]) => now !== before);
+    const fresh = V.M.trace.at(-1)?.balances.some((x) => x.account === a.id);
+    return `<tr${changed && fresh ? ' class="changed"' : ""}>
+        <td><span class="who">${esc(a.name)}</span><span class="role">${esc(roleText(a.role))} · account ${a.id}</span></td>
+        ${cells.map(([now, before]) => `<td>${fmtUsd(now)}${deltaHtml(now, before)}</td>`).join("")}
+        <td>${b.free + b.reserved + b.escrowed > 0 ? splitBar(b) : ""}</td>
+      </tr>`;
+  }).join("");
+  setHtml(document.getElementById("ledger-table"), rows ? `<table>
+      <thead><tr><th scope="col">Account</th><th scope="col">Free</th><th scope="col">Reserved</th><th scope="col">Escrowed</th><th scope="col" class="barcol">Split</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>` : '<p class="empty" style="padding:12px 16px">No balances in these batches yet.</p>');
+  const note = isAdmin()
+    ? "Every amount is a `balances` value the engine sent with a batch; deltas are against the previous position. The page adds nothing up."
+    : `Only ${esc(viewLabel(page.view))}'s own account: the gateway sends each account only its own balances.`;
+  const el = document.getElementById("ledger-note");
+  if (el.textContent !== note) el.textContent = note;
+}
+
+// ---- Runs: results, progress, log -----------------------------------------------------------------
+
+function renderRuns() {
+  const set = page.set;
+  const active = driver.active;
+  const prog = [];
+  if (set) {
+    const done = set.runs.filter((r) => r.done);
+    prog.push(`<span><b>${esc(set.label)}</b>: ${done.length} of ${set.total} done, ${done.filter((r) => r.pass).length} passed${set.stopping ? " · stopping" : ""}</span>`);
+    if (!set.runs.length && gw.engine !== "up") prog.push("<span>waiting for the engine to be up…</span>");
+    for (const r of active.slice(0, 4)) prog.push(`<span>${esc(r.name)}: step <b>${r.step}</b> of ${r.steps}</span>`);
+    if (active.length > 4) prog.push(`<span>+${active.length - 4} more running</span>`);
+    prog.push(`<button class="btn btn-sm btn-danger" type="button" id="run-stop-2" data-action="stop"${disabledIf(set.stopping)}>${icon("stop")}Stop</button>`);
+  } else if (page.lastSet) {
+    const s = page.lastSet;
+    prog.push(`<span>Last: <b>${esc(s.label)}</b>, ${s.runs.filter((r) => r.pass).length} of ${s.total} passed${s.stopped ? " (stopped)" : ""} in ${((s.finished - s.started) / 1000).toFixed(1)} s${s.hidden ? " · the tab was in the background during it, so its timing may have slipped" : ""}</span>`);
+  } else prog.push('<span class="muted">Nothing run yet.</span>');
+  setHtml(document.getElementById("run-progress"), prog.join(""));
+
+  const current = V.run?.id;
+  const shown = page.runs.slice().reverse().slice(0, 40);
+  const rows = shown.map((r) => {
+    const v = verdictOf(r);
+    const p = r.perf?.latency_us ?? RfqRecorder.summarize(r.commands.filter((c) => !c.recovered).map((c) => c.latency_us));
+    // The detail and the log name every participant's steps: the driver's own (admin) record.
+    const detail = !isAdmin() ? '<span class="muted">in the Admin view</span>' : v === "PASS" ? "" : v === "running" ? `step ${r.step} of ${r.steps}` : esc(r.detail ?? "");
+    const rec = isAdmin() && r.recoveries.length ? `<br><span class="muted">${r.recoveries.map((x) => esc(`${x.step}: ${x.outcome}`)).join("<br>")}</span>` : "";
+    return `<tr${r.id === current ? ' class="is-current"' : ""}>
+        <td><button class="idlink" type="button" data-action="pick-run" data-run="${esc(r.id)}" data-key="pick-${esc(r.id)}">${esc(runTag(r))}<span class="sr-only">, show in the timeline</span></button></td>
+        <td>${esc(r.name)}</td>
+        <td>${v === "running" ? badge("Running", "b-live") : badge(v)}</td>
+        <td class="detail">${detail}${rec}</td>
+        <td class="num">${r.commands.length}</td>
+        <td class="num">${ms(p.p50)}</td><td class="num">${ms(p.p95)}</td><td class="num">${ms(p.max)}</td>
+        <td class="num">${r.done ? `${(r.wall_ms / 1000).toFixed(1)} s` : "—"}</td>
+      </tr>`;
+  }).join("");
+  setHtml(document.getElementById("runs-table"), rows ? `<div style="overflow-x:auto"><table class="dtable runs-table">
+      <thead><tr><th scope="col">Run</th><th scope="col">Scenario</th><th scope="col">Verdict</th><th scope="col">Detail</th><th scope="col" class="num">Commands</th><th scope="col" class="num">p50 ms</th><th scope="col" class="num">p95 ms</th><th scope="col" class="num">max ms</th><th scope="col" class="num">Wall</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>${page.runs.length > shown.length ? `<p class="runs-empty">… and ${page.runs.length - shown.length} earlier runs (pick them in the timeline).</p>` : ""}
+    <p class="runs-empty">Latency is the gateway's <code class="mono">latency_us</code>: from receiving a command to receiving its batch. A command that waited out an outage is not a sample.</p>`
+    : '<p class="runs-empty">No runs yet. Each run plays its scenario as every participant through the gateway, with its own accounts (<code class="mono">t0 × 100 + id</code>) and contract (<code class="mono">t0</code>).</p>');
+
+  const run = V.run ?? page.runs.at(-1);
+  const log = document.getElementById("runlog");
+  const lines = !isAdmin() ? [`The run log is the driver's own record of every participant's commands: it is shown in the Admin view, not as ${viewLabel(page.view)}.`]
+    : run ? [`${runTag(run)} ${run.name}`, ...run.log] : ["The selected run's log appears here."];
+  const html = lines.map((l) => {
+    const cls = /outcome unknown|waiting for the engine|STOPPED/.test(l) ? "l-warn" : /^FAIL|failed|unavailable/.test(l) ? "l-bad" : /^PASS|outcome recovered/.test(l) ? "l-good" : "";
+    return cls ? `<span class="${cls}">${esc(l)}</span>` : esc(l);
+  }).join("\n");
+  if (log.patched !== html) {
+    const atEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 24;
+    log.innerHTML = html;
+    log.patched = html;
+    if (atEnd) log.scrollTop = log.scrollHeight;
+  }
+}
+
+// ---- Perf: latency histogram and numbers ------------------------------------------------------------
+
+function renderPerf() {
+  const set = page.set ?? page.lastSet;
+  const runs = set?.runs ?? [];
+  const samples = runs.flatMap((r) => r.commands.filter((c) => !c.recovered).map((c) => c.latency_us));
+  const s = RfqRecorder.summarize(samples);
+  const wall = set ? ((set.finished ?? Date.now()) - set.started) / 1000 : 0;
+  const done = runs.filter((r) => r.done);
+  const tiles = [
+    ["p50", s.p50 == null ? "—" : `${ms(s.p50)} ms`],
+    ["p95", s.p95 == null ? "—" : `${ms(s.p95)} ms`],
+    ["max", s.max == null ? "—" : `${ms(s.max)} ms`],
+    ["commands / s", wall > 0 && samples.length ? (samples.length / wall).toFixed(1) : "—"],
+    ["runs passed", set ? `${done.filter((r) => r.pass).length} of ${set.total}` : "—"],
+  ].map(([k, v]) => `<div class="tile"><span>${k}</span><b class="num">${v}</b></div>`).join("");
+  const caption = set
+    ? `${esc(set.label)}${set.k > 1 ? ` at concurrency ${set.k}` : ""}: ${samples.length} commands over ${wall.toFixed(1)} s (the scenarios' own waits included).`
+    : "Run a scenario to see its numbers.";
+  setHtml(document.getElementById("perf"), `<div class="panel-head"><h2 id="perf-h">Perf</h2><span class="muted" style="font-size:13px">gateway latency, command → batch</span></div>
+    <div class="panel-body" style="display:grid;gap:12px">
+      <div class="tiles">${tiles}</div>
+      ${histogram(samples, s)}
+      <p class="muted" style="font-size:13px">${caption}</p>
+    </div>`);
+}
+
+/** Bin width (ms) from a nice set: the smallest that keeps the bins at 24 or fewer. */
+function binWidth(lo, hi) {
+  for (const w of [0.1, 0.2, 0.25, 0.5, 1, 2, 2.5, 5, 10, 20, 25, 50, 100, 250, 500, 1000]) if ((hi - lo) / w <= 24) return w;
+  return Math.ceil((hi - lo) / 24);
+}
+
+function histogram(samples, s) {
+  if (!samples.length) return '<p class="empty">No latency samples yet.</p>';
+  const vals = samples.map((us) => us / 1000);
+  const min = Math.min(...vals), max = Math.max(...vals);
+  const w = binWidth(Math.floor(min), max);
+  const lo = Math.floor(min / w) * w;
+  const nb = Math.max(1, Math.floor((max - lo) / w) + 1);
+  const counts = new Array(nb).fill(0);
+  for (const v of vals) counts[Math.min(nb - 1, Math.floor((v - lo) / w))]++;
+  const top = Math.max(...counts);
+  const topBin = counts.indexOf(top); // the one bin whose count is labelled
+  // T leaves a row above the tallest bar's count for the p50 / p95 labels.
+  const W = 560, H = 200, L = 8, R = 8, T = 36, B = 34;
+  const slot = (W - L - R) / nb;
+  const bw = Math.min(24, slot - 2);
+  const y = (c) => T + (H - T - B) * (1 - c / top);
+  const x = (v) => L + ((v - lo) / w) * slot;
+  const base = H - B;
+  const bars = counts.map((c, i) => {
+    const bx = L + i * slot + (slot - bw) / 2;
+    const tip = `${(lo + i * w).toFixed(w < 1 ? 2 : 0)}–${(lo + (i + 1) * w).toFixed(w < 1 ? 2 : 0)} ms: ${c} command${c === 1 ? "" : "s"}`;
+    const h = base - y(c);
+    const r = Math.min(4, h, bw / 2);
+    const path = c ? `M${bx} ${base}V${y(c) + r}Q${bx} ${y(c)} ${bx + r} ${y(c)}H${bx + bw - r}Q${bx + bw} ${y(c)} ${bx + bw} ${y(c) + r}V${base}Z` : "";
+    return `<g class="bin">${c ? `<path class="bar" d="${path}"/>` : ""}${i === topBin ? `<text class="count" x="${bx + bw / 2}" y="${y(c) - 5}" text-anchor="middle">${c}</text>` : ""}<rect class="hit" x="${L + i * slot}" y="${T}" width="${slot}" height="${base - T}" data-tip="${esc(tip)}"><title>${esc(tip)}</title></rect></g>`;
+  }).join("");
+  const every = Math.max(1, Math.ceil(nb / 6));
+  const ticks = [];
+  for (let i = 0; i <= nb; i += every) {
+    const anchor = i === 0 ? "start" : i === nb ? "end" : "middle";
+    ticks.push(`<text class="tick" x="${L + i * slot}" y="${base + 16}" text-anchor="${anchor}">${(lo + i * w).toFixed(w < 1 ? 1 : 0)}${i === nb ? " ms" : ""}</text>`);
+  }
+  const marks = [["p50", s.p50], ["p95", s.p95]].map(([k, us]) => {
+    const mx = x(us / 1000);
+    // p50's label sits left of its line and p95's right of it, so the two never collide; each flips
+    // inward near an edge so it never clips.
+    const left = k === "p50" ? mx > L + 40 : mx > W - R - 40;
+    return `<line class="mark" x1="${mx}" x2="${mx}" y1="6" y2="${base}"/><text class="mark-label" x="${left ? mx - 4 : mx + 4}" y="14"${left ? ' text-anchor="end"' : ""}>${k}</text>`;
+  }).join("");
+  const label = `Latency histogram of ${samples.length} commands: p50 ${ms(s.p50)} ms, p95 ${ms(s.p95)} ms, max ${ms(s.max)} ms; the tallest bin holds ${top}.`;
+  return `<svg class="histo" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(label)}">
+      ${bars}<line class="base" x1="${L}" x2="${W - R}" y1="${base}" y2="${base}"/>${marks}${ticks.join("")}
+      ${nb % every ? `<text class="tick" x="${W - R}" y="${base + 16}" text-anchor="end">ms</text>` : ""}
+    </svg>`;
+}
+
+// ---- Failure drills ---------------------------------------------------------------------------------
+
+const DRILLS = [
+  ["drill-crash", "Engine crash mid-run", [["1", "docker compose kill engine"], ["2", "docker compose start engine"]], [
+    "after the kill: status “engine down”; the command in flight says “outcome unknown”; runs that start now are refused with “engine unavailable”",
+    "after the start: “engine up”, a Resume row in the trace, and the in-flight command's safe retry with the same nonce (“applied once” or “applied on retry”)",
+    "docker compose logs engine shows replayed seq=… hash=…",
+  ]],
+  ["drill-stall", "Stall", [["", "docker compose pause engine; sleep 2; docker compose unpause engine"]], [
+    "a Resume row right after the unpause",
+    "open dispute windows extended (OutcomeProposed again, with a later dispute_until)",
+  ]],
+  ["drill-aeron", "Driver crash", [["", "docker compose kill aeron"]], [
+    "the engine and the gateway halt; Docker restarts them (up to 3 times)",
+    "the page shows Reconnecting, then Connected again without a reload",
+  ]],
+];
+
+function renderDrills() {
+  const cards = DRILLS.map(([id, title, cmds, watch]) => `<div class="drill">
+      <h3 id="${id}-h">${esc(title)}</h3>
+      ${cmds.map(([step, cmd], i) => `<div class="cmd-row">${step ? `<span class="muted" style="font-size:13px;align-self:center">${step}.</span>` : ""}<code id="${id}-cmd${i}">${esc(cmd)}</code><button class="btn btn-sm" type="button" data-action="copy" data-target="${id}-cmd${i}" data-key="${id}-copy${i}" aria-describedby="${id}-h">${icon("copy")}Copy</button></div>
+      ${ui.copied?.key === `${id}-copy${i}` ? `<span class="copied" role="status">${esc(ui.copied.text)}</span>` : ""}`).join("")}
+      <div><span class="muted" style="font-size:13px">What to watch</span><ul>${watch.map((w) => `<li>${esc(w)}</li>`).join("")}</ul></div>
+    </div>`).join("");
+  setHtml(document.getElementById("drills"), `<div class="panel-head"><h2 id="drills-h">Failure drills</h2><span class="muted" style="font-size:13px">run in a terminal at the repo root</span></div>
+    <div class="panel-body drills">${cards}</div>`);
+}
+
+async function copyCommand(targetId, key) {
+  const text = document.getElementById(targetId)?.textContent ?? "";
+  let copied = false;
+  try {
+    await navigator.clipboard.writeText(text);
+    copied = true;
+  } catch {
+    // No clipboard (a page opened from disk, or permission refused): select the text to copy by hand.
+  }
+  ui.copied = { key, text: copied ? "Copied." : "Selected: press ⌘C or Ctrl+C to copy." };
+  render();
+  if (!copied) {
+    // After the render: the panel was rebuilt, so select the new element's text.
+    const code = document.getElementById(targetId);
+    const range = document.createRange();
+    range.selectNodeContents(code);
+    const sel = getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+  // "Copied." fades after 4 s; a selection stays until the next copy (a re-render would drop it).
+  if (copied) {
+    setTimeout(() => {
+      if (ui.copied?.key === key) {
+        ui.copied = null;
+        schedule();
+      }
+    }, 4000);
+  }
+}
+
+// ---- Trace: one row per batch ---------------------------------------------------------------------
+
 const FILTERS = [["all", "All"], ["rejections", "Rejections"], ["money", "Money"], ["clock", "Clock"]];
-const UNCONSUMED = ["Duplicate", "NonceGap"]; // rejections that consume no nonce
-
+const UNCONSUMED = ["Duplicate", "NonceGap"];
 const evName = (ev) => variant(ev.event);
 const evData = (ev) => (typeof ev.event === "string" ? {} : ev.event[variant(ev.event)] ?? {});
 const rejectionOf = (ev) => ev.event?.CommandRejected?.reason ?? null;
@@ -1130,7 +1489,6 @@ const audienceText = (ev) => (ev.audience === "Public" ? "Public" : `→ ${name(
 const audBadge = (ev) => `<span class="aud${ev.audience === "Public" ? "" : " aud-acct"}">${esc(audienceText(ev))}</span>`;
 const plainRef = (kind, id) => `#${esc(id)}`;
 
-/** Best-effort formatting: an event or action of an unexpected shape falls back to its raw fields. */
 function partsOr(fn, data) {
   try {
     return fn();
@@ -1140,16 +1498,15 @@ function partsOr(fn, data) {
   }
 }
 
-/** A command's fields in short form, e.g. "req #7 · 0.60 × 1,000 · exp t+10.000 s". Plain text, escaped. */
 function actionParts(kind, a) {
   return partsOr(() => {
     switch (kind) {
       case "Deposit": return [`${fmtUsd(a.amount)} to ${esc(name(a.to))}`];
       case "Withdraw": return [fmtUsd(a.amount)];
-      case "ListContract": return [`#${esc(a.id)}`, `closes ${fmtT(a.trading_close)}`, `hard deadline ${fmtT(a.resolution_deadline)}`];
-      case "SubmitRequest": return [...a.legs.map((l) => `Buy ${sideName(l.side)} × ${qty(l.qty)} · limit ${fmtPrice(l.limit_price)}`), `due ${fmtT(a.response_deadline)}`];
+      case "ListContract": return [`#${esc(a.id)}`, `closes ${esc(fmtT(a.trading_close))}`, `hard deadline ${esc(fmtT(a.resolution_deadline))}`];
+      case "SubmitRequest": return [...a.legs.map((l) => `Buy ${sideName(l.side)} × ${qty(l.qty)} · limit ${fmtPrice(l.limit_price)}`), `due ${esc(fmtT(a.response_deadline))}`];
       case "CancelRequest": case "Reject": return [`req #${esc(a.request)}`];
-      case "SubmitQuote": return [`req #${esc(a.request)}`, `${fmtPrice(a.price)} × ${qty(a.size)}`, `exp ${fmtT(a.expires_at)}`];
+      case "SubmitQuote": return [`req #${esc(a.request)}`, `${fmtPrice(a.price)} × ${qty(a.size)}`, `exp ${esc(fmtT(a.expires_at))}`];
       case "CancelQuote": return [`quote #${esc(a.quote)}`];
       case "Accept": return [`req #${esc(a.request)}`, ...a.picks.map((p) => `#${esc(p.quote)} at ${fmtPrice(p.price)}`)];
       case "ProposeOutcome": case "Rule": return [`#${esc(a.contract)}`, esc(outcomeName(a.outcome))];
@@ -1159,7 +1516,6 @@ function actionParts(kind, a) {
   }, a);
 }
 
-/** An event's fields in short form. `ref` renders an id: a link in lists, plain text inside a row button. */
 function eventParts(ev, ref) {
   const v = evName(ev), d = evData(ev);
   return partsOr(() => {
@@ -1169,16 +1525,16 @@ function eventParts(ev, ref) {
       case "Deposited": return [`${fmtUsd(d.amount)} to ${esc(name(d.account))}`];
       case "Withdrawn": return [`${fmtUsd(d.amount)} from ${esc(name(d.account))}`];
       case "ContractListed": case "ContractClosed": return [ref("contract", d.contract)];
-      case "RequestOpened": return [ref("request", d.request), `Buy ${sideName(d.side)} × ${qty(d.qty)} on ${ref("contract", d.contract)}`, `due ${fmtT(d.response_deadline)}`];
+      case "RequestOpened": return [ref("request", d.request), `Buy ${sideName(d.side)} × ${qty(d.qty)} on ${ref("contract", d.contract)}`, `due ${esc(fmtT(d.response_deadline))}`];
       case "RequestCancelled": case "RequestExpired": return [ref("request", d.request)];
-      case "RequestPresented": return [ref("request", d.request), ...d.picks.map((p) => `pick ${ref("quote", p.quote)} at ${fmtPrice(p.price)}`), `accept by ${fmtT(d.accept_by)}`];
+      case "RequestPresented": return [ref("request", d.request), ...d.picks.map((p) => `pick ${ref("quote", p.quote)} at ${fmtPrice(p.price)}`), `accept by ${esc(fmtT(d.accept_by))}`];
       case "RequestRejected": return [ref("request", d.request), esc(d.cause)];
       case "RequestFilled": return [ref("request", d.request), `position ${d.positions.map((p) => `#${esc(p)}`).join(", ")}`];
-      case "QuoteSubmitted": return [ref("quote", d.quote), `on ${ref("request", d.request)} at ${fmtPrice(d.price)}`, `expires ${fmtT(d.expires_at)}`];
+      case "QuoteSubmitted": return [ref("quote", d.quote), `on ${ref("request", d.request)} at ${fmtPrice(d.price)}`, `expires ${esc(fmtT(d.expires_at))}`];
       case "QuoteReplaced": return [`${ref("quote", d.old)} → ${ref("quote", d.new)}`];
       case "QuoteCancelled": case "QuoteExpired": case "QuoteLost": case "QuoteSelected": case "QuoteReleased": return [ref("quote", d.quote)];
       case "QuoteFilled": return [ref("quote", d.quote), `position #${esc(d.position)}`];
-      case "OutcomeProposed": return [ref("contract", d.contract), esc(outcomeName(d.outcome)), `dispute until ${fmtT(d.dispute_until)}`];
+      case "OutcomeProposed": return [ref("contract", d.contract), esc(outcomeName(d.outcome)), `dispute until ${esc(fmtT(d.dispute_until))}`];
       case "Disputed": return [ref("contract", d.contract), `by ${esc(name(d.disputer))}`];
       case "Ruled": return [ref("contract", d.contract), esc(outcomeName(d.outcome)), d.bond_returned ? "bond returned" : "bond forfeited"];
       case "ContractFinalized": return [ref("contract", d.contract), esc(outcomeName(d.outcome))];
@@ -1189,34 +1545,34 @@ function eventParts(ev, ref) {
   }, d);
 }
 
-/** The row's one-line summary: who, what kind, and the command's fields (or, if hidden, its first event). */
+const SYSTEM_KIND = { tick: "Tick", resume: "Resume", genesis: "Genesis" };
+
+/** The row's one-line summary: who, what, and the command's fields (or, for a hidden or system batch, its events). */
 function rowSummary(e) {
   const user = e.command?.User;
   if (user) {
     const kind = variant(user.action);
     return `<b>${esc(name(user.actor))}</b> ${[esc(kind), ...actionParts(kind, user.action[kind])].join(" · ")}`;
   }
-  if (e.kind === "genesis") {
-    const c = e.command?.Genesis?.config;
-    return `<b>system</b> genesis${c ? ` · ${esc(c.reservation)}, ${esc(c.selection)}` : ""}`;
-  }
-  if (e.kind === "tick" || e.kind === "resume") {
+  if (SYSTEM_KIND[e.kind]) {
     const names = [...new Set(e.events.map(evName))];
-    return `<b>system</b> ${esc(e.kind)} · ${names.length ? esc(names.join(", ")) : "no events"}`;
+    const note = e.kind === "resume" ? '<span class="row-note">engine restarted or stalled</span>' : "";
+    return `<b>${SYSTEM_KIND[e.kind]}</b> · ${names.length ? esc(names.join(", ")) : "no events"}${note}`;
   }
-  // Another party's command: only the events this viewer was sent, as the engine addressed them.
   const first = e.events[0];
-  if (!first) return "<b>hidden</b>";
+  if (e.kind === "user") {
+    // An origin this page sent nothing for (another client of the gateway, or a command sent before this page).
+    return `<b>${esc(name(e.actor))}</b> command${first ? ` → ${esc(evName(first))}${e.events.length > 1 ? ` (+${e.events.length - 1} more)` : ""}` : ""}`;
+  }
+  // Another party's command: only the events this view was sent, as the engine addressed them.
+  if (!first) return "<b>another party's command</b> · its balances only";
   const parts = eventParts(first, plainRef);
   const more = e.events.length > 1 ? ` (+${e.events.length - 1} more)` : "";
   return `<b>${esc(audienceText(first))}</b> ${esc(evName(first))}${parts.length ? ` ${parts.join(", ")}` : ""}${more}`;
 }
 
-/** The nonce column: the nonce, "(n)" when the engine consumed nothing, a lock when the command is hidden. */
 function nonceCell(e) {
-  if (e.kind === "hidden") {
-    return `<span class="nonce" title="Command hidden in this view: only its events show">${icon("lock")}<span class="sr-only">command hidden</span></span>`;
-  }
+  if (e.kind === "hidden") return `<span class="nonce" title="Another party's command: the gateway strips its origin in this view">${icon("lock")}<span class="sr-only">command hidden</span></span>`;
   if (e.nonce == null) return '<span class="nonce"></span>';
   const unused = e.events.some((ev) => UNCONSUMED.includes(rejectionOf(ev)));
   return `<span class="nonce" title="Nonce ${esc(e.nonce)}${unused ? ", not consumed" : ""}"><span class="sr-only">nonce </span>${unused ? `(${esc(e.nonce)})` : esc(e.nonce)}</span>`;
@@ -1225,32 +1581,38 @@ function nonceCell(e) {
 function passesFilter(e) {
   switch (ui.filter) {
     case "rejections": return isRejected(e);
-    case "money": return e.events.some((ev) => MONEY_EVENTS.includes(evName(ev)));
+    case "money": return e.balances.length > 0;
     case "clock": return e.kind === "tick" || e.kind === "resume";
     default: return true;
   }
 }
 
-function traceRow(e, fresh, open) {
-  const rejected = isRejected(e);
-  const cls = ["row", fresh && "is-new", open && "is-open", rejected && "is-rejected"].filter(Boolean).join(" ");
-  const n = e.events.length;
-  const head = `<button class="row-head" type="button" data-action="toggle-row" data-seq="${e.seq}" data-key="row-${e.seq}" aria-expanded="${open}"${open ? ` aria-controls="row-ev-${e.seq}"` : ""}>`
-    + `<span class="seq"><span class="sr-only">seq </span>${e.seq}</span><span class="t">${clockText(e.time)}</span>${nonceCell(e)}`
-    + `<span class="what">${rowSummary(e)}</span><span class="count" title="${n} event${n === 1 ? "" : "s"}"><span class="sr-only">, events: </span>${n}</span></button>`;
-  if (!open) return { key: `r${e.seq}`, cls, inner: head };
-  const items = e.events.map((ev, i) => {
-    const rej = rejectionOf(ev) != null;
-    const parts = eventParts(ev, (kind, id) => idlink(kind, id, `#${id}`, `t${e.seq}e${i}`));
-    return `<li><span class="ev${rej ? " rej" : ""}">${esc(evName(ev))}</span>${parts.length ? `<span${rej ? ' class="ev rej"' : ""}>${parts.join(", ")}</span>` : ""}${audBadge(ev)}</li>`;
-  }).join("");
-  return { key: `r${e.seq}`, cls, inner: `${head}<ul class="row-events" id="row-ev-${e.seq}">${items || '<li class="muted">No events.</li>'}</ul>` };
+/** A balance row's change, bucket by bucket: display diffs of two `balances` values. */
+function balanceLine(b) {
+  const parts = ["free", "reserved", "escrowed"].map((k) => {
+    const now = b.balance[k], before = b.before?.[k];
+    const d = before == null ? null : now - before;
+    return d ? `${k} <b>${fmtUsd(now)}</b> <span class="delta-inline ${d > 0 ? "up" : "down"}">(${d > 0 ? "+" : ""}${fmtUsd(d)})</span>` : before == null ? `${k} <b>${fmtUsd(now)}</b>` : "";
+  }).filter(Boolean);
+  return `<li class="row-bal"><span class="aud">balance</span> ${esc(name(b.account))}: ${parts.length ? parts.join(", ") : "unchanged"}</li>`;
 }
 
-/**
- * Keyed update of a list: rows whose markup didn't change keep their DOM node, so the log doesn't
- * flicker, keeps its scroll position, and a screen reader hears only the rows that are new.
- */
+function traceRow(e, fresh, open) {
+  const rejected = isRejected(e);
+  const cls = ["row", fresh && "is-new", open && "is-open", rejected && "is-rejected", e.kind === "resume" && "is-resume"].filter(Boolean).join(" ");
+  const n = e.events.length;
+  const head = `<button class="row-head" type="button" data-action="toggle-row" data-row="${esc(e.key)}" data-key="row-${esc(e.key)}" aria-expanded="${open}"${open ? ` aria-controls="row-ev-${esc(e.key)}"` : ""}>`
+    + `<span class="seq"><span class="sr-only">seq </span>${e.seq}</span><span class="t">${esc(fmtT(e.time))}</span>${nonceCell(e)}`
+    + `<span class="what">${rowSummary(e)}</span><span class="count" title="${n} event${n === 1 ? "" : "s"}"><span class="sr-only">, events: </span>${n}</span></button>`;
+  if (!open) return { key: `r${e.key}`, cls, inner: head };
+  const items = e.events.map((ev, i) => {
+    const rej = rejectionOf(ev) != null;
+    const parts = eventParts(ev, (kind, id) => idlink(kind, id, `#${id}`, `t${e.key}e${i}`));
+    return `<li><span class="ev${rej ? " rej" : ""}">${esc(evName(ev))}</span>${parts.length ? `<span${rej ? ' class="ev rej"' : ""}>${parts.join(", ")}</span>` : ""}${audBadge(ev)}</li>`;
+  }).join("") + e.balances.map(balanceLine).join("");
+  return { key: `r${e.key}`, cls, inner: `${head}<ul class="row-events" id="row-ev-${esc(e.key)}">${items || '<li class="muted">No events.</li>'}</ul>` };
+}
+
 function patchList(box, items) {
   const old = new Map([...box.children].map((node) => [node.dataset.k, node]));
   const make = (it) => {
@@ -1280,210 +1642,139 @@ function patchList(box, items) {
 }
 
 function renderTrace() {
-  const head = document.getElementById("trace-head");
-  const sub = isAdmin() ? "Every command and event" : `What ${name(viewerId())} can see`;
-  const headHtml = `<div class="trace-head-top"><h2 id="trace-h">Trace</h2><span class="muted" style="font-size:13px">${esc(sub)}</span></div>
+  const sub = isAdmin() ? "Every batch, every event (admin)" : `What the gateway sent ${viewLabel(page.view)}`;
+  setHtml(document.getElementById("trace-head"), `<div class="trace-head-top"><h2 id="trace-h">Trace</h2><span class="muted" style="font-size:13px">${esc(sub)}</span></div>
       <div class="filters" role="group" aria-label="Filter the trace">${FILTERS.map(([f, label]) =>
-        `<button type="button" id="filter-${f}" data-action="filter" data-filter="${f}" aria-pressed="${ui.filter === f}">${label}</button>`).join("")}</div>`;
-  if (head.patched !== headHtml) {
-    head.innerHTML = headHtml;
-    head.patched = headHtml;
-  }
-
-  const fresh = newSeqs();
-  const last = state.trace[state.trace.length - 1];
-  // Rejections open by default (their reason is the point), and so does the newest row.
-  const rows = state.trace.filter(passesFilter).map((e) => {
-    const open = ui.rows.get(e.seq) ?? (isRejected(e) || (e === last && fresh.has(e.seq)));
-    return traceRow(e, fresh.has(e.seq), open);
+        `<button type="button" id="filter-${f}" data-action="filter" data-filter="${f}" aria-pressed="${ui.filter === f}">${label}</button>`).join("")}</div>`);
+  const trace = V.M.trace;
+  const last = trace.at(-1);
+  const all = trace.filter(passesFilter);
+  const rows = all.slice(-TRACE_ROWS).map((e) => {
+    const open = ui.rows.get(e.key) ?? (isRejected(e) || e.kind === "resume" || e === last);
+    return traceRow(e, e === last, open);
   });
   const cols = { key: "cols", cls: "log-cols", hidden: true, inner: "<span>seq</span><span>time</span><span>nonce</span><span>command</span><span>events</span>" };
-  const none = { rejections: "No rejections yet.", money: "No money has moved yet.", clock: "No clock ticks yet." }[ui.filter] ?? "No rows yet.";
+  const more = all.length > TRACE_ROWS ? [{ key: "more", cls: "trace-more", inner: `${all.length - TRACE_ROWS} earlier rows not shown: pick one run in the timeline to see all of its rows.` }] : [];
+  const none = { rejections: "No rejections up to here.", money: "No balance moved up to here.", clock: "No Tick or Resume up to here." }[ui.filter] ?? "No batches up to here.";
   const empty = { key: "empty", cls: "empty", inner: `<p style="padding:10px 16px">${none}</p>` };
-  patchList(document.getElementById("log"), [cols, ...rows, ...(rows.length ? [] : [empty])]);
+  patchList(document.getElementById("log"), [cols, ...more, ...rows, ...(rows.length ? [] : [empty])]);
 }
 
-/** After a render: keep the newest row in view, unless the presenter scrolled up to read. */
 function followLog() {
   const log = document.getElementById("log");
   if (ui.logPinned) log.scrollTop = log.scrollHeight;
 }
 
-/** Opens a row (from the inspector), clearing a filter that hides it, and moves focus to it. */
-function revealRow(seq) {
-  ui.rows.set(seq, true);
-  const e = state.trace.find((x) => x.seq === seq);
-  if (e && !passesFilter(e)) ui.filter = "all";
-  ui.logPinned = false;
-  render();
-  const row = document.querySelector(`[data-key="row-${seq}"]`);
-  row?.scrollIntoView({ block: "nearest" });
-  row?.focus({ preventScroll: true });
-}
-
-// ---- Inspector -------------------------------------------------------------------------------
+// ---- Inspector ------------------------------------------------------------------------------------
 
 const REF_FIELDS = ["request", "quote", "contract", "old", "new", "id"];
 const REF_KIND = { request: "request", quote: "quote", old: "quote", new: "quote", contract: "contract" };
 const KIND_TITLE = { request: "Request", quote: "Quote", contract: "Contract" };
 
-/** Whether a command or event mentions the id in a field named request, quote, contract, old, new or id. */
 function refers(v, id) {
   if (Array.isArray(v)) return v.some((x) => refers(x, id));
   if (!v || typeof v !== "object") return false;
   return Object.entries(v).some(([k, x]) => (REF_FIELDS.includes(k) && x === id) || refers(x, id));
 }
 
-/** Every trace entry, in this view, whose command or events reference the object. */
 function historyOf(sel) {
   if (!sel) return [];
-  return state.trace.filter((e) => refers(e.command, sel.id) || e.events.some((ev) => refers(ev.event, sel.id)));
+  return V.M.trace.filter((e) => refers(e.command, sel.id) || e.events.some((ev) => refers(ev.event, sel.id)));
 }
 
-/** The object's state in this view's snapshot: null when the viewer may not see it. */
 function currentState(sel) {
-  const s = state.snapshot;
   if (sel.kind === "request") {
-    const r = s.requests.find((x) => x.id === sel.id);
-    return r?.state ? variant(r.state) : r?.public_state === "open" ? "Open" : null;
+    const r = V.M.requests.find((x) => x.id === sel.id);
+    return r ? variant(r.state) : null;
   }
-  if (sel.kind === "quote") return s.quotes.find((q) => q.id === sel.id)?.state ?? null;
-  const c = s.contracts.find((x) => x.id === sel.id);
+  if (sel.kind === "quote") return V.M.quotes.find((q) => q.id === sel.id)?.state ?? null;
+  const c = V.M.contracts.find((x) => x.id === sel.id);
   return c ? variant(c.state) : null;
 }
 
 function inspectorFacts(sel) {
-  const s = state.snapshot, where = "insp";
+  const where = "insp";
   const sealed = sealedMark("sealed");
   if (sel.kind === "request") {
-    const r = s.requests.find((x) => x.id === sel.id);
-    if (!r) return { badge: "", facts: "<span>Not in this view.</span>" };
+    const r = V.M.requests.find((x) => x.id === sel.id);
+    if (!r) return { badge: "", facts: "<span>Not in these batches.</span>" };
     const facts = [`<span>Requester ${r.requester != null ? `<b>${esc(name(r.requester))}</b>` : sealed}</span>`];
     for (const leg of r.legs) {
+      if (!leg) continue;
       facts.push(`<span>Buy <b>${sideName(leg.side)}</b> × <b>${qty(leg.qty)}</b> on ${idlink("contract", leg.contract, `#${leg.contract}`, where)}</span>`);
       facts.push(`<span>Limit ${leg.limit_price != null ? `<b>${fmtPrice(leg.limit_price)}</b>` : sealed}</span>`);
     }
-    facts.push(`<span>Quotes due <b>${fmtT(r.response_deadline)}</b></span>`);
-    if (r.state?.Presented) facts.push(`<span>Accept by <b>${fmtT(r.state.Presented.accept_by)}</b></span>`);
+    facts.push(`<span>Quotes due <b>${esc(fmtT(r.response_deadline))}</b></span>`);
+    if (r.state?.Presented) facts.push(`<span>Accept by <b>${esc(fmtT(r.state.Presented.accept_by))}</b></span>`);
     for (const p of r.picks) facts.push(`<span>Pick ${idlink("quote", p.quote, `#${p.quote}`, where)} at <b>${fmtPrice(p.price)}</b></span>`);
     if (r.state?.Rejected) facts.push(`<span>Cause <b>${esc(r.state.Rejected)}</b></span>`);
-    const b = r.state ? badge(variant(r.state)) : badge(r.public_state, r.public_state === "open" ? "b-live" : "b-gone");
-    return { badge: b, facts: facts.join("") };
+    return { badge: badge(variant(r.state)), facts: facts.join("") };
   }
   if (sel.kind === "quote") {
-    const q = s.quotes.find((x) => x.id === sel.id);
+    const q = V.M.quotes.find((x) => x.id === sel.id);
     if (!q) return { badge: "", facts: sealedMark("sealed: only its market maker and admin see this quote") };
     return {
       badge: badge(q.state),
       facts: `<span>Market maker <b>${esc(name(q.mm))}</b></span><span>On ${idlink("request", q.request, `request #${q.request}`, where)}</span>`
-        + `<span>Sells at <b>${fmtPrice(q.price)}</b> × <b>${qty(q.size)}</b></span><span>${q.state === "Selected" ? "Firm until" : "Expires"} <b>${fmtT(q.expires_at)}</b></span>`,
+        + `<span>Sells at <b>${fmtPrice(q.price)}</b> × <b>${qty(q.size)}</b></span><span>${q.state === "Selected" ? "Firm until" : "Expires"} <b>${esc(fmtT(q.expires_at))}</b></span>`,
     };
   }
-  const c = s.contracts.find((x) => x.id === sel.id);
-  if (!c) return { badge: "", facts: "<span>Not in this view.</span>" };
+  const c = V.M.contracts.find((x) => x.id === sel.id);
+  if (!c) return { badge: "", facts: "<span>Not in these batches.</span>" };
   const st = variant(c.state);
-  const facts = [`<span>Trading closes <b>${fmtT(c.trading_close)}</b></span>`, `<span>Hard deadline <b>${fmtT(c.resolution_deadline)}</b></span>`];
-  if (st === "Proposed") facts.push(`<span>Proposed <b>${esc(outcomeName(c.state.Proposed.outcome))}</b>, dispute until <b>${fmtT(c.state.Proposed.dispute_until)}</b></span>`);
+  const facts = c.trading_close != null
+    ? [`<span>Trading closes <b>${esc(fmtT(c.trading_close))}</b></span>`, `<span>Hard deadline <b>${esc(fmtT(c.resolution_deadline))}</b></span>`]
+    : [sealedMark("terms not sent to this view")];
+  if (st === "Proposed") facts.push(`<span>Proposed <b>${esc(outcomeName(c.state.Proposed.outcome))}</b>, dispute until <b>${esc(fmtT(c.state.Proposed.dispute_until))}</b></span>`);
   if (st === "Disputed") facts.push(`<span>Proposed <b>${esc(outcomeName(c.state.Disputed.proposed))}</b>, disputed by <b>${esc(name(c.dispute?.disputer))}</b></span>`);
   if (st === "Final") facts.push(`<span>Outcome <b>${esc(outcomeName(c.state.Final))}</b></span>`);
   return { badge: badge(st), facts: facts.join("") };
 }
 
-/** One history line: the seq (opens its trace row), who did what, and each event with its ids. */
 function historyItem(e, sel) {
   const user = e.command?.User;
-  const who = user ? name(user.actor) : e.kind === "hidden" ? (e.events[0] ? audienceText(e.events[0]) : "hidden") : "system";
-  const what = user ? variant(user.action) : e.kind === "hidden" ? "" : e.kind;
-  const ref = (field, id) => (id === sel.id ? `#${esc(id)}` : idlink(REF_KIND[field], id, `#${id}`, `insp${e.seq}`));
+  const who = user ? name(user.actor) : e.kind === "hidden" ? (e.events[0] ? audienceText(e.events[0]) : "hidden") : e.actor != null ? name(e.actor) : "system";
+  const what = user ? variant(user.action) : e.kind === "hidden" || e.kind === "user" ? "" : e.kind;
+  const ref = (field, id) => (id === sel.id ? `#${esc(id)}` : idlink(REF_KIND[field], id, `#${id}`, `insp${e.key}`));
   const evs = e.events.map((ev) => {
     const d = evData(ev), v = evName(ev);
     if (v === "QuoteReplaced") return `${esc(v)} ${ref("old", d.old)} → ${ref("new", d.new)}`;
     const field = ["quote", "request", "contract"].find((f) => typeof d[f] === "number");
     return `<span${rejectionOf(ev) ? ' class="check-bad"' : ""}>${esc(v)}${field ? ` ${ref(field, d[field])}` : ""}${rejectionOf(ev) ? ` (${esc(rejectionOf(ev))})` : ""}</span>`;
   }).join(", ");
-  return `<li><button class="idlink" type="button" data-action="reveal-row" data-seq="${e.seq}" data-key="insp-seq-${e.seq}">seq ${e.seq}</button> <b>${esc(who)}</b>${what ? ` ${esc(what)}` : ""}${evs ? ` → ${evs}` : ""}</li>`;
+  return `<li><button class="idlink" type="button" data-action="reveal-row" data-row="${esc(e.key)}" data-key="insp-seq-${esc(e.key)}">seq ${e.seq}</button> <b>${esc(who)}</b>${what ? ` ${esc(what)}` : ""}${evs ? ` → ${evs}` : ""}</li>`;
 }
 
 function renderInspector() {
   const el = document.getElementById("inspector");
   if (!selected) {
-    el.innerHTML = '<h2 id="insp-h" tabindex="-1">Inspector</h2><p class="empty">Click any request, quote or contract id to trace it.</p>';
+    setHtml(el, '<h2 id="insp-h" tabindex="-1">Inspector</h2><p class="empty">Click any request, quote or contract id to trace it up to this position.</p>');
     return;
   }
   const { badge: b, facts } = inspectorFacts(selected);
   const items = historyOf(selected).map((e) => historyItem(e, selected)).join("");
-  el.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">
+  setHtml(el, `<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">
       <h2 id="insp-h" tabindex="-1">${KIND_TITLE[selected.kind] ?? "Object"} #${esc(selected.id)}</h2>
       <span style="display:flex;gap:8px;align-items:center">${b}<button class="btn btn-quiet btn-sm" type="button" id="insp-clear" data-action="deselect">Clear</button></span>
     </div>
     <div class="item-facts">${facts}</div>
-    ${items ? `<ol>${items}</ol>` : `<p class="empty">Nothing in this view's trace mentions it.</p>`}`;
+    ${items ? `<ol>${items}</ol>` : `<p class="empty">Nothing in these batches mentions it.</p>`}`);
 }
 
-// ---- Ledger ----------------------------------------------------------------------------------
-
-const LEDGER_ORDER = ["requester", "market_maker"];
-const roleText = (role) => (role === "market_maker" ? "market maker" : role);
-const sumOf = (b) => b.free + b.reserved + b.escrowed; // display only: the row's total
-
-/** A cell's change since the last command: display diff of two engine integers. */
-function deltaHtml(now, before) {
-  if (before == null || now === before) return "";
-  const d = now - before;
-  return `<span class="delta ${d > 0 ? "up" : "down"}">${d > 0 ? "+" : ""}${fmtUsd(d)}</span>`;
+function revealRow(key) {
+  ui.rows.set(key, true);
+  const e = V.M.trace.find((x) => x.key === key);
+  if (e && !passesFilter(e)) ui.filter = "all";
+  ui.logPinned = false;
+  render();
+  const row = document.querySelector(`[data-key="row-${CSS.escape(key)}"]`);
+  row?.scrollIntoView({ block: "nearest" });
+  row?.focus({ preventScroll: true });
 }
 
-function renderLedger() {
-  const s = state.snapshot, base = ui.ledgerBase;
-  const rank = (a) => { const i = LEDGER_ORDER.indexOf(a.role); return i < 0 ? LEDGER_ORDER.length : i; };
-  const sorted = [...s.accounts].sort((a, b) => rank(a) - rank(b));
-  // System accounts that hold nothing, and held nothing before the last command, share one row
-  // (as in the mockup); one that holds money, like the treasury after a forfeited bond, gets its own.
-  const idle = sorted.filter((a) => rank(a) === LEDGER_ORDER.length && sumOf(a.balance) === 0
-    && sumOf(base?.balances.get(a.id) ?? a.balance) === 0);
-  const grouped = idle.length > 1 ? new Set(idle) : new Set();
-  const rows = sorted.filter((a) => !grouped.has(a)).map((a) => {
-    const b = a.balance, was = base?.balances.get(a.id);
-    const cells = [[b.free, was?.free], [b.reserved, was?.reserved], [b.escrowed, was?.escrowed], [sumOf(b), was && sumOf(was)]];
-    const changed = was && cells.some(([now, before]) => now !== before);
-    return `<tr${changed ? ' class="changed"' : ""}>
-        <td><span class="who">${esc(a.name)}</span><span class="role">${esc(roleText(a.role))}</span></td>
-        ${cells.map(([now, before]) => `<td>${fmtUsd(now)}${deltaHtml(now, before)}</td>`).join("")}
-        <td>${sumOf(b) > 0 ? splitBar(b) : ""}</td>
-      </tr>`;
-  }).join("") + (grouped.size ? `<tr>
-        <td><span class="who">${esc([...grouped].map((a) => a.name).join(", "))}</span><span class="role">system accounts</span></td>
-        ${`<td>${fmtUsd(0)}</td>`.repeat(4)}<td></td>
-      </tr>` : "");
-  const foot = s.total != null
-    ? `<tfoot><tr><td colspan="4">Ledger total</td><td>${fmtUsd(s.total)}${deltaHtml(s.total, base?.total)}</td><td class="muted" style="text-align:left;font-weight:400">changes only on Deposit/Withdraw (I1)</td></tr></tfoot>`
-    : "";
-  const inv = s.invariants.ok
-    ? `${badge("I1–I5 hold", "b-good")} <span class="muted">checked after every command</span>`
-    : `${badge("I1–I5 broken", "b-bad")} <span class="check-bad">${esc(s.invariants.error ?? "")}</span>`;
-  const r = ui.replay;
-  const hash = (h) => String(h).slice(0, 8);
-  const text = !r ? ""
-    : r.matches ? `Replayed ${r.commands} commands → hash ${hash(r.replayed)} = live ${hash(r.live)} ✓`
-    : `Replayed ${r.commands} commands → hash ${hash(r.replayed)} ≠ live ${hash(r.live)}: mismatch ✗`;
-  document.getElementById("ledger-table").innerHTML = `<table>
-      <thead><tr><th scope="col">Account</th><th scope="col">Free</th><th scope="col">Reserved</th><th scope="col">Escrowed</th><th scope="col">Total</th><th scope="col" class="barcol">Split</th></tr></thead>
-      <tbody>${rows}</tbody>
-      ${foot}
-    </table>`;
-  document.getElementById("ledger-inv").innerHTML = inv;
-  // The live region is never rebuilt: only its text and class change, and only when they differ.
-  const live = document.getElementById("replay-result");
-  const cls = !r ? "" : r.matches ? "check-ok" : "check-bad";
-  if (live.textContent !== text) live.textContent = text;
-  if (live.className !== cls) live.className = cls;
-  document.getElementById("ledger-note").hidden = s.total != null;
-}
-
-// ---- Deliverables: D1 state machines -----------------------------------------------------------
+// ---- Deliverables: D1 state machines ---------------------------------------------------------------
 
 // Transcribed from engine.md §6.1–6.3: every state, every edge, each edge's trigger and who fires it.
-// Node: [key, x, y, width, text, terminal]. Edge: [key, path, labels as [x, y, text, anchor?]].
 const MACHINES = [
   {
     kind: "request", title: "Request", view: "0 0 520 206", start: [14, 102],
@@ -1541,7 +1832,6 @@ const MACHINES = [
   },
 ];
 
-// Which edge each event is, per kind: [edge, the state it enters].
 const REQUEST_STEPS = {
   RequestOpened: ["start", "Open"], RequestCancelled: ["cancel", "Cancelled"], RequestExpired: ["expire", "Expired"],
   RequestPresented: ["present", "Presented"], RequestFilled: ["accept", "Filled"], RequestRejected: ["reject", "Rejected"],
@@ -1552,7 +1842,6 @@ const QUOTE_STEPS = {
   QuoteFilled: ["fill", "Filled"], QuoteReleased: ["release", "Released"],
 };
 
-/** The contract edge an event took, which depends on the state it left (both Finals are "Final"). */
 function contractStep(v, at, entry) {
   switch (v) {
     case "ContractListed": return ["start", "Trading"];
@@ -1564,12 +1853,11 @@ function contractStep(v, at, entry) {
       if (at === "Proposed") return ["window", "FinalA"];
       if (at === "Disputed") return ["hardDisputed", "FinalB"];
       if (at === "Closed") return ["hardClosed", "FinalA"];
-      return null; // after Ruled (same command), or from a state this view never saw
+      return null;
     default: return null;
   }
 }
 
-/** The selected object's transitions, from the state-changing events in its history. */
 function transitionsOf(sel) {
   const out = [];
   let at = null;
@@ -1589,11 +1877,31 @@ function transitionsOf(sel) {
   return out;
 }
 
-/** What the selected object lights in its diagram: its current node, and the edge it took last. */
-function litFor(m) {
-  if (!selected || selected.kind !== m.kind) return null;
-  const now = currentState(selected);
-  const last = transitionsOf(selected).at(-1);
+/**
+ * The object each diagram lights: the one the presenter clicked, else the run's own from the model
+ * (its newest request, that request's picked quote or its newest quote, its contract).
+ */
+function litObject(kind) {
+  if (selected?.kind === kind) return selected;
+  const M = V.M;
+  if (kind === "request") {
+    const r = M.requests.at(-1);
+    return r ? { kind, id: r.id, auto: true } : null;
+  }
+  if (kind === "quote") {
+    const r = selected?.kind === "request" ? M.requests.find((x) => x.id === selected.id) : M.requests.at(-1);
+    const picked = r?.picks?.[0]?.quote ?? r?.legs?.[0]?.selected;
+    const q = M.quotes.find((x) => x.id === picked) ?? M.quotes.at(-1);
+    return q ? { kind, id: q.id, auto: true } : null;
+  }
+  const c = M.contracts.at(-1);
+  return c ? { kind, id: c.id, auto: true } : null;
+}
+
+function litFor(sel) {
+  if (!sel) return null;
+  const now = currentState(sel);
+  const last = transitionsOf(sel).at(-1);
   const node = (key) => (key === "FinalA" || key === "FinalB" ? "Final" : key);
   const edge = last && now && node(last.to) === now ? last.edge : null;
   let nodes = [];
@@ -1603,7 +1911,8 @@ function litFor(m) {
 }
 
 function machineHtml(m) {
-  const lit = litFor(m);
+  const sel = litObject(m.kind);
+  const lit = litFor(sel);
   const p = `sm-${m.kind}`;
   const labelOf = (key) => m.edges.find(([k]) => k === key)?.[2].map((l) => l[2]).join(" ") ?? "";
   const edges = m.edges.map(([key, d]) => `<path class="sm-edge${lit?.edge === key ? " is-last" : ""}" d="${d}" marker-end="url(#${p}-ah${lit?.edge === key ? "-last" : ""})"/>`).join("");
@@ -1611,15 +1920,15 @@ function machineHtml(m) {
     `<text class="sm-label${lit?.edge === key ? " is-last" : ""}" x="${x}" y="${y}"${anchor ? ` text-anchor="${anchor}"` : ""}>${esc(t)}</text>`)).join("");
   const nodes = m.nodes.map(([key, x, y, w, t, terminal]) => {
     const cls = ["sm-node", terminal && "is-terminal", lit?.nodes.has(key) && "is-current"].filter(Boolean).join(" ");
-    return `<g class="${cls}"><rect x="${x}" y="${y}" width="${w}" height="32" rx="6"/><text x="${x + w / 2}" y="${y + 21}" text-anchor="middle">${esc(t)}</text></g>`;
+    return `<g class="${cls}" data-node="${key}"><rect x="${x}" y="${y}" width="${w}" height="32" rx="6"/><text x="${x + w / 2}" y="${y + 21}" text-anchor="middle">${esc(t)}</text></g>`;
   }).join("");
   const marker = (id, fill, size) => `<marker id="${id}" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="${size}" markerHeight="${size}" orient="auto"><path d="M0 0L8 4L0 8z" style="fill:var(${fill})"/></marker>`;
-  const sel = selected?.kind === m.kind ? selected : null;
-  const status = !sel ? `select a ${m.kind} to light it`
-    : lit.now ? `#${sel.id} is ${lit.now}` : `#${sel.id}: its state is sealed in this view`;
+  const who = sel?.auto ? "this run's" : "selected";
+  const status = !sel ? `no ${m.kind} up to this position`
+    : lit.now ? `${who} #${sel.id} is ${lit.now}` : `#${sel.id}: its state is not in this view`;
   const aria = [`${m.title} state machine.`];
-  if (sel) aria.push(lit.now ? `#${sel.id} is ${lit.now}${lit.edge ? `, entered by ${labelOf(lit.edge)}` : ""}.` : `#${sel.id}'s state is sealed in this view.`);
-  return `<div class="machine">
+  if (sel) aria.push(lit.now ? `#${sel.id} is ${lit.now}${lit.edge ? `, entered by ${labelOf(lit.edge)}` : ""}.` : `#${sel.id}'s state is not in this view.`);
+  return `<div class="machine" id="machine-${m.kind}" data-lit="${esc(lit?.now ?? "")}">
       <h3>${m.title} <span class="muted" style="font-weight:400;font-size:13px">${esc(status)}</span></h3>
       <svg viewBox="${m.view}" role="img" aria-label="${esc(aria.join(" "))}"><defs>${marker(`${p}-ah`, "--ink-3", 7)}${marker(`${p}-ah-last`, "--accent", 6)}</defs>
         <circle class="sm-start" cx="${m.start[0]}" cy="${m.start[1]}" r="5"/>${edges}${labels}${nodes}</svg>
@@ -1630,7 +1939,7 @@ function machineHtml(m) {
 function d1Panel() {
   return `<div class="machines">${MACHINES.map(machineHtml).join("")}</div>
     <div class="legend">
-      <span><svg width="22" height="12" aria-hidden="true"><rect x="1" y="1" width="20" height="10" rx="3" fill="var(--accent-tint)" stroke="var(--accent)" stroke-width="2"/></svg> Current state of the selected object</span>
+      <span><svg width="22" height="12" aria-hidden="true"><rect x="1" y="1" width="20" height="10" rx="3" fill="var(--accent-tint)" stroke="var(--accent)" stroke-width="2"/></svg> State at this position (the clicked object, else the run's own)</span>
       <span><svg width="22" height="12" aria-hidden="true"><line x1="1" y1="6" x2="21" y2="6" stroke="var(--accent)" stroke-width="2.5"/></svg> The transition it took last</span>
       <span><svg width="22" height="12" aria-hidden="true"><rect x="1" y="1" width="20" height="10" rx="3" fill="none" stroke="var(--line-2)" stroke-dasharray="3 2"/></svg> Terminal</span>
       <span><svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="5" fill="var(--ink-3)"/></svg> Created by</span>
@@ -1641,7 +1950,6 @@ function d1Panel() {
 // ---- Deliverables: multi-leg, D3, D4, D5 -------------------------------------------------------
 
 function multiLegPanel() {
-  // engine.md §8: the "leg 2 of 3" table as three steps, and the five atomicity rules.
   return `<p style="margin-bottom:10px"><span class="not-built">Designed, not built (P6)</span> <span class="muted">The engine rejects more than one leg today: a request with two or more legs is CommandRejected (Unsupported). This is the design for "leg 2 of 3 fails after leg 1 matched".</span></p>
     <div class="steps3">
       <div class="item"><div class="item-head"><span class="id">1. Before the deadline</span></div><p style="font-size:13px">Leg 1: MM-A's quote is Active and holds. Leg 2: no quote. Leg 3: MM-C's quote is Active and holds. The request is Open. Nothing provisional is escrowed.</p></div>
@@ -1657,23 +1965,18 @@ function multiLegPanel() {
     </ol>`;
 }
 
-/**
- * A button that resets to a preset from the catalogue; none if the catalogue lacks it. "Run" when the
- * preset demonstrates the row; "Related preset" when it only shows the situation around it.
- */
-function runButton(presetName, where, related = false) {
-  const p = presets.find((x) => x.name === presetName);
-  if (!p) return null;
-  const label = related ? "Related preset" : "Run";
-  // The summary narrates sealed prices and limits, so like the scenario strip it is admin-only.
-  const title = `${related ? "Related, not the race itself. " : ""}Reset to ${p.name}${isAdmin() ? `: ${p.summary}` : ""}`;
-  return `<button class="btn btn-sm" type="button" data-action="run-preset" data-preset="${esc(p.name)}" data-key="run-${esc(where)}" title="${esc(title)}">${label}<span class="sr-only"> ${esc(p.name)}</span></button>`;
+/** A button that runs a scenario live; "Related" when it only shows the situation around the row. */
+function runButton(scenario, where, related = false) {
+  const s = RfqScenarios.byName(scenario);
+  if (!s) return null;
+  const label = related ? "Related" : "Run";
+  const title = `${related ? "Related, not the race itself. " : ""}Run ${s.name} live${isAdmin() ? `: ${s.summary}` : ""}`;
+  return `<button class="btn btn-sm" type="button" data-action="run-scenario" data-scenario="${esc(s.name)}" data-key="run-${esc(where)}" title="${esc(title)}"${disabledIf(page.set != null || page.conn !== "connected", "A run is in progress, or the gateway is not connected")}>${label}<span class="sr-only"> ${esc(s.name)}</span></button>`;
 }
-const runCell = (presetName, where, fallback, related) =>
-  `<td class="run">${runButton(presetName, where, related) ?? `<span class="muted">${fallback}</span>`}</td>`;
+const runCell = (scenario, where, fallback, related) =>
+  `<td class="run">${runButton(scenario, where, related) ?? `<span class="muted">${fallback}</span>`}</td>`;
 
-// failure-modes.md, transcribed: [id, race or failure, handling, tests, preset, options]. The preset
-// demonstrates the row unless `related` says it only shows the situation; `note` follows the tests.
+// failure-modes.md, transcribed: [id, race or failure, handling, tests, scenario, options].
 const FAILURES = [
   ["Races", [
     ["R1", "Cancel vs response deadline", "Before the deadline the cancel removes the quote; at or after it, the quote is Selected (firm): InvalidState.", ["cancel_before_deadline_removes_quote", "cancel_after_selection_rejected"], "mm_cannot_withdraw_after_selection"],
@@ -1689,22 +1992,21 @@ const FAILURES = [
   ["Partial failures", [
     ["F1", "Funds short mid-accept", "All legs validated before any escrow; holds already cover the accept.", []],
     ["F2", "Arithmetic overflow", "checked_* gives CommandRejected; balances untouched, nonce consumed.", ["deposit_overflow_rejected"]],
-    ["F3", "Crash before durable", "Nothing applied or published; a torn FileJournal tail is truncated; a retry applies once or is Duplicate.", ["failed_durability_applies_and_publishes_nothing", "file_journal_truncates_torn_tail"]],
-    ["F4", "Crash before apply", "Replay applies it.", ["restart_replays_to_same_state_without_republishing"]],
+    ["F3", "Crash before durable", "Nothing applied or published; a torn FileJournal tail is truncated; a retry applies once or is Duplicate.", ["failed_durability_applies_and_publishes_nothing", "file_journal_truncates_torn_tail"], null, { note: "Live: the engine-crash drill" }],
+    ["F4", "Crash before apply", "Replay applies it.", ["restart_replays_to_same_state_without_republishing"], null, { note: "Live: the engine-crash drill" }],
     ["F5", "Egress lost after apply", "Egress is best-effort: never re-published on replay, dropped with no subscriber. Exactly-once effects (withdrawals) read the journal.", ["failed_publish_still_applies_the_durable_batch", "restart_replays_to_same_state_without_republishing"]],
-    ["F6", "Replay diverges", "No clock, RNG or HashMap; replay hashes are checked in tests and in this demo.", ["replay_reproduces_state_hash"], "replay"],
+    ["F6", "Replay diverges", "No clock, RNG or HashMap; replay hashes are checked in tests and on every node restart.", ["replay_reproduces_state_hash"], null, { note: "Live: <code>docker compose logs engine</code> after the crash drill" }],
     ["F7", "Oracle never answers", "Hard deadline gives Final(Invalid), full refunds.", ["oracle_silent_hard_deadline_refunds"], "oracle_silent_hard_deadline"],
     ["F8", "Arbiter never rules", "Hard deadline gives Final(proposed), bond returned (DisputeBondReturned to the disputer).", ["arbiter_silent_hard_deadline_returns_bond", "hard_deadline_announces_the_returned_bond_to_the_disputer"]],
-    ["F9", "Downtime in a dispute window", "Resume goes first and extends open windows to min(now + RESUME_GRACE, resolution_deadline − 1).", ["resume_extends_open_dispute_window", "resume_does_not_extend_accept_window", "restart_appends_resume"]],
+    ["F9", "Downtime in a dispute window", "Resume goes first and extends open windows to min(now + RESUME_GRACE, resolution_deadline − 1).", ["resume_extends_open_dispute_window", "resume_does_not_extend_accept_window", "restart_appends_resume"], null, { note: "Live: the stall drill" }],
     ["F10", "Clock behind the log", "Time is max(wall, last_time), resumed from the journal.", ["sequencer_time_is_monotonic", "clock_never_goes_back_across_a_restart"]],
     ["F11", "A port fails", "The node latches Halted; restart replays. FileJournal poisons itself.", ["poll_after_failure_is_refused", "write_failure_poisons_the_handle"]],
     ["F12", "Replayed seq gap or duplicate", "Node::start refuses to start.", ["replay_refuses_a_duplicate_seq", "replay_refuses_a_gap"]],
-    ["F13", "Aeron crashes", "Per-session recordings; redelivered ingress is Duplicate if durable, else applied once.", ["archive_journal_replays_every_recording_across_restarts_and_crashes"], null, { note: "(Docker, <code>#[ignore]</code>d)" }],
-    ["F14", "Live stall or clock jump", "A poll gap over STALL_GAP_MS (1 s) sequences Resume first, as F9. Residual: downtime past resolution_deadline − dispute_window ends Invalid.", ["a_stall_cannot_eat_a_dispute_window", "a_stall_longer_than_the_gap_sequences_resume_before_the_batch"]],
+    ["F13", "Aeron crashes", "Per-session recordings; redelivered ingress is Duplicate if durable, else applied once.", ["archive_journal_replays_every_recording_across_restarts_and_crashes"], null, { note: "(Docker, <code>#[ignore]</code>d) Live: the driver-crash drill" }],
+    ["F14", "Live stall or clock jump", "A poll gap over STALL_GAP_MS (1 s) sequences Resume first, as F9. Residual: downtime past resolution_deadline − dispute_window ends Invalid.", ["a_stall_cannot_eat_a_dispute_window", "a_stall_longer_than_the_gap_sequences_resume_before_the_batch"], null, { note: "Live: the stall drill" }],
     ["F15", "Egress subscriber stops polling", "5 s of tethered back-pressure halts the node, and again after each restart. Residual: subscribers must be venue-operated.", []],
   ]],
-  // The brief's accept-echo attack has no R/F row; these come from adversarial.md's attacker table.
-  ["Attacks with a preset (adversarial.md)", [
+  ["Attacks with a scenario (adversarial.md)", [
     ["", "Requester: accept a different price than shown", "Accept must echo quote ids and prices; a mismatch is rejected.", ["accept_must_echo_exact_selection"], "attack_accept_wrong_price"],
     ["", "MM: probe the sealed limit with quotes", "SubmitQuote doesn't check the limit; selection drops over-limit quotes and QuoteLost doesn't say why.", ["over_limit_quote_accepted_but_never_selected"], "attack_over_limit_quote"],
     ["", "Either side: self-trade", "mm ≠ requester, else rejected (SelfTrade).", ["quote_validation"], "attack_self_trade"],
@@ -1714,10 +2016,8 @@ const FAILURES = [
 function d3Panel() {
   const body = FAILURES.map(([group, rows]) => `<tbody>
       <tr class="dgroup"><th scope="rowgroup" colspan="5">${esc(group)}</th></tr>
-      ${rows.map(([id, what, how, tests, preset, opts = {}]) => {
-        const run = preset === "replay"
-          ? `<td class="run"><button class="btn btn-sm" type="button" data-action="replay" data-key="run-f6" title="Replay this run's command log in a fresh engine">Replay check</button></td>`
-          : runCell(preset, id || preset, tests.length ? "test only" : "—", opts.related);
+      ${rows.map(([id, what, how, tests, scenario, opts = {}]) => {
+        const run = runCell(scenario, id || scenario, tests.length ? "test only" : "—", opts.related);
         const testCell = tests.length ? tests.map((t) => `<code>${esc(t)}</code>`).join("<br>") : '<span class="muted">—</span>';
         // opts.note is a literal from this table (it carries markup), never engine data.
         return `<tr><td>${esc(id)}</td><td>${esc(what)}</td><td>${esc(how)}</td><td>${testCell}${opts.note ? ` <span class="muted">${opts.note}</span>` : ""}</td>${run}</tr>`;
@@ -1728,11 +2028,10 @@ function d3Panel() {
       <thead><tr><th scope="col">#</th><th scope="col">Race or failure</th><th scope="col">Handling</th><th scope="col">Test</th><th scope="col"><span class="sr-only">Run</span></th></tr></thead>
       ${body}
     </table></div>
-    <p class="muted" style="font-size:13px;margin-top:8px">Full notes: docs/specs/failure-modes.md · Attacker table: docs/specs/adversarial.md</p>`;
+    <p class="muted" style="font-size:13px;margin-top:8px">Full notes: docs/specs/failure-modes.md · Attacker table: docs/specs/adversarial.md · Run plays the scenario live through the gateway.</p>`;
 }
 
 function d4Panel() {
-  // resolution.md: the four ways a contract reaches Final, and how its funds unlock.
   const rows = [
     ["Undisputed", "The oracle proposes after close; nobody disputes before dispute_until, and the window timer makes it Final.", "Final with the proposed outcome; every position settles in that same command.", "happy_path"],
     ["Disputed, ruled", "Anyone disputes before dispute_until, holding the bond; the arbiter rules.", "Final with the ruling; positions settle in that command. The bond is returned if the ruling differs from the proposal, else forfeited to the treasury.", "disputed_ruled_invalid"],
@@ -1741,26 +2040,18 @@ function d4Panel() {
   ];
   return `<div style="overflow-x:auto;position:relative"><table class="dtable">
       <thead><tr><th scope="col">Path</th><th scope="col">What happens</th><th scope="col">Funds</th><th scope="col"><span class="sr-only">Run</span></th></tr></thead>
-      <tbody>${rows.map(([path, what, funds, preset, test], i) => `<tr><td>${esc(path)}</td>`
+      <tbody>${rows.map(([path, what, funds, scenario, test], i) => `<tr><td>${esc(path)}</td>`
         + `<td>${esc(what)}${test ? `<br><span class="muted">Test:</span> <code>${esc(test)}</code>` : ""}</td><td>${esc(funds)}</td>`
-        + `${runCell(preset, `d4-${i}`, "test only")}</tr>`).join("")}</tbody>
+        + `${runCell(scenario, `d4-${i}`, "test only")}</tr>`).join("")}</tbody>
     </table></div>
     <p class="muted" style="font-size:13px;margin-top:8px">Funds unlock only when the contract is Final, which settles every position in the same command: YES pays the YES holder both locks, NO pays the NO holder, INVALID returns each side its own lock. A timeout never turns a proposal into INVALID.</p>`;
 }
 
 function d5Panel() {
-  // The two seams come from this run's Genesis entry in the log, never from the page.
-  const g = state.trace.find((e) => e.kind === "genesis")?.command?.Genesis?.config;
-  const val = (v) => (g ? `<b>${esc(v)}</b>` : sealedMark("visible to admin"));
-  const s = (ms) => `${(ms / 1000).toLocaleString("en-US", { maximumFractionDigits: 3 })} s`;
-  const durations = g
-    ? `<div class="item-facts"><span>Accept window <b>${s(g.accept_window)}</b></span><span>Response <b>${s(g.min_response)}–${s(g.max_response)}</b></span><span>Resume grace <b>${s(g.resume_grace)}</b></span></div>`
-    : "";
   return `<div class="seam">
-      <div class="item"><div class="item-head"><span class="id">Read from this run's Genesis</span></div>
-        <div class="item-facts"><span>Reservation ${val(g?.reservation)}</span><span>Selection ${val(g?.selection)}</span></div>
-        ${durations}
-        <p class="muted" style="font-size:13px">Both are enums in the genesis config, so the choice is in the log and replays identically. Durations are genesis config too.</p></div>
+      <div class="item"><div class="item-head"><span class="id">The node's genesis config</span></div>
+        <div class="item-facts"><span>Reservation <b>FullHold</b></span><span>Selection <b>SealedAtDeadline</b></span></div>
+        <p class="muted" style="font-size:13px">Both are enums in the genesis config (engine.md §9), so the choice is in the journal and replays identically. The gateway stream carries batches, not the genesis command, so this panel names the node's configured values rather than reading them live.</p></div>
       <div class="item"><div class="item-head"><span class="id">Same whether quotes live seconds or days</span></div>
         <ul><li>State machines, ledger and invariants I1–I5 never mention a duration</li><li>Every deadline is an absolute timestamp</li><li>A timer firing in 200 ms or in 3 days takes the same path and replays identically</li></ul></div>
       <div class="item"><div class="item-head"><span class="id">Changes with the answer</span></div>
@@ -1779,177 +2070,187 @@ const TABS = [
 ];
 
 function renderPanels() {
-  const el = document.getElementById("panels");
   const tabs = TABS.map(([k, label]) =>
     `<button class="tab" role="tab" type="button" id="tab-${k}" data-action="tab" data-tab="${k}" aria-selected="${ui.tab === k}" aria-controls="t-${k}" tabindex="${ui.tab === k ? 0 : -1}">${label}</button>`).join("");
-  // Only the open tab is built; the others stay as empty, hidden targets for aria-controls.
   const panels = TABS.map(([k, , body]) =>
     `<div class="tabpanel" role="tabpanel" id="t-${k}" aria-labelledby="tab-${k}" tabindex="0"${ui.tab === k ? `>${body()}` : " hidden>"}</div>`).join("");
-  el.innerHTML = `<div class="tabs" role="tablist" aria-label="Deliverables">${tabs}</div>${panels}`;
+  setHtml(document.getElementById("panels"), `<div class="tabs" role="tablist" aria-label="Deliverables">${tabs}</div>${panels}`);
 }
 
-// ---- Errors ----------------------------------------------------------------------------------
+// ---- Runs: start, stop ------------------------------------------------------------------------------
 
-/** A dismissible banner with the engine's sentence. Never alert(). Cleared by the next good response. */
-function showError(msg) {
-  const el = document.getElementById("errors");
-  el.innerHTML = `<div class="toast" role="alert" style="display:flex;align-items:center;justify-content:space-between;gap:12px">
-      <span>${esc(msg)}</span>
-      <button class="btn btn-quiet btn-sm" type="button" id="error-dismiss" data-action="dismiss-error">Dismiss</button>
-    </div>`;
-  el.hidden = false;
-}
-function clearError() {
-  const el = document.getElementById("errors");
-  el.hidden = true;
-  el.innerHTML = "";
+function readWhole(id, lo, hi, what) {
+  const t = document.getElementById(id).value.trim();
+  const n = /^\d+$/.test(t) ? Number(t) : NaN;
+  if (!(n >= lo && n <= hi)) throw new Error(`${what}: enter a whole number from ${lo} to ${hi}.`);
+  return n;
 }
 
-// ---- Commands --------------------------------------------------------------------------------
-
-/** A manual command as `actor`. Mid-preset, the engine takes the script over. */
-function act(actor, action) {
-  stopPlay();
-  return send({ op: "act", actor, action });
+async function startRuns(kind, scenario) {
+  if (page.set) return;
+  const err = document.getElementById("runctl-err");
+  const picked = scenario ?? document.getElementById("scenario-pick").value;
+  let n = 1, k = 1;
+  try {
+    if (kind === "n") n = readWhole("run-n-count", 1, MAX_N, "N");
+    if (kind !== "one") k = readWhole("run-k", 1, MAX_K, "Runs at a time");
+  } catch (e) {
+    err.textContent = e.message;
+    return;
+  }
+  err.textContent = "";
+  const names = kind === "all" ? RfqScenarios.names() : [picked];
+  const label = kind === "one" ? picked : kind === "n" ? `${picked} ×${n}` : `Run all (${names.length})`;
+  page.set = { label, kind, total: names.length * n, k, started: Date.now(), finished: null, runs: [], stopping: false, hidden: document.hidden };
+  if (ui.sel !== "all") ui.sel = "follow";
+  ui.pos = null;
+  render();
+  try {
+    if (kind === "one") await driver.run(picked);
+    else await driver.runMany(names, n, k);
+  } catch (e) {
+    addError(`${label}: ${e.message}`);
+  }
+  const set = page.set;
+  set.finished = Date.now();
+  set.stopped = set.stopping;
+  page.lastSet = set;
+  page.set = null;
+  schedule();
 }
 
-function reset(mode) {
-  stopPlay();
-  selected = null;
-  ui.drafts.clear();
-  ui.errors.clear();
-  ui.rows.clear();
-  ui.replay = null;
-  ui.logPinned = true;
-  clearToasts();
-  if (!send({ op: "reset", mode })) renderTopBar(); // a refused reset: put the picker back
-}
-
-function startPlay() {
-  if (playing) return;
-  playing = setInterval(playStep, PLAY_MS);
-  playStep();
-}
-function playStep() {
-  const p = state?.preset;
-  if (!p || p.finished || p.taken_over) return stopPlay();
-  const out = send({ op: "step" });
-  if (!out?.preset || out.preset.finished || out.preset.taken_over) stopPlay();
-}
-function stopPlay() {
-  if (!playing) return;
-  clearInterval(playing);
-  playing = null;
-  if (state) render(); // through render(), so keyboard focus stays on Pause (or Reset)
+function stopRuns() {
+  if (!page.set) return;
+  page.set.stopping = true;
+  driver.stop();
+  schedule();
 }
 
 function toggleTheme() {
-  // With no explicit choice the page shows the OS theme, so flip from what is showing.
   const shown = root.dataset.theme ?? (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
   root.dataset.theme = shown === "dark" ? "light" : "dark";
   try { localStorage.setItem("rfq-dashboard-theme", root.dataset.theme); } catch { /* storage blocked */ }
 }
 
-// ---- Events: one delegated listener per kind, so re-rendering re-binds nothing --------------
+function moveTo(pos) {
+  if (!V?.n) return;
+  ui.pos = Math.max(0, Math.min(V.n - 1, pos));
+  render();
+}
+
+// ---- Events: one delegated listener per kind ---------------------------------------------------------
 
 app.addEventListener("click", (e) => {
   const b = e.target.closest("[data-action]");
   if (!b || b.disabled || !app.contains(b)) return;
-  const d = b.dataset, n = (k) => Number(d[k]);
-  if (d.action === "dismiss-error") return clearError();
-  if (d.action === "theme") return toggleTheme();
-  if (!state) return;
+  const d = b.dataset;
   switch (d.action) {
-    case "select": return select(d.kind, n("id"));
+    case "theme": return toggleTheme();
+    case "dismiss-error": page.errors.splice(Number(d.index), 1); return render();
+    case "run-one": return startRuns("one");
+    case "run-n": return startRuns("n");
+    case "run-all": return startRuns("all");
+    case "run-scenario":
+      document.getElementById("scenario-pick").value = d.scenario;
+      return startRuns("one", d.scenario);
+    case "stop": return stopRuns();
+    case "view": return setView(d.view);
+    case "select": selected = { kind: d.kind, id: Number(d.id) }; return render();
     case "deselect":
       selected = null;
       render();
-      return document.getElementById("insp-h")?.focus(); // Clear is gone: keep focus in the inspector
-    case "toggle-row": ui.rows.set(n("seq"), b.getAttribute("aria-expanded") !== "true"); return render();
-    case "reveal-row": return revealRow(n("seq"));
+      return document.getElementById("insp-h")?.focus();
+    case "toggle-row": ui.rows.set(d.row, b.getAttribute("aria-expanded") !== "true"); return render();
+    case "reveal-row": return revealRow(d.row);
     case "filter": ui.filter = d.filter; ui.logPinned = true; return render();
     case "tab": ui.tab = d.tab; return render();
-    case "replay": stopPlay(); return send({ op: "replay_check" });
-    case "run-preset": return reset(d.preset);
-    case "step": stopPlay(); return send({ op: "step" });
-    case "play": return playing ? stopPlay() : startPlay();
-    case "run-all": stopPlay(); return send({ op: "run_all" });
-    case "reset": return reset(state.mode);
-    case "take-over": stopPlay(); return send({ op: "take_over" });
-    case "advance": stopPlay(); return send({ op: "advance", ms: n("ms") });
-    case "next-timer": stopPlay(); return send({ op: "next_timer" });
-    case "view": return send({ op: "view", viewer: d.viewer === "admin" ? "admin" : { account: n("viewer") } });
-    case "toggle":
-      if (ui.open.has(d.target)) ui.open.delete(d.target); else ui.open.add(d.target);
-      render();
-      document.getElementById(`${d.target}-qty`)?.focus();
-      return;
-    case "cancel-request": return act(n("actor"), { CancelRequest: { request: n("request") } });
-    case "accept": {
-      // Accept echoes the picks exactly as the engine presented them.
-      const r = state.snapshot.requests.find((x) => x.id === n("request"));
-      return act(n("actor"), { Accept: { request: n("request"), picks: r?.picks ?? [] } });
-    }
-    case "reject": return act(n("actor"), { Reject: { request: n("request") } });
-    case "cancel-quote": return act(n("actor"), { CancelQuote: { quote: n("quote") } });
-    case "dispute": return act(n("actor"), { Dispute: { contract: n("contract") } });
-    case "propose": return act(n("actor"), { ProposeOutcome: { contract: n("contract"), outcome: d.outcome } });
-    case "rule": return act(n("actor"), { Rule: { contract: n("contract"), outcome: d.outcome } });
+    case "pick-run": ui.sel = d.run; ui.pos = null; return render();
+    case "step-back": return moveTo((V?.pos ?? 0) - 1);
+    case "step-fwd": return moveTo((V?.pos ?? 0) + 1);
+    case "live": ui.pos = null; ui.logPinned = true; return render();
+    case "copy": return copyCommand(d.target, d.key);
+    default:
   }
 });
 
-app.addEventListener("submit", (e) => {
-  e.preventDefault();
-  if (!state) return;
-  if (e.target.dataset.form === "quote") submitQuote(e.target);
-  if (e.target.dataset.form === "request") submitRequest(e.target);
-});
-
-// Typing keeps a draft (re-renders rebuild the form) and clears that field's error.
 app.addEventListener("input", (e) => {
-  const form = e.target.closest("form[data-key]");
-  if (!form || !e.target.name) return;
-  const key = form.dataset.key;
-  ui.drafts.set(key, { ...(ui.drafts.get(key) ?? {}), [e.target.name]: e.target.value });
-  const errs = ui.errors.get(key);
-  if (errs?.[e.target.name]) {
-    delete errs[e.target.name];
-    render();
-  }
+  if (e.target.id === "tl-range") moveTo(Number(e.target.value));
 });
 
-// Tabs follow the ARIA pattern: arrow keys, Home and End move between them.
+app.addEventListener("change", (e) => {
+  if (e.target.id === "tl-run") {
+    ui.sel = e.target.value;
+    ui.pos = null;
+    render();
+  } else if (e.target.id === "scenario-pick") render();
+});
+
 app.addEventListener("keydown", (e) => {
   const tab = e.target.closest?.('[role="tab"]');
-  if (!tab || !state) return;
-  const keys = TABS.map(([k]) => k);
-  const i = keys.indexOf(tab.dataset.tab);
-  const to = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: keys.length - 1 }[e.key];
-  if (to == null) return;
-  e.preventDefault();
-  ui.tab = keys[(to + keys.length) % keys.length];
-  render();
-  document.getElementById(`tab-${ui.tab}`)?.focus();
+  if (tab) {
+    const keys = TABS.map(([k]) => k);
+    const i = keys.indexOf(tab.dataset.tab);
+    const to = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: keys.length - 1 }[e.key];
+    if (to == null) return;
+    e.preventDefault();
+    ui.tab = keys[(to + keys.length) % keys.length];
+    render();
+    document.getElementById(`tab-${ui.tab}`)?.focus();
+    return;
+  }
+  if (e.key === "Enter" && ["run-n-count", "run-k"].includes(e.target.id)) startRuns(e.target.id === "run-n-count" ? "n" : "all");
 });
 
-// The trace sidebar sticks right under the top bar, which wraps to two rows on narrower screens.
+// The timeline's arrow keys, anywhere a control doesn't use them itself.
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+  if (e.altKey || e.ctrlKey || e.metaKey) return;
+  const t = e.target;
+  if (t.closest?.("input, select, textarea, [role=tab], [contenteditable]")) return;
+  e.preventDefault();
+  moveTo((V?.pos ?? 0) + (e.key === "ArrowLeft" ? -1 : 1));
+});
+
+// Histogram hover: one tooltip, positioned at the pointer.
+const tip = document.getElementById("tip");
+app.addEventListener("pointermove", (e) => {
+  const hit = e.target.closest?.(".histo .hit");
+  if (!hit) {
+    if (!tip.hidden) tip.hidden = true;
+    return;
+  }
+  tip.textContent = hit.dataset.tip;
+  tip.hidden = false;
+  tip.style.left = `${Math.min(innerWidth - tip.offsetWidth - 8, e.clientX + 12)}px`;
+  tip.style.top = `${e.clientY - 34}px`;
+});
+
 const topbar = document.getElementById("topbar");
 const syncTopbar = () => root.style.setProperty("--topbar-h", `${topbar.offsetHeight}px`);
 if (typeof ResizeObserver === "function") new ResizeObserver(syncTopbar).observe(topbar);
 syncTopbar();
 
-// The log follows new rows only while it is scrolled to the bottom.
 document.getElementById("log").addEventListener("scroll", (e) => {
   const log = e.currentTarget;
   ui.logPinned = log.scrollHeight - log.scrollTop - log.clientHeight < 24;
 }, { passive: true });
 
-document.getElementById("preset").addEventListener("change", (e) => {
-  if (state) reset(e.target.value);
+// Browsers slow a background tab's timers: the driver's schedule would slip.
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden && page.set) page.set.hidden = true;
+  updateTitle();
+  schedule();
+});
+
+addEventListener("pagehide", () => {
+  driver.dispose();
+  closeViewConn();
+  gw.close();
 });
 
 try { const t = localStorage.getItem("rfq-dashboard-theme"); if (t === "dark" || t === "light") root.dataset.theme = t; } catch { /* storage blocked */ }
 if (location.hash.includes("dark")) root.dataset.theme = "dark";
+render();
 </script>
 </body>
 </html>

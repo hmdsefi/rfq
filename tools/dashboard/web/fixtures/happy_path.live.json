@@ -1,0 +1,1087 @@
+{
+ "about": "happy_path recorded live through rfq-gateway (L5 fixture): admin batch frames of the run, the commands the page sent (by the seq of the batch they made), and the batch frames two view connections received (hello as the run's Alice and MM1 at run start).",
+ "run": {
+  "name": "happy_path",
+  "t0": 1792026893372,
+  "accounts": {
+   "operator": 1,
+   "alice": 179202689337210,
+   "mm1": 179202689337220,
+   "mm2": 179202689337221,
+   "carol": 179202689337230,
+   "oracle": 179202689337204
+  },
+  "labels": {
+   "fund_alice": 3,
+   "fund_mm1": 4,
+   "fund_mm2": 5,
+   "fund_carol": 6,
+   "list": 7,
+   "req": 9,
+   "q1": 11,
+   "q2": 13,
+   "accept": 15,
+   "propose": 19
+  },
+  "expect": [
+   "RequestOpened",
+   "QuoteSubmitted",
+   "QuoteSubmitted",
+   "QuoteLost",
+   "QuoteSelected",
+   "RequestPresented",
+   "QuoteFilled",
+   "RequestFilled",
+   "ContractClosed",
+   "OutcomeProposed",
+   "ContractFinalized",
+   "PositionSettled"
+  ],
+  "pass": true
+ },
+ "admin": [
+  {
+   "type": "batch",
+   "seq": 3,
+   "time": 1792026893381,
+   "kind": "User",
+   "origin": {
+    "actor": 1,
+    "nonce": 2
+   },
+   "events": [
+    {
+     "audience": {
+      "Account": 179202689337210
+     },
+     "event": {
+      "Deposited": {
+       "account": 179202689337210,
+       "amount": 1000000000
+      }
+     }
+    }
+   ],
+   "balances": [
+    {
+     "account": 179202689337210,
+     "balance": {
+      "free": 1000000000,
+      "reserved": 0,
+      "escrowed": 0
+     }
+    }
+   ]
+  },
+  {
+   "type": "batch",
+   "seq": 4,
+   "time": 1792026893386,
+   "kind": "User",
+   "origin": {
+    "actor": 1,
+    "nonce": 3
+   },
+   "events": [
+    {
+     "audience": {
+      "Account": 179202689337220
+     },
+     "event": {
+      "Deposited": {
+       "account": 179202689337220,
+       "amount": 1000000000
+      }
+     }
+    }
+   ],
+   "balances": [
+    {
+     "account": 179202689337220,
+     "balance": {
+      "free": 1000000000,
+      "reserved": 0,
+      "escrowed": 0
+     }
+    }
+   ]
+  },
+  {
+   "type": "batch",
+   "seq": 5,
+   "time": 1792026893393,
+   "kind": "User",
+   "origin": {
+    "actor": 1,
+    "nonce": 4
+   },
+   "events": [
+    {
+     "audience": {
+      "Account": 179202689337221
+     },
+     "event": {
+      "Deposited": {
+       "account": 179202689337221,
+       "amount": 1000000000
+      }
+     }
+    }
+   ],
+   "balances": [
+    {
+     "account": 179202689337221,
+     "balance": {
+      "free": 1000000000,
+      "reserved": 0,
+      "escrowed": 0
+     }
+    }
+   ]
+  },
+  {
+   "type": "batch",
+   "seq": 6,
+   "time": 1792026893399,
+   "kind": "User",
+   "origin": {
+    "actor": 1,
+    "nonce": 5
+   },
+   "events": [
+    {
+     "audience": {
+      "Account": 179202689337230
+     },
+     "event": {
+      "Deposited": {
+       "account": 179202689337230,
+       "amount": 1000000000
+      }
+     }
+    }
+   ],
+   "balances": [
+    {
+     "account": 179202689337230,
+     "balance": {
+      "free": 1000000000,
+      "reserved": 0,
+      "escrowed": 0
+     }
+    }
+   ]
+  },
+  {
+   "type": "batch",
+   "seq": 7,
+   "time": 1792026893405,
+   "kind": "User",
+   "origin": {
+    "actor": 1,
+    "nonce": 6
+   },
+   "events": [
+    {
+     "audience": "Public",
+     "event": {
+      "ContractListed": {
+       "contract": 1792026893372
+      }
+     }
+    }
+   ],
+   "balances": []
+  },
+  {
+   "type": "batch",
+   "seq": 9,
+   "time": 1792026893479,
+   "kind": "User",
+   "origin": {
+    "actor": 179202689337210,
+    "nonce": 2
+   },
+   "events": [
+    {
+     "audience": "Public",
+     "event": {
+      "RequestOpened": {
+       "request": 9,
+       "leg": 0,
+       "contract": 1792026893372,
+       "side": "BuyYes",
+       "qty": 1000,
+       "response_deadline": 1792026894872
+      }
+     }
+    }
+   ],
+   "balances": [
+    {
+     "account": 179202689337210,
+     "balance": {
+      "free": 300000000,
+      "reserved": 700000000,
+      "escrowed": 0
+     }
+    }
+   ]
+  },
+  {
+   "type": "batch",
+   "seq": 11,
+   "time": 1792026893679,
+   "kind": "User",
+   "origin": {
+    "actor": 179202689337220,
+    "nonce": 2
+   },
+   "events": [
+    {
+     "audience": {
+      "Account": 179202689337220
+     },
+     "event": {
+      "QuoteSubmitted": {
+       "quote": 11,
+       "request": 9,
+       "price": 6200,
+       "expires_at": 1792026896872
+      }
+     }
+    }
+   ],
+   "balances": [
+    {
+     "account": 179202689337220,
+     "balance": {
+      "free": 620000000,
+      "reserved": 380000000,
+      "escrowed": 0
+     }
+    }
+   ]
+  },
+  {
+   "type": "batch",
+   "seq": 13,
+   "time": 1792026893780,
+   "kind": "User",
+   "origin": {
+    "actor": 179202689337221,
+    "nonce": 2
+   },
+   "events": [
+    {
+     "audience": {
+      "Account": 179202689337221
+     },
+     "event": {
+      "QuoteSubmitted": {
+       "quote": 13,
+       "request": 9,
+       "price": 6000,
+       "expires_at": 1792026896872
+      }
+     }
+    }
+   ],
+   "balances": [
+    {
+     "account": 179202689337221,
+     "balance": {
+      "free": 600000000,
+      "reserved": 400000000,
+      "escrowed": 0
+     }
+    }
+   ]
+  },
+  {
+   "type": "batch",
+   "seq": 14,
+   "time": 1792026894872,
+   "kind": "Tick",
+   "origin": null,
+   "events": [
+    {
+     "audience": {
+      "Account": 179202689337220
+     },
+     "event": {
+      "QuoteLost": {
+       "quote": 11
+      }
+     }
+    },
+    {
+     "audience": {
+      "Account": 179202689337221
+     },
+     "event": {
+      "QuoteSelected": {
+       "quote": 13
+      }
+     }
+    },
+    {
+     "audience": {
+      "Account": 179202689337210
+     },
+     "event": {
+      "RequestPresented": {
+       "request": 9,
+       "picks": [
+        {
+         "leg": 0,
+         "quote": 13,
+         "price": 6000
+        }
+       ],
+       "accept_by": 1792026896872
+      }
+     }
+    }
+   ],
+   "balances": [
+    {
+     "account": 179202689337220,
+     "balance": {
+      "free": 1000000000,
+      "reserved": 0,
+      "escrowed": 0
+     }
+    }
+   ]
+  },
+  {
+   "type": "batch",
+   "seq": 15,
+   "time": 1792026895377,
+   "kind": "User",
+   "origin": {
+    "actor": 179202689337210,
+    "nonce": 3
+   },
+   "events": [
+    {
+     "audience": {
+      "Account": 179202689337221
+     },
+     "event": {
+      "QuoteFilled": {
+       "quote": 13,
+       "position": 1
+      }
+     }
+    },
+    {
+     "audience": {
+      "Account": 179202689337210
+     },
+     "event": {
+      "RequestFilled": {
+       "request": 9,
+       "positions": [
+        1
+       ]
+      }
+     }
+    }
+   ],
+   "balances": [
+    {
+     "account": 179202689337210,
+     "balance": {
+      "free": 400000000,
+      "reserved": 0,
+      "escrowed": 600000000
+     }
+    },
+    {
+     "account": 179202689337221,
+     "balance": {
+      "free": 600000000,
+      "reserved": 0,
+      "escrowed": 400000000
+     }
+    }
+   ]
+  },
+  {
+   "type": "batch",
+   "seq": 17,
+   "time": 1792026898372,
+   "kind": "Tick",
+   "origin": null,
+   "events": [
+    {
+     "audience": "Public",
+     "event": {
+      "ContractClosed": {
+       "contract": 1792026893372
+      }
+     }
+    }
+   ],
+   "balances": []
+  },
+  {
+   "type": "batch",
+   "seq": 19,
+   "time": 1792026898781,
+   "kind": "User",
+   "origin": {
+    "actor": 179202689337204,
+    "nonce": 2
+   },
+   "events": [
+    {
+     "audience": "Public",
+     "event": {
+      "OutcomeProposed": {
+       "contract": 1792026893372,
+       "outcome": "Yes",
+       "dispute_until": 1792026900781
+      }
+     }
+    }
+   ],
+   "balances": []
+  },
+  {
+   "type": "batch",
+   "seq": 20,
+   "time": 1792026900781,
+   "kind": "Tick",
+   "origin": null,
+   "events": [
+    {
+     "audience": "Public",
+     "event": {
+      "ContractFinalized": {
+       "contract": 1792026893372,
+       "outcome": "Yes"
+      }
+     }
+    },
+    {
+     "audience": {
+      "Account": 179202689337210
+     },
+     "event": {
+      "PositionSettled": {
+       "position": 1,
+       "yes_holder": 179202689337210,
+       "yes_payout": 1000000000,
+       "no_holder": 179202689337221,
+       "no_payout": 0
+      }
+     }
+    },
+    {
+     "audience": {
+      "Account": 179202689337221
+     },
+     "event": {
+      "PositionSettled": {
+       "position": 1,
+       "yes_holder": 179202689337210,
+       "yes_payout": 1000000000,
+       "no_holder": 179202689337221,
+       "no_payout": 0
+      }
+     }
+    }
+   ],
+   "balances": [
+    {
+     "account": 179202689337210,
+     "balance": {
+      "free": 1400000000,
+      "reserved": 0,
+      "escrowed": 0
+     }
+    },
+    {
+     "account": 179202689337221,
+     "balance": {
+      "free": 600000000,
+      "reserved": 0,
+      "escrowed": 0
+     }
+    }
+   ]
+  }
+ ],
+ "commands": [
+  {
+   "seq": 3,
+   "actor": 1,
+   "nonce": 2,
+   "action": {
+    "Deposit": {
+     "to": 179202689337210,
+     "amount": 1000000000
+    }
+   },
+   "step": "fund_alice"
+  },
+  {
+   "seq": 4,
+   "actor": 1,
+   "nonce": 3,
+   "action": {
+    "Deposit": {
+     "to": 179202689337220,
+     "amount": 1000000000
+    }
+   },
+   "step": "fund_mm1"
+  },
+  {
+   "seq": 5,
+   "actor": 1,
+   "nonce": 4,
+   "action": {
+    "Deposit": {
+     "to": 179202689337221,
+     "amount": 1000000000
+    }
+   },
+   "step": "fund_mm2"
+  },
+  {
+   "seq": 6,
+   "actor": 1,
+   "nonce": 5,
+   "action": {
+    "Deposit": {
+     "to": 179202689337230,
+     "amount": 1000000000
+    }
+   },
+   "step": "fund_carol"
+  },
+  {
+   "seq": 7,
+   "actor": 1,
+   "nonce": 6,
+   "action": {
+    "ListContract": {
+     "id": 1792026893372,
+     "description": "Will it rain in Paris on 2026-11-01?",
+     "oracle": 179202689337204,
+     "trading_close": 1792026898372,
+     "resolution_deadline": 1792026908372,
+     "dispute_window": 2000
+    }
+   },
+   "step": "list"
+  },
+  {
+   "seq": 9,
+   "actor": 179202689337210,
+   "nonce": 2,
+   "action": {
+    "SubmitRequest": {
+     "legs": [
+      {
+       "contract": 1792026893372,
+       "side": "BuyYes",
+       "qty": 1000,
+       "limit_price": 7000
+      }
+     ],
+     "response_deadline": 1792026894872
+    }
+   },
+   "step": "req"
+  },
+  {
+   "seq": 11,
+   "actor": 179202689337220,
+   "nonce": 2,
+   "action": {
+    "SubmitQuote": {
+     "request": 9,
+     "leg": 0,
+     "price": 6200,
+     "size": 1000,
+     "expires_at": 1792026903372
+    }
+   },
+   "step": "q1"
+  },
+  {
+   "seq": 13,
+   "actor": 179202689337221,
+   "nonce": 2,
+   "action": {
+    "SubmitQuote": {
+     "request": 9,
+     "leg": 0,
+     "price": 6000,
+     "size": 1000,
+     "expires_at": 1792026903372
+    }
+   },
+   "step": "q2"
+  },
+  {
+   "seq": 15,
+   "actor": 179202689337210,
+   "nonce": 3,
+   "action": {
+    "Accept": {
+     "request": 9,
+     "picks": [
+      {
+       "leg": 0,
+       "quote": 13,
+       "price": 6000
+      }
+     ]
+    }
+   },
+   "step": "accept"
+  },
+  {
+   "seq": 19,
+   "actor": 179202689337204,
+   "nonce": 2,
+   "action": {
+    "ProposeOutcome": {
+     "contract": 1792026893372,
+     "outcome": "Yes"
+    }
+   },
+   "step": "propose"
+  }
+ ],
+ "views": {
+  "alice": [
+   {
+    "type": "batch",
+    "seq": 3,
+    "time": 1792026893381,
+    "kind": "User",
+    "origin": null,
+    "events": [
+     {
+      "audience": {
+       "Account": 179202689337210
+      },
+      "event": {
+       "Deposited": {
+        "account": 179202689337210,
+        "amount": 1000000000
+       }
+      }
+     }
+    ],
+    "balances": [
+     {
+      "account": 179202689337210,
+      "balance": {
+       "free": 1000000000,
+       "reserved": 0,
+       "escrowed": 0
+      }
+     }
+    ]
+   },
+   {
+    "type": "batch",
+    "seq": 7,
+    "time": 1792026893405,
+    "kind": "User",
+    "origin": null,
+    "events": [
+     {
+      "audience": "Public",
+      "event": {
+       "ContractListed": {
+        "contract": 1792026893372
+       }
+      }
+     }
+    ],
+    "balances": []
+   },
+   {
+    "type": "batch",
+    "seq": 9,
+    "time": 1792026893479,
+    "kind": "User",
+    "origin": {
+     "actor": 179202689337210,
+     "nonce": 2
+    },
+    "events": [
+     {
+      "audience": "Public",
+      "event": {
+       "RequestOpened": {
+        "request": 9,
+        "leg": 0,
+        "contract": 1792026893372,
+        "side": "BuyYes",
+        "qty": 1000,
+        "response_deadline": 1792026894872
+       }
+      }
+     }
+    ],
+    "balances": [
+     {
+      "account": 179202689337210,
+      "balance": {
+       "free": 300000000,
+       "reserved": 700000000,
+       "escrowed": 0
+      }
+     }
+    ]
+   },
+   {
+    "type": "batch",
+    "seq": 14,
+    "time": 1792026894872,
+    "kind": "Tick",
+    "origin": null,
+    "events": [
+     {
+      "audience": {
+       "Account": 179202689337210
+      },
+      "event": {
+       "RequestPresented": {
+        "request": 9,
+        "picks": [
+         {
+          "leg": 0,
+          "quote": 13,
+          "price": 6000
+         }
+        ],
+        "accept_by": 1792026896872
+       }
+      }
+     }
+    ],
+    "balances": []
+   },
+   {
+    "type": "batch",
+    "seq": 15,
+    "time": 1792026895377,
+    "kind": "User",
+    "origin": {
+     "actor": 179202689337210,
+     "nonce": 3
+    },
+    "events": [
+     {
+      "audience": {
+       "Account": 179202689337210
+      },
+      "event": {
+       "RequestFilled": {
+        "request": 9,
+        "positions": [
+         1
+        ]
+       }
+      }
+     }
+    ],
+    "balances": [
+     {
+      "account": 179202689337210,
+      "balance": {
+       "free": 400000000,
+       "reserved": 0,
+       "escrowed": 600000000
+      }
+     }
+    ]
+   },
+   {
+    "type": "batch",
+    "seq": 17,
+    "time": 1792026898372,
+    "kind": "Tick",
+    "origin": null,
+    "events": [
+     {
+      "audience": "Public",
+      "event": {
+       "ContractClosed": {
+        "contract": 1792026893372
+       }
+      }
+     }
+    ],
+    "balances": []
+   },
+   {
+    "type": "batch",
+    "seq": 19,
+    "time": 1792026898781,
+    "kind": "User",
+    "origin": null,
+    "events": [
+     {
+      "audience": "Public",
+      "event": {
+       "OutcomeProposed": {
+        "contract": 1792026893372,
+        "outcome": "Yes",
+        "dispute_until": 1792026900781
+       }
+      }
+     }
+    ],
+    "balances": []
+   },
+   {
+    "type": "batch",
+    "seq": 20,
+    "time": 1792026900781,
+    "kind": "Tick",
+    "origin": null,
+    "events": [
+     {
+      "audience": "Public",
+      "event": {
+       "ContractFinalized": {
+        "contract": 1792026893372,
+        "outcome": "Yes"
+       }
+      }
+     },
+     {
+      "audience": {
+       "Account": 179202689337210
+      },
+      "event": {
+       "PositionSettled": {
+        "position": 1,
+        "yes_holder": 179202689337210,
+        "yes_payout": 1000000000,
+        "no_holder": 179202689337221,
+        "no_payout": 0
+       }
+      }
+     }
+    ],
+    "balances": [
+     {
+      "account": 179202689337210,
+      "balance": {
+       "free": 1400000000,
+       "reserved": 0,
+       "escrowed": 0
+      }
+     }
+    ]
+   }
+  ],
+  "mm1": [
+   {
+    "type": "batch",
+    "seq": 4,
+    "time": 1792026893386,
+    "kind": "User",
+    "origin": null,
+    "events": [
+     {
+      "audience": {
+       "Account": 179202689337220
+      },
+      "event": {
+       "Deposited": {
+        "account": 179202689337220,
+        "amount": 1000000000
+       }
+      }
+     }
+    ],
+    "balances": [
+     {
+      "account": 179202689337220,
+      "balance": {
+       "free": 1000000000,
+       "reserved": 0,
+       "escrowed": 0
+      }
+     }
+    ]
+   },
+   {
+    "type": "batch",
+    "seq": 7,
+    "time": 1792026893405,
+    "kind": "User",
+    "origin": null,
+    "events": [
+     {
+      "audience": "Public",
+      "event": {
+       "ContractListed": {
+        "contract": 1792026893372
+       }
+      }
+     }
+    ],
+    "balances": []
+   },
+   {
+    "type": "batch",
+    "seq": 9,
+    "time": 1792026893479,
+    "kind": "User",
+    "origin": null,
+    "events": [
+     {
+      "audience": "Public",
+      "event": {
+       "RequestOpened": {
+        "request": 9,
+        "leg": 0,
+        "contract": 1792026893372,
+        "side": "BuyYes",
+        "qty": 1000,
+        "response_deadline": 1792026894872
+       }
+      }
+     }
+    ],
+    "balances": []
+   },
+   {
+    "type": "batch",
+    "seq": 11,
+    "time": 1792026893679,
+    "kind": "User",
+    "origin": {
+     "actor": 179202689337220,
+     "nonce": 2
+    },
+    "events": [
+     {
+      "audience": {
+       "Account": 179202689337220
+      },
+      "event": {
+       "QuoteSubmitted": {
+        "quote": 11,
+        "request": 9,
+        "price": 6200,
+        "expires_at": 1792026896872
+       }
+      }
+     }
+    ],
+    "balances": [
+     {
+      "account": 179202689337220,
+      "balance": {
+       "free": 620000000,
+       "reserved": 380000000,
+       "escrowed": 0
+      }
+     }
+    ]
+   },
+   {
+    "type": "batch",
+    "seq": 14,
+    "time": 1792026894872,
+    "kind": "Tick",
+    "origin": null,
+    "events": [
+     {
+      "audience": {
+       "Account": 179202689337220
+      },
+      "event": {
+       "QuoteLost": {
+        "quote": 11
+       }
+      }
+     }
+    ],
+    "balances": [
+     {
+      "account": 179202689337220,
+      "balance": {
+       "free": 1000000000,
+       "reserved": 0,
+       "escrowed": 0
+      }
+     }
+    ]
+   },
+   {
+    "type": "batch",
+    "seq": 17,
+    "time": 1792026898372,
+    "kind": "Tick",
+    "origin": null,
+    "events": [
+     {
+      "audience": "Public",
+      "event": {
+       "ContractClosed": {
+        "contract": 1792026893372
+       }
+      }
+     }
+    ],
+    "balances": []
+   },
+   {
+    "type": "batch",
+    "seq": 19,
+    "time": 1792026898781,
+    "kind": "User",
+    "origin": null,
+    "events": [
+     {
+      "audience": "Public",
+      "event": {
+       "OutcomeProposed": {
+        "contract": 1792026893372,
+        "outcome": "Yes",
+        "dispute_until": 1792026900781
+       }
+      }
+     }
+    ],
+    "balances": []
+   },
+   {
+    "type": "batch",
+    "seq": 20,
+    "time": 1792026900781,
+    "kind": "Tick",
+    "origin": null,
+    "events": [
+     {
+      "audience": "Public",
+      "event": {
+       "ContractFinalized": {
+        "contract": 1792026893372,
+        "outcome": "Yes"
+       }
+      }
+     }
+    ],
+    "balances": []
+   }
+  ]
+ }
+}
