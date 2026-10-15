@@ -62,7 +62,7 @@ Text frames, one JSON object each, tagged by `type`. Ids are plain numbers, pric
 | `{"type":"batch","seq":12,"time":ms,"kind":"User","origin":{"actor":10,"nonce":7}\|null,"events":[{"audience":…,"event":…}],"balances":[{"account":10,"balance":{"free":…,"reserved":…,"escrowed":…}}]}` | One engine output, filtered for this connection's view (§4). |
 | `{"type":"result","id":"c1","seq":12,"latency_us":840}` | To the sender only, right after the batch whose origin matches its command. `latency_us` runs from receiving the command to receiving its batch. |
 | `{"type":"status","engine":"up"\|"down","last_seq":12}` | Sent when the engine's state changes (§6), and on `welcome`. |
-| `{"type":"error","id":"c1"\|null,"error":"…"}` | A sentence. Cases: `bad request: …`, `engine unavailable`, `ingress back-pressured, try again`, `nonce sync failed for account N`, `message too large`. |
+| `{"type":"error","id":"c1"\|null,"error":"…"}` | A sentence. Cases: `bad request: …` (including `bad request: message too large …` for a frame over 64 KiB, and `bad request: command too large for ingress (N bytes, limit 65536)` for a command whose encoding is over the engine's ingress limit: never offered); `engine unavailable` (the command was **never offered**: the engine was down, or the command was still waiting its turn); `outcome unknown: the engine stopped answering after this command was sent; resend it with nonce N to retry safely (a repeat is rejected as Duplicate)` (the command **was offered**, see §6); `ingress back-pressured, try again`; `nonce sync failed for account N`. |
 
 ## 4. Views: what each connection receives (sealing)
 
@@ -88,15 +88,18 @@ Nonces are strict per actor (`last + 1`). The gateway keeps a nonce book with `l
 ## 6. Engine status
 
 - **Down:** the ingress publication is not connected (no node is subscribed), or no batch has arrived within 3 s of a sent command.
-- **Up:** the publication is connected again and a batch has arrived since.
-- The status is broadcast on every change. A command that arrives while the engine is down is answered with `error: engine unavailable` and is not queued.
+- **Up:** the publication is connected again and the engine has shown it works since: a batch that arrived while connected, or a restarted node's `Resume`. A batch polled while disconnected was published before the failure and does not count.
+- The status is broadcast on every change. A command that arrives while the engine is down is answered with `error: engine unavailable` and is not queued; so is every command still waiting its turn when the engine goes down.
+- **A command in flight when the engine goes down may still be applied.** It was offered to ingress, and a node that comes back (a hung engine resuming, or a restarted node reading what was left on ingress) applies it. Its sender gets `outcome unknown: … resend it with nonce N …` instead of `engine unavailable`, and still gets its `result` if the batch comes later. The batch whose `origin` is `(actor, N)` is the truth: it says whether and how the command was applied. To retry safely, resend it with the same explicit nonce `N`: if the first one was applied, the repeat is rejected as `Duplicate` and applies nothing.
+- **Liveness probe.** While the engine is down and ingress is connected (a hung engine, or a node whose `Resume` was missed), commands are refused, so nothing would ever publish. About every second the gateway offers its own probe: `Withdraw { amount: 0 }` as the operator (account 1) with nonce 0. Nonce 0 is never above an actor's last nonce, so the engine always rejects it as `Duplicate` and consumes nothing. Its batch is the gateway's own: never forwarded to a client and no news for the nonce book. It arrives while connected, so it marks the engine up.
 - After a restart, the node's first output is the `Resume` batch (§2.3). A client sees down, then `Resume`, then normal batches.
 
 ## 7. Trust boundary and security
 
 - The demo has no authentication, as the brief allows ("Auth, accounts, KYC" are out of scope). The gateway trusts the `actor` a client names. **Production:** an authenticated session fixes the actor and the gateway never takes it from the message.
 - The `admin` view is the venue's operator view. In production it is restricted to venue staff. In the demo every local client may use it.
-- The gateway listens on `127.0.0.1` only. It accepts WebSocket upgrades only from `Origin: null` (a page opened from disk) and `http://localhost:*` / `http://127.0.0.1:*`, and it refuses frames over 64 KiB (the engine's ingress limit).
+- The gateway listens on `127.0.0.1` only, port 18080 (`ws://127.0.0.1:18080`; 8080 is often taken on a developer's machine). It accepts WebSocket upgrades from `Origin: null` (a page opened from disk), `http://localhost:*` / `http://127.0.0.1:*`, and from requests with no `Origin` at all: non-browser clients (Node scripts, `websocat`) send none, and browsers always send one, so the check still refuses every other web site in the user's browser. Browsers also send `Origin: null` from a sandboxed iframe, on any site: acceptable for this unauthenticated local demo, not for production. Other Origins get HTTP 403.
+- It refuses text frames over 64 KiB, and commands whose encoding is over the engine's ingress limit (64 KiB; a 64 KiB JSON frame can encode larger), before offering them.
 - It never panics on client input. Bad input gets an `error` frame and the connection stays open.
 
 ## 8. Logging
@@ -125,7 +128,7 @@ Together with the node's `applied seq hash` lines, `docker compose logs -f gatew
   - the hub loop.
 
   Built in Docker like `rfq-node`.
-- **docker-compose:** a `gateway` service (`ipc: service:aeron`, `127.0.0.1:8080:8080`, `restart: on-failure:3`).
+- **docker-compose:** a `gateway` service (`ipc: service:aeron`, `127.0.0.1:${RFQ_GATEWAY_PORT:-18080}:18080`, `restart: on-failure:3`).
 
 ## 10. Acceptance
 

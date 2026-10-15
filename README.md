@@ -63,7 +63,7 @@ docker compose --profile demo down -v       # stop everything and delete the Arc
 
 ### Gateway (WebSocket)
 
-`rfq-gateway` is the client edge ([gateway.md](docs/specs/gateway.md)): JSON over a WebSocket on `ws://127.0.0.1:8080`, published on the host's loopback only. It puts each client's commands on ingress with the actor's next nonce, and sends every egress batch back, filtered for the connection's view (`admin`, or one account), with a `result` per command and a `status` when the engine goes down or comes back. Start it next to the engine, then drive one trade through it with the smoke script (Node 22 or later):
+`rfq-gateway` is the client edge ([gateway.md](docs/specs/gateway.md)): JSON over a WebSocket on `ws://127.0.0.1:18080`, published on the host's loopback only. It puts each client's commands on ingress with the actor's next nonce, and sends every egress batch back, filtered for the connection's view (`admin`, or one account), with a `result` per command and a `status` when the engine goes down or comes back. Start it next to the engine, then drive one trade through it with the smoke script (Node 22 or later):
 
 ```bash
 docker compose up -d aeron engine gateway
@@ -71,7 +71,7 @@ node scripts/gateway-smoke.mjs                # prints GATEWAY SMOKE OK
 docker compose logs -f gateway engine         # every command, result and status change
 ```
 
-If port 8080 is taken on the host, set `RFQ_GATEWAY_PORT` (for example `RFQ_GATEWAY_PORT=18080 docker compose up -d gateway`) and pass the URL: `node scripts/gateway-smoke.mjs ws://127.0.0.1:18080`.
+To publish it on another host port, set `RFQ_GATEWAY_PORT` (for example `RFQ_GATEWAY_PORT=19000 docker compose up -d gateway`) and pass the URL: `node scripts/gateway-smoke.mjs ws://127.0.0.1:19000` (or set `RFQ_GATEWAY_URL`).
 
 ## Layout
 
