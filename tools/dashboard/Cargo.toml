@@ -3,7 +3,7 @@ name = "rfq-dashboard"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.99"
-license = "MIT"
+license = "MPL-2.0"
 publish = false
 description = "Demo aid for the live session: the rfq-domain engine in the browser. Not part of the engine."
 

@@ -117,4 +117,6 @@ Multi-leg execution is designed but not built (the data model is `Vec<Leg>`, and
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+Mozilla Public License 2.0 (MPL-2.0), see [LICENSE](LICENSE).
+
+Copyright (c) 2026 hmdsefi (https://github.com/hmdsefi/rfq) <hdyousefi@gmail.com>. See [COPYRIGHT](COPYRIGHT).

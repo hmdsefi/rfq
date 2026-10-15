@@ -28,6 +28,11 @@ allow = [
 # The list is the policy, not an inventory of what the lockfile happens to use today.
 unused-allowed-license = "allow"
 
+# The allow list is the policy for third-party crates. This workspace's own crates (all
+# `publish = false`) are MPL-2.0, see LICENSE and COPYRIGHT, and are not checked against it.
+[licenses.private]
+ignore = true
+
 [bans]
 multiple-versions = "warn"
 
