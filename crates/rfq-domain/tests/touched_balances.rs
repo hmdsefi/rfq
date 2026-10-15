@@ -51,7 +51,7 @@ fn each_apply_starts_a_fresh_set() {
 }
 
 #[test]
-fn accept_touches_the_requester_and_the_selected_mm_and_releases_the_loser() {
+fn accept_touches_the_requester_and_the_selected_mm_only() {
     // Run happy_path up to the accept and check the accept's touched set is {ALICE, MM2}
     // (MM1's hold was released earlier, at the deadline tick).
     let s = all()
