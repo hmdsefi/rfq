@@ -1952,7 +1952,8 @@ function runButton(scenario, where, related = false) {
 const runCell = (scenario, where, fallback, related) =>
   `<td class="run">${runButton(scenario, where, related) ?? `<span class="muted">${fallback}</span>`}</td>`;
 
-// failure-modes.md, transcribed: [id, race or failure, handling, tests, scenario, options].
+// failure-modes.md in full, with every test (the doc names one per row to fit a page): [id, race or failure,
+// handling, tests, scenario, options].
 const FAILURES = [
   ["Races", [
     ["R1", "Cancel vs response deadline", "Before the deadline the cancel removes the quote; at or after it, the quote is Selected (firm): InvalidState.", ["cancel_before_deadline_removes_quote", "cancel_after_selection_rejected"], "mm_cannot_withdraw_after_selection"],
