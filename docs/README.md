@@ -16,6 +16,7 @@ The brief (the exercise PDF) is not in the repository. How to build, test and ru
 
 | Doc | What it answers |
 |---|---|
+| [demo.md](demo.md) | Recorded runs (GIFs) of five scenarios on the live stack: what each step does, with the engine's events and the logs |
 | [rfc/0001-rfq-engine.md](rfc/0001-rfq-engine.md) | What we're building, the product decisions (P1–P12), the technical decisions (T1–T7), and why |
 | [architecture/overview.md](architecture/overview.md) | Layers and crates, components, Aeron streams, write-ahead loop and crash points, Docker topology, production path, measured numbers |
 | [specs/engine.md](specs/engine.md) | Domain model, ledger and invariants I1–I5, commands and validation, state machines, events |
