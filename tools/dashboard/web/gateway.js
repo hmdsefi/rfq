@@ -9,7 +9,8 @@
 // It makes no business decision: money, ids and times are the engine's, passed through.
 const RfqGateway = (() => {
   /** How long a command may wait for its `result` or `error`. The gateway itself gives up on a silent engine after 3 s. */
-  const COMMAND_TIMEOUT_MS = 30_000;
+  // Must outlast the gateway's 60 s hold on an unresolved nonce (gateway.md §6).
+  const COMMAND_TIMEOUT_MS = 75_000;
   /** How long a `hello` may wait for its `welcome`. */
   const HELLO_TIMEOUT_MS = 5_000;
   /** Reconnect delays, in ms; the last one repeats. */
