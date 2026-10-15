@@ -1,0 +1,515 @@
+// Tests of the gateway client and the driver against a scripted fake gateway (no network, no engine):
+// the answers a command can get, the clock, reconnection, and above all the "outcome unknown"
+// retry of docs/specs/gateway.md §6. Usage: node web/driver.test.mjs
+import assert from "node:assert/strict";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
+const G = require("./gateway.js");
+const S = require("./scenarios.js");
+
+let failed = 0;
+async function test(name, fn) {
+  try {
+    await fn();
+    console.log(`ok   ${name}`);
+  } catch (e) {
+    failed++;
+    console.log(`FAIL ${name}: ${e.stack?.split("\n").slice(0, 3).join(" | ") ?? e}`);
+  }
+}
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * A fake gateway server. Its `Socket` class stands in for `WebSocket`. `hello` is answered as the
+ * real gateway does (a `welcome` and a `status`); every other message goes to `handler(msg, server)`,
+ * which answers with `server.deliver(frame)`.
+ */
+function fakeServer(handler = () => {}) {
+  const server = {
+    engine: "up",
+    skewMs: 0,
+    sockets: [],
+    received: [],
+    replyDelayMs: 0,
+    deliver(frame) {
+      const socket = server.sockets.at(-1);
+      socket.onmessage?.({ data: JSON.stringify(frame) });
+    },
+    /** The server drops the connection. */
+    drop() {
+      const socket = server.sockets.at(-1);
+      socket.onclose?.({});
+    },
+    Socket: class {
+      constructor(url) {
+        this.url = url;
+        server.sockets.push(this);
+        setTimeout(() => this.onopen?.({}), 0);
+      }
+      send(text) {
+        const msg = JSON.parse(text);
+        server.received.push(msg);
+        setTimeout(() => {
+          if (msg.type === "hello") {
+            server.deliver({ type: "welcome", view: msg.view, engine: server.engine, now: Date.now() + server.skewMs });
+            server.deliver({ type: "status", engine: server.engine, last_seq: null });
+          } else {
+            handler(msg, server);
+          }
+        }, server.replyDelayMs);
+      }
+      close() {
+        this.onclose?.({});
+      }
+    },
+  };
+  return server;
+}
+
+async function connected(handler, driverOpts) {
+  const server = fakeServer(handler);
+  const gw = G.connect("ws://fake", { WebSocket: server.Socket, connectTimeoutMs: 2_000 });
+  await gw.ready;
+  const driver = S.createDriver(gw, { startMarginMs: 0, graceMs: 30, engineWaitMs: 400, ...driverOpts });
+  return { server, gw, driver };
+}
+
+// ---- frames -------------------------------------------------------------------------------------
+
+const UNKNOWN = (nonce) =>
+  `outcome unknown: the engine stopped answering after this command was sent; resend it with nonce ${nonce} to retry safely (a repeat is rejected as Duplicate)`;
+const sent = (msg, nonce = msg.nonce) => ({ type: "sent", id: msg.id, actor: msg.actor, nonce });
+const result = (msg, seq, latency_us = 100) => ({ type: "result", id: msg.id, seq, latency_us });
+const batch = (seq, origin, events, kind = "User") => ({ type: "batch", seq, time: Date.now(), kind, origin, events, balances: [] });
+const deposited = (msg) => ({ audience: "Public", event: { Deposited: { account: msg.action.Deposit.to, amount: 5 } } });
+const duplicate = { audience: { Account: 1 }, event: { CommandRejected: { reason: "Duplicate" } } };
+const status = (engine, last_seq = 9) => ({ type: "status", engine, last_seq });
+
+/** A one-step scenario: the operator funds Alice. */
+const funding = (extra = []) => ({
+  name: "fake",
+  kind: "brief",
+  summary: "",
+  steps: [{ at: 0, label: "dep", actor: 1, action: () => ({ Deposit: { to: 10, amount: 5 } }) }, ...extra],
+  expect: ["Deposited"],
+});
+
+const isRetry = (msg, n = 1) => msg.id.endsWith(`.retry${n}`);
+
+// ---- the client ---------------------------------------------------------------------------------
+
+await test("a command resolves with sent, result and the batch the result follows, and its rtt", async () => {
+  const { server, gw } = await connected((msg, s) => {
+    s.deliver(sent(msg, 3));
+    s.deliver(batch(20, { actor: msg.actor, nonce: 3 }, [duplicate]));
+    s.deliver(result(msg, 20, 840));
+  });
+  const done = await gw.command({ actor: 5, action: { Withdraw: { amount: 0 } } });
+  assert.equal(done.sent.nonce, 3);
+  assert.equal(done.result.latency_us, 840);
+  assert.equal(done.batch.seq, 20);
+  assert.ok(done.rtt_ms >= 0);
+  assert.deepEqual(server.received.at(-1), { type: "command", id: done.id, actor: 5, action: { Withdraw: { amount: 0 } } });
+  gw.close();
+});
+
+await test("an explicit nonce is sent; none is sent otherwise", async () => {
+  const { server, gw } = await connected((msg, s) => {
+    s.deliver(sent(msg, msg.nonce ?? 1));
+    s.deliver(result(msg, 1));
+  });
+  await gw.command({ actor: 5, action: { Withdraw: { amount: 0 } }, nonce: 9 });
+  assert.equal(server.received.at(-1).nonce, 9);
+  await gw.command({ actor: 5, action: { Withdraw: { amount: 0 } } });
+  assert.equal("nonce" in server.received.at(-1), false);
+  gw.close();
+});
+
+await test("an error frame for the command rejects it with the sentence and a kind", async () => {
+  const sentences = {
+    "engine unavailable": "unavailable",
+    "ingress back-pressured, try again": "refused",
+    "bad request: command too large for ingress (70000 bytes, limit 65536)": "refused",
+    [UNKNOWN(12)]: "unknown_outcome",
+  };
+  const { gw } = await connected((msg, s) => {
+    s.deliver({ type: "error", id: msg.id, error: msg.action.Withdraw.sentence });
+  });
+  for (const [sentence, kind] of Object.entries(sentences)) {
+    await assert.rejects(
+      gw.command({ actor: 5, action: { Withdraw: { sentence } } }),
+      (e) => e instanceof G.GatewayError && e.message === sentence && e.kind === kind && (kind !== "unknown_outcome" || e.nonce === 12),
+    );
+  }
+  gw.close();
+});
+
+await test("an unreadable frame (error with no id) fails the one command that has no `sent`, and no other", async () => {
+  const { gw } = await connected((msg, s) => {
+    if (msg.action.Withdraw.bad) s.deliver({ type: "error", id: null, error: "bad request: unknown variant" });
+  });
+  const bad = gw.command({ actor: 5, action: { Withdraw: { bad: true } } });
+  await assert.rejects(bad, /bad request: unknown variant/);
+  // Two commands waiting: it cannot say which, so neither is failed by it.
+  let a = null;
+  let b = null;
+  gw.command({ actor: 5, action: { Withdraw: { bad: true } }, id: "x" }).then((v) => (a = v), (e) => (a = e));
+  gw.command({ actor: 6, action: { Withdraw: { amount: 1 } }, id: "y" }).then((v) => (b = v), (e) => (b = e));
+  await sleep(30);
+  assert.equal(a, null);
+  assert.equal(b, null);
+  gw.close();
+  await sleep(5);
+  assert.equal(a.kind, "closed");
+});
+
+await test("a lost connection rejects what is waiting (with the nonce if `sent` came), and the client reconnects with the last view", async () => {
+  const { server, gw } = await connected((msg, s) => {
+    s.deliver(sent(msg, 4));
+  });
+  await gw.hello({ account: 10 });
+  const events = [];
+  gw.on("conn", (c) => events.push(c));
+  const waiting = gw.command({ actor: 5, action: { Withdraw: { amount: 0 } } });
+  await sleep(10);
+  server.drop();
+  await assert.rejects(waiting, (e) => e.kind === "closed" && e.nonce === 4);
+  assert.equal(gw.connected, false);
+  // The next command fails at once, not after a timeout.
+  await assert.rejects(gw.command({ actor: 5, action: { Withdraw: { amount: 0 } } }), (e) => e.kind === "closed" && /not connected/.test(e.message));
+  await sleep(450);
+  assert.equal(gw.connected, true);
+  assert.equal(server.sockets.length, 2);
+  assert.deepEqual(events.map((c) => [c.up, c.reconnected]), [[false, false], [true, true]]);
+  const hellos = server.received.filter((m) => m.type === "hello");
+  assert.deepEqual(hellos.at(-1).view, { account: 10 });
+  assert.deepEqual(gw.view, { account: 10 });
+  gw.close();
+});
+
+await test("the engine clock: the offset is the gateway's now against the middle of the round trip, from the quickest sample", async () => {
+  const server = fakeServer();
+  server.skewMs = 5_000;
+  const gw = G.connect("ws://fake", { WebSocket: server.Socket, connectTimeoutMs: 2_000 });
+  await gw.ready;
+  assert.ok(Math.abs(gw.offset - 5_000) < 25, `offset ${gw.offset}`);
+  assert.ok(Math.abs(gw.engineNow() - Date.now() - 5_000) < 25);
+  // A slow answer carries a worse estimate; the offset is re-measured from scratch by syncClock.
+  server.skewMs = -3_000;
+  await gw.syncClock(3);
+  assert.ok(Math.abs(gw.offset + 3_000) < 25, `offset ${gw.offset}`);
+  gw.close();
+});
+
+await test("untilEngineUp waits for an `up` after the given frame, and gives up", async () => {
+  const { server, gw } = await connected();
+  const after = gw.frameCount;
+  let up = false;
+  const waiting = gw.untilEngineUp({ after, timeoutMs: 500 }).then(() => (up = true));
+  server.deliver(status("down"));
+  await sleep(5);
+  assert.equal(up, false);
+  server.deliver(status("up"));
+  await waiting;
+  // An `up` that already came after the frame counts; one before it does not.
+  await gw.untilEngineUp({ after, timeoutMs: 50 });
+  await assert.rejects(gw.untilEngineUp({ after: gw.frameCount, timeoutMs: 30 }), /not up again/);
+  gw.close();
+});
+
+await test("connect fails with a sentence when the gateway cannot be reached", async () => {
+  class Refused {
+    constructor() {
+      setTimeout(() => this.onclose?.({}), 0);
+    }
+  }
+  await assert.rejects(G.connect("ws://nowhere", { WebSocket: Refused, retryInitial: false }).ready, /cannot connect to ws:\/\/nowhere/);
+  await assert.rejects(G.connect("ws://nowhere", { WebSocket: Refused, connectTimeoutMs: 60 }).ready, /cannot connect to ws:\/\/nowhere within 60 ms/);
+});
+
+// ---- the driver ---------------------------------------------------------------------------------
+
+await test("a plain run: the label is the result's seq, the run's own events pass, perf has the command", async () => {
+  const { gw, driver } = await connected((msg, s) => {
+    s.deliver(sent(msg, 3));
+    s.deliver(batch(40, { actor: msg.actor, nonce: 3 }, [deposited(msg)]));
+    s.deliver(result(msg, 40, 700));
+  });
+  const run = await driver.run(funding());
+  assert.equal(run.pass, true, run.detail);
+  assert.equal(run.labels.dep, 40);
+  assert.deepEqual(run.commands.map((c) => [c.step, c.seq, c.nonce, c.latency_us, c.recovered]), [["dep", 40, 3, 700, false]]);
+  assert.equal(run.perf.commands, 1);
+  assert.deepEqual(run.perf.latency_us, { n: 1, p50: 700, p95: 700, max: 700 });
+  assert.equal(run.own.length, 1);
+  assert.equal(run.contract, run.t0);
+  assert.equal(run.accounts.alice, run.t0 * 100 + 10);
+  gw.close();
+});
+
+await test("another run's events are not this run's: the same event for someone else's account is ignored", async () => {
+  const { server, gw, driver } = await connected((msg, s) => {
+    s.deliver(sent(msg, 3));
+    // Someone else's deposit arrives first (another client of the node), then ours.
+    s.deliver(batch(39, { actor: 1, nonce: 2 }, [{ audience: "Public", event: { Deposited: { account: 12345, amount: 5 } } }]));
+    s.deliver(batch(40, { actor: msg.actor, nonce: 3 }, [deposited(msg)]));
+    s.deliver(result(msg, 40));
+  });
+  const run = await driver.run(funding());
+  assert.equal(run.pass, true, run.detail);
+  assert.deepEqual(run.own.map((o) => o.seq), [40]);
+  void server;
+  gw.close();
+});
+
+await test("a refused command fails the run with the sentence, at once", async () => {
+  const { gw, driver } = await connected((msg, s) => s.deliver({ type: "error", id: msg.id, error: "engine unavailable" }));
+  const started = Date.now();
+  const run = await driver.run(funding());
+  assert.equal(run.pass, false);
+  assert.match(run.detail, /dep \(operator Deposit\): engine unavailable/);
+  assert.ok(Date.now() - started < 1_000);
+  assert.equal(run.recoveries.length, 0);
+  gw.close();
+});
+
+await test("unknown outcome, applied before: the engine rejects the retry as Duplicate, and the label is the original's seq", async () => {
+  const { gw, driver } = await connected((msg, s) => {
+    if (isRetry(msg)) {
+      assert.equal(msg.nonce, 7, "the retry carries the same nonce");
+      s.deliver(sent(msg));
+      s.deliver(batch(41, { actor: msg.actor, nonce: 7 }, [duplicate]));
+      s.deliver(result(msg, 41));
+      return;
+    }
+    s.deliver(sent(msg, 7));
+    setTimeout(() => {
+      s.deliver({ type: "error", id: msg.id, error: UNKNOWN(7) });
+      s.deliver(status("down"));
+      setTimeout(() => {
+        s.deliver(status("up"));
+        // The engine applied the original after all: its batch and its late result.
+        s.deliver(batch(40, { actor: msg.actor, nonce: 7 }, [deposited(msg)]));
+        s.deliver(result(msg, 40, 4_000_000));
+      }, 20);
+    }, 10);
+  });
+  const run = await driver.run(funding());
+  assert.equal(run.pass, true, run.detail);
+  assert.equal(run.labels.dep, 40);
+  assert.deepEqual(run.recoveries.map((r) => [r.step, r.nonce, r.seq]), [["dep", 7, 40]]);
+  assert.match(run.recoveries[0].outcome, /^applied once \(Duplicate on retry\)$/);
+  assert.ok(run.log.some((l) => l.includes("outcome recovered: applied once (Duplicate on retry)")), run.log.join("\n"));
+  assert.equal(run.commands[0].recovered, true);
+  // A command that waited out an outage is not a latency sample.
+  assert.equal(run.perf.commands, 0);
+  // The retry is a command of the run: its Duplicate batch is the run's own event, and the deposit is there once.
+  assert.deepEqual(run.own.map((o) => o.seq), [40, 41]);
+  gw.close();
+});
+
+await test("unknown outcome, applied before, but its batch was never heard: said so, the label is not made up, the verdict stays honest", async () => {
+  const { gw, driver } = await connected((msg, s) => {
+    if (isRetry(msg)) {
+      s.deliver(sent(msg));
+      s.deliver(batch(41, { actor: msg.actor, nonce: 7 }, [duplicate]));
+      s.deliver(result(msg, 41));
+      return;
+    }
+    s.deliver(sent(msg, 7));
+    setTimeout(() => {
+      s.deliver({ type: "error", id: msg.id, error: UNKNOWN(7) });
+      s.deliver(status("down"));
+      setTimeout(() => s.deliver(status("up")), 20);
+    }, 10);
+  });
+  const run = await driver.run(funding());
+  assert.equal(run.pass, false);
+  assert.match(run.detail, /expected event Deposited/);
+  assert.equal("dep" in run.labels, false);
+  assert.equal(run.recoveries[0].seq, null);
+  assert.match(run.recoveries[0].outcome, /never heard here/);
+  gw.close();
+});
+
+await test("a step that needs the label of a command whose batch was never heard fails the run, not the process", async () => {
+  const needs = { at: 0, label: "again", actor: 1, action: (c) => ({ CancelQuote: { quote: c.quote("dep") } }) };
+  const { gw, driver } = await connected((msg, s) => {
+    if (isRetry(msg)) {
+      s.deliver(sent(msg));
+      s.deliver(batch(41, { actor: msg.actor, nonce: 7 }, [duplicate]));
+      s.deliver(result(msg, 41));
+      return;
+    }
+    s.deliver(sent(msg, 7));
+    setTimeout(() => {
+      s.deliver({ type: "error", id: msg.id, error: UNKNOWN(7) });
+      s.deliver(status("down"));
+      setTimeout(() => s.deliver(status("up")), 20);
+    }, 10);
+  });
+  const run = await driver.run(funding([needs]));
+  assert.equal(run.pass, false);
+  assert.match(run.detail, /step again .*label dep has no seq yet/);
+  gw.close();
+});
+
+await test("unknown outcome, not applied: the retry is applied, and the label is its seq", async () => {
+  const { gw, driver } = await connected((msg, s) => {
+    if (isRetry(msg)) {
+      s.deliver(sent(msg));
+      s.deliver(batch(42, { actor: msg.actor, nonce: 7 }, [deposited(msg)]));
+      s.deliver(result(msg, 42));
+      return;
+    }
+    s.deliver(sent(msg, 7));
+    setTimeout(() => {
+      s.deliver({ type: "error", id: msg.id, error: UNKNOWN(7) });
+      s.deliver(status("down"));
+      setTimeout(() => s.deliver(status("up")), 20);
+    }, 10);
+  });
+  const run = await driver.run(funding());
+  assert.equal(run.pass, true, run.detail);
+  assert.equal(run.labels.dep, 42);
+  assert.equal(run.recoveries[0].outcome, "applied on retry");
+  assert.ok(run.log.some((l) => l.includes("outcome recovered: applied on retry")), run.log.join("\n"));
+  gw.close();
+});
+
+await test("unknown outcome, and the original's batch answers the resend (whichever batch comes first): the label is that batch", async () => {
+  const { gw, driver } = await connected((msg, s) => {
+    if (isRetry(msg)) {
+      s.deliver(sent(msg));
+      s.deliver(batch(40, { actor: msg.actor, nonce: 7 }, [deposited(msg)]));
+      s.deliver(result(msg, 40));
+      s.deliver(batch(41, { actor: msg.actor, nonce: 7 }, [duplicate]));
+      return;
+    }
+    s.deliver(sent(msg, 7));
+    setTimeout(() => {
+      s.deliver({ type: "error", id: msg.id, error: UNKNOWN(7) });
+      s.deliver(status("down"));
+      setTimeout(() => s.deliver(status("up")), 20);
+    }, 10);
+  });
+  const run = await driver.run(funding());
+  assert.equal(run.pass, true, run.detail);
+  assert.equal(run.labels.dep, 40);
+  gw.close();
+});
+
+await test("unknown outcome twice: the second retry works; the run's log says both", async () => {
+  const { gw, driver } = await connected((msg, s) => {
+    const retry2 = isRetry(msg, 2);
+    if (retry2) {
+      s.deliver(sent(msg));
+      s.deliver(batch(43, { actor: msg.actor, nonce: 7 }, [deposited(msg)]));
+      s.deliver(result(msg, 43));
+      return;
+    }
+    s.deliver(sent(msg, 7));
+    setTimeout(() => {
+      s.deliver({ type: "error", id: msg.id, error: UNKNOWN(7) });
+      s.deliver(status("down"));
+      setTimeout(() => s.deliver(status("up")), 20);
+    }, 10);
+  });
+  const run = await driver.run(funding());
+  assert.equal(run.pass, true, run.detail);
+  assert.equal(run.labels.dep, 43);
+  assert.equal(run.log.filter((l) => l.includes("outcome unknown")).length, 2);
+  gw.close();
+});
+
+await test("unknown outcome and the engine never comes back: the run fails, it does not hang", async () => {
+  const { gw, driver } = await connected((msg, s) => {
+    s.deliver(sent(msg, 7));
+    setTimeout(() => {
+      s.deliver({ type: "error", id: msg.id, error: UNKNOWN(7) });
+      s.deliver(status("down"));
+    }, 10);
+  }, { engineWaitMs: 100 });
+  const started = Date.now();
+  const run = await driver.run(funding());
+  assert.equal(run.pass, false);
+  assert.match(run.detail, /was not up again within/);
+  assert.ok(Date.now() - started < 1_500);
+  gw.close();
+});
+
+await test("unknown outcome on a replay (explicit nonce): the nonce is not the step's own, so no batch is looked up for it", async () => {
+  // The ordinary step is nonce 7 (seq 40). The replay step resends nonce 7 and is rejected as Duplicate,
+  // however often: its answer is its own batch, not the batch of the command that owns the nonce.
+  const replay = {
+    at: 0,
+    label: "replay",
+    actor: 1,
+    nonce: "reuse",
+    action: () => ({ Deposit: { to: 10, amount: 5 } }),
+  };
+  let originals = 0;
+  const { gw, driver } = await connected((msg, s) => {
+    if (msg.id.endsWith(".1")) {
+      s.deliver(sent(msg, 7));
+      s.deliver(batch(40, { actor: msg.actor, nonce: 7 }, [deposited(msg)]));
+      s.deliver(result(msg, 40));
+    } else if (isRetry(msg)) {
+      assert.equal(msg.nonce, 7);
+      s.deliver(sent(msg));
+      s.deliver(batch(42, { actor: msg.actor, nonce: 7 }, [duplicate]));
+      s.deliver(result(msg, 42));
+    } else {
+      originals++;
+      assert.equal(msg.nonce, 7, "reuse sends the last ordinary nonce");
+      s.deliver(sent(msg, 7));
+      setTimeout(() => {
+        s.deliver({ type: "error", id: msg.id, error: UNKNOWN(7) });
+        s.deliver(status("down"));
+        setTimeout(() => s.deliver(status("up")), 20);
+      }, 10);
+    }
+  });
+  const run = await driver.run(funding([replay]));
+  assert.equal(originals, 1);
+  assert.equal(run.pass, true, run.detail);
+  assert.equal(run.labels.dep, 40);
+  assert.equal(run.labels.replay, 42);
+  assert.match(run.recoveries[0].outcome, /^rejected by design either way/);
+  gw.close();
+});
+
+await test("the driver refuses a connection in an account view: it could not see the run's events", async () => {
+  const { gw, driver } = await connected();
+  await gw.hello({ account: 10 });
+  await assert.rejects(driver.run(funding()), /need the admin view/);
+  await assert.rejects(driver.runMany(["happy_path"], 1, 1), /need the admin view/);
+  gw.close();
+});
+
+await test("runMany: bad arguments are refused; t0 is distinct for runs started together", async () => {
+  const t0s = [];
+  const { gw, driver } = await connected((msg, s) => {
+    s.deliver(sent(msg, 3));
+    s.deliver(batch(40 + t0s.length, { actor: msg.actor, nonce: 3 }, [deposited(msg)]));
+    s.deliver(result(msg, 40 + t0s.length));
+  }, { onRunStart: (run) => t0s.push(run.t0) });
+  await assert.rejects(driver.runMany(["nope"], 1, 1), /no scenario named nope/);
+  await assert.rejects(driver.runMany(["happy_path"], 0, 1), /n must be/);
+  await assert.rejects(driver.runMany(["happy_path"], 1, 0), /k must be/);
+  await assert.rejects(driver.runMany([], 1, 1), /no scenarios/);
+  const scenario = funding();
+  const many = await driver.runMany([scenario], 6, 6);
+  assert.equal(many.runs.length, 6);
+  assert.equal(new Set(t0s).size, 6, `t0s ${t0s}`);
+  assert.deepEqual([...t0s].sort((a, b) => a - b), t0s.slice().sort((a, b) => a - b));
+  assert.ok(Math.max(...t0s) - Math.min(...t0s) >= 5);
+  assert.equal(new Set(many.runs.map((r) => r.accounts.alice)).size, 6);
+  assert.equal(many.perf.runs, 6);
+  assert.equal(many.perf.commands, 6);
+  gw.close();
+});
+
+console.log(failed ? `${failed} FAILED` : "all gateway client and driver tests passed");
+process.exit(failed ? 1 : 0);
