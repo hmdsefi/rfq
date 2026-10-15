@@ -46,7 +46,7 @@
 ## Review Focus
 
 1. **Sealing through the gateway.** For every event kind, an account view gets only `Public` and its own `Account` events, its own balances, and `origin` only for its own commands. Owner: L2, `view_hides_what_engine_md_section_7_hides` (all 12 scenarios × 5 views).
-2. **The engine dies with a command in flight.** The sender gets `error: engine unavailable` (no hang). After the restart, commands work and the `Resume` batch arrives. Owner: L2, `in_flight_command_fails_when_the_engine_goes_down`; L6 drill.
+2. **The engine dies with a command in flight.** The sender gets `error: outcome unknown … resend it with nonce N …` (no hang): the command was offered, so it may still be applied. A command never offered gets `engine unavailable`. Until the retry with nonce N (or the late original) settles it, the gateway holds that participant's other commands, for at most 60 s. After the restart, commands work and the `Resume` batch arrives. Owner: L2, `in_flight_command_fails_when_the_engine_goes_down` and the `an_unresolved_nonce_*` tests; L6 drill.
 3. **Nonces after `Duplicate`/`NonceGap`, and after a gateway restart against a long-lived node.** The book never advances on an unconsumed nonce, and an unknown actor is probed exactly as `rfq-demo` does. Owner: L2, `nonce_book_*` tests.
 4. **Malformed, unknown or oversized frames** each give an `error` frame, and the connection survives. Owner: L2 (protocol decode tests); L3 (server test with a 65 KiB frame).
 5. **Split egress batches** (`split_batch` for oversized outputs). `balances` travel once, on the last chunk, and the page merges chunks by `seq`. Owner: L1, `split_batch_keeps_balances_on_the_last_chunk`; L4 recorder test.
@@ -73,4 +73,6 @@
 
 | # | Status |
 |---|---|
-| L1–L7 | approved by the PO on 2026-10-15; L1 in progress |
+| L1–L7 | approved by the PO on 2026-10-15 |
+| L1–L6 | done |
+| L7 | not built (optional; the page needs the running stack) |

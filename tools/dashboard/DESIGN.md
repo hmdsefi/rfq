@@ -238,7 +238,7 @@ dashboard → WebSocket → rfq-gateway → Aeron → rfq-node (Docker) → Aero
 
 Nothing is replayed or recomputed in the page. The gateway is a product component, specified in [docs/specs/gateway.md](../../docs/specs/gateway.md).
 
-The in-browser (WASM) engine stays only as an **offline fallback**. It is labelled "Offline: engine in the browser" (Task L7, optional).
+The in-browser (WASM) engine was to stay only as an **offline fallback**, labelled "Offline: engine in the browser" (Task L7, optional). **Not built** (Task L7 was not done): the page needs the running stack.
 
 ### 11.1 What the presenter does
 
@@ -259,9 +259,10 @@ The in-browser (WASM) engine stays only as an **offline fallback**. It is labell
 
    | Drill | Command | What to watch |
    |---|---|---|
-   | Engine crash mid-run | `docker compose kill engine`, then `docker compose start engine` | status "engine down" → the run's next command is refused → "engine up" → a `Resume` batch → the trace continues; `docker compose logs engine` shows `replayed seq=… hash=…` |
-   | Stall | `docker compose pause engine; sleep 2; docker compose unpause engine` | a `Resume` batch right after unpause; open dispute windows extended |
-   | Driver crash | `docker compose kill aeron` | the engine and gateway halt; Docker restarts them (cap 3); the page reconnects |
+   | Engine crash mid-run | `docker compose kill engine`, then `docker compose start engine` | status "engine down" (when nothing is being sent, noticing can take up to about 10 s) → the command in flight gets `outcome unknown … nonce N` → a `Resume` batch → "engine up" → the safe retry with nonce N, logged as `nonce N taken once (Duplicate on retry); original: …` or `retry applied` / `retry rejected: …` (the gateway holds that participant's other commands until it settles, at most 60 s, gateway.md §6) → the next runs of a set, which waited for the engine (up to 60 s), start and pass; a run that was in flight may still fail on timing. `docker compose logs engine` shows `replayed seq=… hash=…` with the hash it had |
+   | Stall | `docker compose pause engine; sleep 2; docker compose unpause engine` | a `Resume` batch right after unpause; open dispute windows extended, so a run in flight may FAIL on timing (correct engine behaviour) |
+   | Driver crash | `docker compose kill aeron`, then `docker compose up -d aeron engine gateway` | the page shows "Reconnecting"; about 10 s later the engine and gateway exit 1. Docker does not restart a container you killed, and the engine and gateway cannot rejoin its dead IPC namespace, so nothing comes back until the `up -d`. Then the engine replays its journal (same hash) and the page recovers without a reload |
+   | Driver crash, self-healing | `docker compose exec aeron kill -TERM 1` | the driver exits by itself and Docker restarts it in about 1 s; the engine and gateway follow (same hash); the page reconnects without a reload, and runs in flight lose their connection |
 
 8. **View as** (Admin, Alice, Carol, MM1, MM2) re-sends `hello` with that view. From then on the page receives exactly what the gateway would send that participant. The sealing proof is now done by the product, not by the page.
 

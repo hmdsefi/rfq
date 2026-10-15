@@ -84,7 +84,8 @@ impl Venue for AeronVenue {
     }
 
     /// Polls egress once and hands every whole message to `sink`: a batch, or one chunk of a
-    /// batch the node split (chunks share the batch's `seq` and `origin`).
+    /// batch the node split (chunks share the batch's `seq`, `time`, `kind` and `origin`; the
+    /// `balances` travel on the last chunk).
     fn poll(&mut self, sink: &mut dyn FnMut(EventBatch)) -> anyhow::Result<usize> {
         self.check_open()?;
         let reassembler = &mut self.reassembler;

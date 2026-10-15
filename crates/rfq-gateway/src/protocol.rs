@@ -66,8 +66,14 @@ pub enum ServerMsg {
         engine: EngineState,
         last_seq: Option<u64>,
     },
-    /// A sentence: `bad request: …`, `engine unavailable`, `ingress back-pressured, try again`,
-    /// `nonce sync failed for account N`, `message too large`.
+    /// A sentence (gateway.md §3), one of:
+    /// - `bad request: …`: a frame that does not decode, `bad request: message too large …` for a
+    ///   frame over 64 KiB, or `bad request: command too large for ingress (N bytes, limit 65536)`;
+    /// - `engine unavailable`: the command was never offered;
+    /// - `outcome unknown: … resend it with nonce N to retry safely …`: it was offered when the
+    ///   engine stopped answering (gateway.md §6);
+    /// - `ingress back-pressured, try again`;
+    /// - `nonce sync failed for account N`.
     Error {
         id: Option<String>,
         error: String,

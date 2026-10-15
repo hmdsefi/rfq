@@ -16,8 +16,12 @@ services:
     ipc: shareable
     shm_size: 512m
     volumes: [archive:/data/archive]
-    # If the driver process dies it comes back with its journal (the `archive` volume). The engine
-    # then halts on the dead driver, and its own restart policy replays from the recovered Archive.
+    # A driver that exits by itself (`docker compose exec aeron kill -TERM 1`, exit 143) is restarted
+    # in about 1 s with its journal (the `archive` volume); the engine and gateway exit 1 on the dead
+    # driver, their own policies bring them back, and the engine replays. A manual stop (`docker
+    # compose kill aeron`) is not restarted, and the engine and gateway then cannot rejoin its dead IPC
+    # namespace: `docker compose up -d aeron engine gateway` brings all three back, and the engine
+    # replays to the same hash. A hard JVM crash does not heal by itself either (architecture §5).
     # Retries are capped at 3: a driver that keeps failing (a root-owned `archive` volume, say) stays
     # down, and `docker compose logs aeron` shows why.
     restart: "on-failure:3"
