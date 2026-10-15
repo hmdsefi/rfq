@@ -2,7 +2,7 @@
 // End-to-end smoke test of the gateway (docs/specs/gateway.md), against the Docker stack:
 //
 //   docker compose up -d aeron engine gateway
-//   node scripts/gateway-smoke.mjs [ws://127.0.0.1:8080]
+//   node scripts/gateway-smoke.mjs [ws://127.0.0.1:18080]
 //
 // One trade over the WebSocket, as the admin view: the operator funds three fresh accounts and
 // lists a contract, Alice asks for 1000 YES (limit 0.70), MM1 quotes 0.62 and MM2 0.60, and after
@@ -18,7 +18,7 @@
 // so it runs against a long-lived engine. Prints `GATEWAY SMOKE OK` and exits 0, or the first
 // failure and exits 1. Needs Node 22 or later (the global WebSocket).
 
-const URL = process.argv[2] ?? process.env.RFQ_GATEWAY_URL ?? 'ws://127.0.0.1:8080';
+const URL = process.argv[2] ?? process.env.RFQ_GATEWAY_URL ?? 'ws://127.0.0.1:18080';
 /** How long one expected frame may take. */
 const TIMEOUT_MS = 10_000;
 /** How long the engine may take to be up (it may still be starting or replaying). */
@@ -242,10 +242,12 @@ async function main() {
   for (const { e } of events) if (next < expect.length && name(e) === expect[next]) next++;
   check(next === expect.length, `events out of order: got ${events.map(({ e }) => name(e)).join(', ')}; expected ${expect.join(', ')}`);
 
-  // MM1's view: let anything still on its way arrive, then check every frame.
+  // MM1's view: let anything still on its way arrive, then check every batch after its welcome
+  // (until then the connection had the default view, admin).
   await sleep(300);
+  const mm1Batches = mm1.frames.slice(mm1.frames.findIndex((f) => f.type === 'welcome') + 1).filter((f) => f.type === 'batch');
   let own = 0;
-  for (const f of mm1.frames.filter((f) => f.type === 'batch')) {
+  for (const f of mm1Batches) {
     for (const e of f.events) {
       const a = e.audience;
       check(a === 'Public' || a?.Account === MM1, `mm1 got an event addressed to ${JSON.stringify(a)}: ${JSON.stringify(e.event)} (seq ${f.seq})`);
@@ -254,7 +256,7 @@ async function main() {
     for (const b of f.balances) check(b.account === MM1, `mm1 got the balance of account ${b.account} (seq ${f.seq})`);
     check(f.origin === null || f.origin.actor === MM1, `mm1 got the origin of another account's command (seq ${f.seq})`);
   }
-  const mm1Events = mm1.frames.filter((f) => f.type === 'batch').flatMap((f) => f.events.map(name));
+  const mm1Events = mm1Batches.flatMap((f) => f.events.map(name));
   check(mm1Events.includes('QuoteSubmitted') && mm1Events.includes('QuoteLost'), `mm1 missed its own events: ${mm1Events.join(', ')}`);
   check(!mm1.frames.some((f) => f.type === 'result' || f.type === 'sent'), 'mm1 got a result or sent of a command it did not send');
 
@@ -263,7 +265,7 @@ async function main() {
   }
   for (const { seq, e } of events) console.log(`  seq ${String(seq).padStart(5)}  ${name(e)}`);
   console.log(`  alice after accept: free $${fmt(alice.free)}, reserved $${fmt(alice.reserved)}, escrowed $${fmt(alice.escrowed)}`);
-  console.log(`  mm1 view: ${mm1.frames.filter((f) => f.type === 'batch').length} batches, ${own} events of its own, nothing of anyone else`);
+  console.log(`  mm1 view: ${mm1Batches.length} batches, ${own} events of its own, nothing of anyone else`);
   admin.close();
   mm1.close();
   console.log('GATEWAY SMOKE OK');
