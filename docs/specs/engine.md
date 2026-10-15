@@ -79,11 +79,11 @@ Requester hold at submission = Σ legs `qty × limit_price × 100` (P4).
 | `Deposit{to, amount}` | actor is operator; `amount > 0` | ledger deposit |
 | `Withdraw{amount}` | `0 < amount ≤ free` | ledger withdraw |
 | `ListContract{...}` | operator; unique id; `now < trading_close < resolution_deadline`; `dispute_window > 0` and `trading_close + dispute_window < resolution_deadline` (a proposal must fit before the hard deadline, else the contract could only finalize `Invalid`); `oracle ∉ {operator, arbiter, treasury}` (role separation) | contract `Trading`; timers for close + hard deadline |
-| `SubmitRequest{legs, response_deadline}` | `legs.len() == 1` (P6); `now + MIN_RESPONSE ≤ deadline ≤ now + MAX_RESPONSE`; for **every** leg: contract `Trading`, `deadline + ACCEPT_WINDOW < trading_close`, qty in range, `qty × limit × 100 ≥ MIN_REQUEST_NOTIONAL` (else `InvalidInput`); free ≥ hold | hold; request `Open`; timer at deadline |
+| `SubmitRequest{legs, response_deadline}` | `1 ≤ legs.len() ≤ MAX_LEGS` (8; else `InvalidInput`, P6); `now + MIN_RESPONSE ≤ deadline ≤ now + MAX_RESPONSE`; for **every** leg: contract `Trading`, `deadline + ACCEPT_WINDOW < trading_close`, qty in range, `qty × limit × 100 ≥ MIN_REQUEST_NOTIONAL` (else `InvalidInput`); free ≥ hold | hold; request `Open`; timer at deadline |
 | `CancelRequest{request}` | actor = requester; state `Open` | release request + all quote holds; `Cancelled` |
-| `SubmitQuote{request, leg, price, size, expires_at}` | request `Open` and `now < deadline`; `mm ≠ requester`; `size ≥ leg.qty`; `expires_at > now`; MM free ≥ `qty × (10000−price) × 100` (net of any replaced quote). **No `price ≤ limit` check:** a rejection would be an oracle for the sealed limit; selection filters over-limit quotes and `QuoteLost` doesn't say why | `expires_at` clamped to `min(expires_at, deadline + ACCEPT_WINDOW)` (a quote is useless after that) and the clamped value used for the quote, its event and its timer; if MM already has an active quote on this leg → **replace** (release old hold, hold new) atomically; quote `Active` |
+| `SubmitQuote{request, leg, price, size, expires_at}` | request `Open` and `now < deadline`; `mm ≠ requester`; `leg < legs.len()` (else `InvalidInput`); `size ≥ leg.qty`; `expires_at > now`; MM free ≥ `qty × (10000−price) × 100` (net of any replaced quote). **No `price ≤ limit` check:** a rejection would be an oracle for the sealed limit; selection filters over-limit quotes and `QuoteLost` doesn't say why | `expires_at` clamped to `min(expires_at, deadline + ACCEPT_WINDOW)` (a quote is useless after that) and the clamped value used for the quote, its event and its timer; if MM already has an active quote on this leg → **replace** (release old hold, hold new) atomically; quote `Active` |
 | `CancelQuote{quote}` | actor = mm; quote `Active`. A `Selected` quote is firm (P5) ⇒ `InvalidState` | release; quote `Cancelled` |
-| `Accept{request, picks: [(leg, quote, price)]}` | actor = requester; state `Presented`; picks equal current selection exactly (ids **and** prices) | one `escrow_from_hold(request hold, Σ legs q×p×100)` (escrows the sum and releases the remainder once); per leg `escrow_from_hold` of the MM's whole quote hold; create positions; request `Filled`; quotes `Filled` |
+| `Accept{request, picks: [(leg, quote, price)]}` | actor = requester; state `Presented`; every leg's contract still `Trading` (else `InvalidState`); picks equal current selection exactly (one per leg, in leg order, ids **and** prices) | one `escrow_from_hold(request hold, Σ legs q×p×100)` (escrows the sum and releases the remainder once); per leg `escrow_from_hold` of the MM's whole quote hold; create positions; request `Filled`; quotes `Filled` |
 | `Reject{request}` | actor = requester; state `Presented` | release all; `Rejected(Declined)` |
 | `ProposeOutcome{contract, outcome}` | actor = contract oracle; state `Closed`; `now + dispute_window < resolution_deadline` (else `InvalidState`) | `Proposed{dispute_until = now + dispute_window}`; timer at `dispute_until` |
 | `Dispute{contract}` | state `Proposed`; `now < dispute_until`; free ≥ `DISPUTE_BOND` | hold bond; `Disputed` |
@@ -99,7 +99,7 @@ Requester hold at submission = Σ legs `qty × limit_price × 100` (P4).
 
 ```mermaid
 stateDiagram-v2
-  [*] --> Open: SubmitRequest (requester) — hold qty×limit
+  [*] --> Open: SubmitRequest (requester) — hold Σ qty×limit
   Open --> Cancelled: CancelRequest (requester)
   Open --> Expired: deadline (clock) — some leg has no eligible quote
   Open --> Presented: deadline (clock) — every leg has an eligible quote
@@ -166,7 +166,7 @@ Every event carries an `audience` (`Public` or `Account(id)`), and each `EventBa
 
 **Trust boundary.** Sealing relies on that filter: the egress stream, the Archive and the gateways are venue-operated, and participants only ever reach their own audience-filtered session. Production: encrypted or commit-reveal quotes.
 
-`Initialized`, `CommandRejected{reason}`, `Deposited`, `Withdrawn`, `ContractListed`, `ContractClosed`, `RequestOpened` (public: contract, side, qty, deadline; never the limit or the requester), `RequestCancelled`, `RequestExpired`, `RequestPresented` (requester only: picks, accept_by), `RequestRejected{cause}`, `RequestFilled{positions}` (requester only), `QuoteSubmitted`/`QuoteReplaced`/`QuoteCancelled`/`QuoteExpired`/`QuoteLost`/`QuoteSelected`/`QuoteReleased`/`QuoteFilled` (quote owner only), `OutcomeProposed` (re-emitted with the new `dispute_until` when `Resume` extends a window), `Disputed`, `Ruled`, `DisputeBondReturned{contract, disputer, amount}` (disputer only: the hard deadline returned an unruled dispute's bond; not a `Ruled`, since nobody ruled), `ContractFinalized{outcome}`, `PositionSettled{payouts}` (to both holders).
+`Initialized`, `CommandRejected{reason}`, `Deposited`, `Withdrawn`, `ContractListed`, `ContractClosed`, `RequestOpened` (public, one per leg: leg index, contract, side, qty, deadline; never the limit or the requester), `RequestCancelled`, `RequestExpired`, `RequestPresented` (requester only: picks, accept_by), `RequestRejected{cause}`, `RequestFilled{positions}` (requester only), `QuoteSubmitted`/`QuoteReplaced`/`QuoteCancelled`/`QuoteExpired`/`QuoteLost`/`QuoteSelected`/`QuoteReleased`/`QuoteFilled` (quote owner only), `OutcomeProposed` (re-emitted with the new `dispute_until` when `Resume` extends a window), `Disputed`, `Ruled`, `DisputeBondReturned{contract, disputer, amount}` (disputer only: the hard deadline returned an unruled dispute's bond; not a `Ruled`, since nobody ruled), `ContractFinalized{outcome}`, `PositionSettled{payouts}` (to both holders).
 
 On egress the node wraps each command's events in an `EventBatch{seq, time, kind, origin: Option<(actor, nonce)>, events, balances}`. `origin` lets a client match its command to the ids it created, since `RequestId`/`QuoteId` equal the `seq` of the command that created them.
 
@@ -174,15 +174,17 @@ On egress the node wraps each command's events in an `EventBatch{seq, time, kind
 
 Each `EventBatch` also carries the command's engine `time` (the sequencer's stamp), its `kind` (`Genesis`, `Tick`, `Resume` or `User`), and the `balances` of every account the command changed (after it, in account order; a rejected command changes none itself, but timers that fell due in the same apply still show). `Resume` is always published, even when it emits no events, so clients see every restart and stall; a `Tick` that emits nothing still publishes nothing. Like `origin`, `balances` is audience-scoped: a gateway sends an account only its own. The set of touched accounts is output only (`#[serde(skip)]` on the ledger), so it is not state and never reaches `state_hash`, snapshots or the journal ([gateway.md §2](gateway.md)).
 
-## 8. Multi-leg design (not built — P6)
+## 8. Multi-leg (built — P6)
 
-The model is already `Vec<Leg>`; enabling N > 1 means removing one validation. The rules that make it atomic:
+Built on 2026-10-16: the PO decided to build what RFC P6 had left as design only. A request has `1..=MAX_LEGS` legs (`MAX_LEGS = 8`); none, or more, is `InvalidInput`. The cap bounds the work of the one command that validates and escrows every leg, and the burst of one public `RequestOpened` per leg (each carries its `leg` index). Legs may name different contracts and either side. A quote names its leg, and an index past the last leg is `InvalidInput`.
 
-1. **One hold per request** covering all legs; one hold per quote. No per-leg partial commitment ever exists on the requester side.
-2. **Selection is all-or-nothing:** at the deadline every leg needs an eligible quote, else the whole request `Expired` and every hold is released in that one command.
-3. **Acceptance is one command:** all legs are validated first (picks match, quotes still `Selected`, amounts fit), then all escrows applied. No fallible step follows the first mutation (T2).
-4. **A presented request stays whole:** selected quotes are firm (P5), so no leg can drop out inside the window. The request leaves `Presented` only by `Accept` (all legs, one command) or by `Reject`/lapse, which releases *every* leg's quote and the requester hold in one command.
-5. **Every leg's contract outlives the request:** the trading-close guard runs per leg, i.e. `deadline + ACCEPT_WINDOW < min over legs of trading_close` (the validation already loops over all legs). Enabling N > 1 must also make `Accept` re-check that every leg's contract is still `Trading` (defence in depth).
+The rules that make it atomic, each pinned by a test in [`multi_leg.rs`](../../crates/rfq-domain/tests/multi_leg.rs). That file also checks I1–I5 after every command and, on random multi-leg streams, that a request ends with all of its legs filled or none:
+
+1. **One hold per request** covering all legs; one hold per quote. No per-leg partial commitment ever exists on the requester side (`a_request_holds_the_total_once_and_announces_every_leg`, `three_legs_fill_in_one_accept`).
+2. **Selection is all-or-nothing:** at the deadline every leg needs an eligible quote, else the whole request `Expired` and every hold is released in that one command (`leg_two_of_three_unfilled_expires_the_whole_request_and_releases_every_hold`, `an_over_limit_quote_on_one_leg_expires_the_whole_request`).
+3. **Acceptance is one command:** all legs are validated first (one pick per leg, in order, quote and price matching; quotes still `Selected`; amounts fit), then all escrows applied. No fallible step follows the first mutation (T2) (`accept_must_echo_every_leg`).
+4. **A presented request stays whole:** selected quotes are firm (P5), so no leg can drop out inside the window. The request leaves `Presented` only by `Accept` (all legs, one command) or by `Reject`/lapse, which releases *every* leg's quote and the requester hold in one command (`a_selected_leg_cannot_be_withdrawn`, `reject_and_lapse_release_every_leg_in_one_command`).
+5. **Every leg's contract outlives the request:** the trading-close guard runs per leg, i.e. `deadline + ACCEPT_WINDOW < min over legs of trading_close`. `Accept` also re-checks that every leg's contract is still `Trading`, before any mutation. That is defence in depth: the guard already makes it unreachable, so a unit test forces a contract out of `Trading` (`accept_rechecks_every_leg_contract_is_trading`, in `engine/rfq.rs`).
 
 **"Leg 2 of 3 fails after leg 1 provisionally matched":**
 
@@ -191,6 +193,8 @@ The model is already `Vec<Leg>`; enabling N > 1 means removing one validation. T
 | Before deadline | quote Active (MM-A holds) | no quote | quote Active (MM-C holds) | `Open` — nothing provisional is escrowed |
 | Deadline fires | — | no eligible quote | — | request `Expired`; MM-A, MM-C, requester holds all released **in the same command** |
 | Alt: deadline OK, then MM-B tries to cancel leg 2 in the window | Selected | cancel rejected (`InvalidState`), still Selected | Selected | request stays `Presented`: `Accept` fills all three legs in one command; `Reject` or lapse releases MM-A, MM-B, MM-C and the requester in one command |
+
+The first two rows are the scenario `multi_leg_leg2_fails` (legs 1 and 3 quoted, leg 2 not) and the test `leg_two_of_three_unfilled_expires_the_whole_request_and_releases_every_hold`. The third is `a_selected_leg_cannot_be_withdrawn`. The scenario `multi_leg_happy` is the case where every leg has a quote and one `Accept` fills all three. Both scenarios are in [`scenarios.rs`](../../crates/rfq-testkit/src/scenarios.rs), run in memory by `cargo test` and over Aeron by `./scripts/demo.sh`.
 
 **Where capital could leak and why it can't:** a "provisional match" is only ever a *hold* owned by a live request/quote with a pending timer (I4, I5). Holds are released only by the transitions above, all inside single commands. The only design that would leak is splitting legs across engines/shards (needs 2PC with prepared holds and timeouts) — forbidden: a request's legs must live in one engine.
 

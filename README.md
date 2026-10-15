@@ -19,9 +19,9 @@ cargo test --workspace
 
 The toolchain is pinned to Rust 1.99.0 in `rust-toolchain.toml`, so `rustup` installs it on first use. This never builds Aeron: the Aeron adapters sit behind the off-by-default cargo feature `aeron`. The tests are:
 
-- unit and behaviour tests for the ledger and every command, including the race and partial-failure cases ([failure-modes.md](docs/specs/failure-modes.md) names the test for each one);
-- the six scripted scenarios of the demo, run in memory, and replay tests that rebuild the engine from its log and compare `state_hash`;
-- two property tests that run random command streams and check the invariants I1–I5 after every command;
+- unit and behaviour tests for the ledger and every command, including the race and partial-failure cases ([failure-modes.md](docs/specs/failure-modes.md) names the test for each one) and the multi-leg atomicity rules ([`multi_leg.rs`](crates/rfq-domain/tests/multi_leg.rs));
+- the eight scripted scenarios of the demo (the six brief ones and two multi-leg ones), run in memory, and replay tests that rebuild the engine from its log and compare `state_hash`;
+- three property tests that run random command streams and check the invariants I1–I5 after every command (the third generates multi-leg requests, and also checks that a request fills all of its legs or none);
 - node tests over the in-memory and file journals: startup replay, write-ahead order, restart, `Resume` after a stall, failure latch.
 
 Engine benchmark:
@@ -47,10 +47,10 @@ You need Docker Desktop (Compose v2). This was verified on Docker Desktop for Ap
 The first run compiles Aeron C from source inside the build image (it needs CMake 3.30, clang and a JDK), which takes several minutes. Later runs reuse Docker's layer cache. The script:
 
 1. builds the images and starts a fresh stack: the Java Aeron media driver and Archive, then the engine (`rfq-node`);
-2. runs the six scenarios through the demo client (`rfq-demo`) over Aeron, printing each scenario's events and a `PASS <name>` line, then `passed 6/6`;
+2. runs the eight scenarios through the demo client (`rfq-demo`) over Aeron, printing each scenario's events and a `PASS <name>` line, then `passed 8/8`;
 3. `SIGKILL`s the engine, restarts it, and checks that replaying the Archive journal rebuilds exactly the state it had: the last state hash the engine logged before the kill must equal the hash it logs after the replay. It prints `RECOVERY OK`.
 
-The scenarios are the happy path (`happy_path`) and five failure paths: `mm_cannot_withdraw_after_selection` (a selected quote is firm), `no_quotes_expire`, `requester_lapses` (no accept inside the window), `disputed_ruled_invalid`, and `oracle_silent_hard_deadline`. The scenario scripts are in [`crates/rfq-testkit/src/scenarios.rs`](crates/rfq-testkit/src/scenarios.rs). The demo node runs with short windows (`demo_config()`: 2 s accept window) so the scenarios take under a minute.
+The scenarios are the happy path (`happy_path`); five failure paths: `mm_cannot_withdraw_after_selection` (a selected quote is firm), `no_quotes_expire`, `requester_lapses` (no accept inside the window), `disputed_ruled_invalid`, and `oracle_silent_hard_deadline`; and two multi-leg paths on three markets: `multi_leg_happy` (a quote on every leg, and one accept fills all three) and `multi_leg_leg2_fails` (leg 2 of 3 has no quote, so the whole request expires and every hold is released in one command). The scenario scripts are in [`crates/rfq-testkit/src/scenarios.rs`](crates/rfq-testkit/src/scenarios.rs). The demo node runs with short windows (`demo_config()`: 2 s accept window) so the scenarios take under a minute.
 
 Afterwards the stack is still running:
 
@@ -120,6 +120,7 @@ Also: the product and technical decisions in [rfc/0001-rfq-engine.md](docs/rfc/0
 
 - **Exact money.** Amounts are `u64` micro-USD and prices are `u16` basis points. The buyer locks `qty × bps × 100` and the counterparty locks the complement, so the two always sum to `qty × $1` with no rounding. All arithmetic is checked; overflow rejects the command instead of wrapping.
 - **Deterministic, replayable.** One sequencer totally orders every command and stamps its time. The engine never reads a clock or randomness and iterates only `BTreeMap`/`BTreeSet`. State is the replay of the log, and `state_hash` proves it.
+- **Multi-leg, all or nothing.** A request has up to 8 legs. One hold covers them all, and at the deadline every leg must have an eligible quote or the whole request expires and releases every hold in that one command. One accept escrows every leg ([engine.md §8](docs/specs/engine.md)).
 - **Money only moves through the ledger,** and every handler validates before it mutates. Five invariants (conservation, holds, escrow, ownership, no dead ends) are checked after every command in the tests.
 - **Adversarial by default.** Sealed bids, firm quotes once selected, strict per-actor nonces, a bond for disputes, role separation for oracles, a hard deadline so no money is stuck forever. The remaining risks are listed with their production defences in [adversarial.md](docs/specs/adversarial.md).
 - **Write-ahead.** Nothing is applied or published until its command is durable, meaning fsynced, in the journal: Aeron Archive with `aeron.archive.file.sync.level=2`, or a local file with `sync_data`. That costs an fsync on the write-ahead path, one wait per batch. Egress is a best-effort notification stream; anything that must happen exactly once reads the journal.
@@ -130,7 +131,7 @@ Also: the product and technical decisions in [rfc/0001-rfq-engine.md](docs/rfc/0
 
 ## Not built
 
-Multi-leg execution is designed but not built (the data model is `Vec<Leg>`, and the engine rejects any request with `legs.len() != 1`, see [engine.md §8](docs/specs/engine.md)). Also designed only: snapshots and pruning, Aeron Cluster for HA, on-chain escrow and effect workers, and authentication. (The gateway is built, but it trusts the `actor` a client names: [gateway.md §7](docs/specs/gateway.md).) The brief puts auth, real chain integration and pricing out of scope.
+Designed only: snapshots and pruning, Aeron Cluster for HA, on-chain escrow and effect workers, and authentication. (The gateway is built, but it trusts the `actor` a client names: [gateway.md §7](docs/specs/gateway.md).) The brief puts auth, real chain integration and pricing out of scope.
 
 ## License
 

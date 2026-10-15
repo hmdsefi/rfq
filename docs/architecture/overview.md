@@ -189,7 +189,7 @@ flowchart LR
       AE["aeron<br/>eclipse-temurin 21 JRE + aeron-all 1.53.3 (sha256-checked)<br/>ArchivingMediaDriver, fsync on · restart on failure (capped)"]
       EN["engine<br/>rfq-node --features aeron · init: true<br/>restart on failure (capped)"]
       GWS["gateway<br/>rfq-gateway --features aeron · init: true<br/>restart on failure (capped)"]
-      DE["demo (profile: demo)<br/>rfq-demo: 6 scenarios"]
+      DE["demo (profile: demo)<br/>rfq-demo: 8 scenarios"]
     end
     VOL[("named volume: archive<br/>/data/archive")]
   end
@@ -206,7 +206,7 @@ flowchart LR
 - `gateway`: the WebSocket client edge. It listens on `0.0.0.0:18080` inside the container and is published on the host as `127.0.0.1:${RFQ_GATEWAY_PORT:-18080}`, loopback only ([gateway.md §7](../specs/gateway.md)). It may start before the engine: its clients see `status: down` until the engine is there. A dead engine is not fatal for it; a dead media driver is (it exits 1).
 - `aeron`, `engine` and `gateway` have `restart: "on-failure:3"`: a halted node exits with status 1 and comes back to replay ([transport-aeron.md](../specs/transport-aeron.md#docker-compose)). Retries are capped at 3: after that the container stays down, and `docker compose logs engine` shows why. A manual stop, such as the `SIGKILL` in `scripts/demo.sh` or `docker compose kill`, is not restarted.
 - **A dead driver heals only when it exits cleanly.** A `SIGTERM` to its JVM (exit 143) is restarted, and the engine and gateway follow within a second and replay to the same hash. A hard JVM crash (`kill -SEGV 1` in the container) is not: the three restarts come within a second and each is refused with `active mark file detected` (the Archive's mark file stays active for about 10 s), and the engine and gateway, which exit 1 after the driver's 10 s keep-alive timeout, cannot rejoin the dead driver's IPC namespace. Recover with `docker compose up -d aeron engine gateway`; the engine replays its journal.
-- Archive data is on the named volume `archive`, so it survives the engine being killed and restarted. `./scripts/demo.sh` does exactly that: it runs the six scenarios, `SIGKILL`s the engine, restarts it, and checks that the replayed state hash equals the last hash the engine logged before the kill (`RECOVERY OK`).
+- Archive data is on the named volume `archive`, so it survives the engine being killed and restarted. `./scripts/demo.sh` does exactly that: it runs the eight scenarios, `SIGKILL`s the engine, restarts it, and checks that the replayed state hash equals the last hash the engine logged before the kill (`RECOVERY OK`).
 
 ## 6. Production path (not built)
 

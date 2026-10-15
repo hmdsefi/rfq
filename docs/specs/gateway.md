@@ -135,7 +135,7 @@ Together with the node's `applied seq hash` lines, `docker compose logs -f gatew
 ## 10. Acceptance
 
 1. A client that sends fund, list, request, two quotes and accept over the WebSocket receives each command's `result` and the batches with every expected event, each touched account's balances, and engine time.
-2. The views hide exactly what §4 says. This is tested for every view on every event of the 12 scenarios.
+2. The views hide exactly what §4 says. This is tested for every view on every event of the 14 scenarios (the testkit's eight and the dashboard's six attacks).
 3. Killing the engine broadcasts `down`. Restarting it broadcasts `up` and a `Resume` batch, and commands work again.
 4. Bad JSON, unknown actions, huge frames and unknown message types each give an `error` frame. The gateway keeps running.
 5. All existing tests stay green, `state_hash` is unchanged by the new output, and `scripts/demo.sh` still prints `RECOVERY OK`.

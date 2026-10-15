@@ -29,4 +29,4 @@ Every race (R) and partial failure (F) handled, with a test that shows it (`carg
 | F14 | **Stall or clock jump:** `Resume` first, as F9. *Residual:* long downtime can lock the oracle out: `Invalid`, refunds. | `a_stall_cannot_eat_a_dispute_window` |
 | F15 | **Egress reader stops:** the node halts after 5 s. *Residual:* readers must be venue-run. | — |
 
-**Multi-leg (designed, not built): where capital could leak.** Only in the holds of a provisionally matched leg. Each belongs to a live request with a pending timer (I4, I5), and every exit other than `Filled` releases every leg's holds in one command ([engine.md §8](engine.md)).
+**Multi-leg: where capital could leak.** Only in the holds of a provisionally matched leg, each owned by a live request with a pending timer (I4, I5). Every exit but `Filled` releases every leg's holds in one command ([engine.md §8](engine.md)); tests `leg_two_of_three_unfilled_expires_the_whole_request_and_releases_every_hold`, `a_selected_leg_cannot_be_withdrawn`, scenario `multi_leg_leg2_fails`.

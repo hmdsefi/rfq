@@ -6,7 +6,7 @@ The adversarial analysis that D3 ([failure-modes.md](failure-modes.md)) links to
 
 | Attacker | Attack | Defence |
 |---|---|---|
-| Requester | Spam requests to tie up MM attention/capital (#12) | Must hold `qty × limit` per request (P4), and every leg is at least `MIN_REQUEST_NOTIONAL` ($1). |
+| Requester | Spam requests to tie up MM attention/capital (#12) | Must hold `qty × limit` summed over its legs (P4), has at most `MAX_LEGS` (8) legs, and every leg is at least `MIN_REQUEST_NOTIONAL` ($1). |
 | Requester | Accept a different price than shown | `Accept` must echo quote ids **and** prices; mismatch ⇒ rejected. |
 | Requester | Free option: accept only if the market moved its way, else reject or lapse (#10) | **Residual**, inherent to RFQ: bounded by a short `ACCEPT_WINDOW`, and firm quotes stop the MM racing it. Grows with days-long windows. Production: reject/lapse fee to the selected MM; per-requester reject-rate limits. |
 | Requester + MM | Shadow RFQ with the same public fields to read the best honest price, then reject (#11) | **Residual**, as above: sealed bids are only as strong as the cost of a shadow RFQ. |
