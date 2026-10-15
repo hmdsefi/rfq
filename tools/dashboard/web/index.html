@@ -241,7 +241,6 @@ a.idlink, button.idlink { color: var(--accent); text-decoration: underline; text
 .dtable td:first-child { font-weight: 600; white-space: nowrap; }
 .dtable code { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
 .steps3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
-.not-built { display: inline-flex; padding: 2px 8px; border-radius: 4px; border: 1px dashed var(--warn); color: var(--warn); font-size: 12.5px; font-weight: 600; }
 .seam { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
 .seam .item { background: var(--surface); }
 .seam ul { margin: 0; padding-left: 18px; display: grid; gap: 3px; font-size: 13px; color: var(--ink-2); }
@@ -709,7 +708,7 @@ function contractRun(id) {
   const t0 = Math.floor(id / 10);
   return id % 10 !== 0 && page.runsByT0.has(t0) ? t0 : id;
 }
-/** Contracts newest run first, a run's markets in the order it listed them. */
+/** Contracts newest run first, then by id: a run's extra markets are `t0 * 10 + k`, so the brief's scenarios list them in id order. */
 const newerContract = (a, b) => contractRun(b.id) - contractRun(a.id) || a.id - b.id;
 
 function computeView() {
@@ -1260,7 +1259,9 @@ function quoteItem(a, q) {
   if (LIVE_QUOTE.includes(q.state)) facts.push(`<span>${q.state === "Selected" ? "Firm until" : "Expires"} ${esc(fmtT(q.expires_at))}</span>`);
   else if (q.state === "Filled") {
     // The maker's position on this quote's leg (an MM can back several legs of one request).
-    const p = (V.idx.positionsByRequest.get(q.request) ?? []).find((x) => (x.yes_holder === a.id || x.no_holder === a.id) && (q.leg == null || x.leg == null || x.leg === q.leg));
+    // On a multi-leg request the legs must match exactly: an unknown leg shows no position rather than a guessed one.
+    const sameLeg = r && r.legs.length === 1 ? (x) => q.leg == null || x.leg == null || x.leg === q.leg : (x) => q.leg != null && x.leg === q.leg;
+    const p = (V.idx.positionsByRequest.get(q.request) ?? []).find((x) => (x.yes_holder === a.id || x.no_holder === a.id) && sameLeg(x));
     facts.push(p ? `<span>Position #${p.id}</span><span>${p.settled ? "Settled" : "Escrowed (see the ledger)"}</span>` : "<span>Hold moved to escrow</span>");
   } else facts.push("<span>Hold released</span>");
   return `<div class="item">

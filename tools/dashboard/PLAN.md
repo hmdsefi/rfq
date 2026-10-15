@@ -28,7 +28,7 @@
 - **Money is integers.** Micro-USD (`Amount`) and bps (`Price`, 1..=9999) cross the boundary as integers. The page formats and diffs them for display only.
 - **Time only moves forward.** The page never computes a timer; the engine fires timers.
 - **No network at runtime.** No CDN, no web fonts: use the system font stack. One self-contained `dist/rfq-dashboard.html`.
-- **Required copy.** The page must show "Demo aid — not part of the engine" and, on the multi-leg tab, "Designed, not built (P6)" (changed to "Built" when multi-leg was built, 2026-10-16: see DESIGN.md §11).
+- **Required copy.** The page must show "Demo aid — not part of the engine" and, on the multi-leg tab, "Built" (it read "Designed, not built (P6)" until multi-leg was built on 2026-10-16: see DESIGN.md §11).
 - **Accounts** (from `rfq_testkit::accounts`):
   - OPERATOR 1, ARBITER 2, TREASURY 3, ORACLE 4;
   - ALICE 10 and CAROL 30 (requesters);
