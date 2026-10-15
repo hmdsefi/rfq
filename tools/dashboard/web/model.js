@@ -7,7 +7,7 @@
 // or a run's part of them). `position` is an index into them: the model is built from batches 0..position.
 // Object states come from the events (each event is a transition). Balances come from `balances`
 // only. What the events don't carry (a requester's limit, a quote's size, a contract's terms) comes
-// from the command the page itself sent, `commandAt(seq)`, joined only through a batch's `origin`: the
+// from the command the page itself sent, `commandAt(seq, epoch)`, joined only through a batch's `origin`: the
 // gateway forwards an origin only to the view that sent the command (gateway.md §4), so in an account
 // view the page's knowledge of the other participants' commands never reaches the model.
 //
@@ -16,6 +16,7 @@ const RfqModel = (() => {
   const variant = (v) => (typeof v === "string" ? v : Object.keys(v)[0]);
   const body = (v) => (typeof v === "string" ? {} : Object.values(v)[0]);
   const KIND = { User: "user", Tick: "tick", Resume: "resume", Genesis: "genesis" };
+  const UNCONSUMED = ["Duplicate", "NonceGap"];
 
   /**
    * The page's command that made `batch`, or null: only through the batch's origin, and only if the
@@ -24,7 +25,7 @@ const RfqModel = (() => {
   function commandOf(recording, batch) {
     const o = batch.origin;
     if (!o || typeof recording.commandAt !== "function") return null;
-    const c = recording.commandAt(batch.seq);
+    const c = recording.commandAt(batch.seq, batch.epoch ?? 0);
     return c && c.actor === o.actor && c.nonce === o.nonce ? c : null;
   }
 
@@ -33,10 +34,11 @@ const RfqModel = (() => {
 
   /**
    * The model at `position` (default: the last batch; -1: before the first). Returns
-   * `{ position, count, seq, epoch, now, viewer, accounts, previous, requests, quotes, contracts,
+   * `{ position, count, seq, epoch, now, viewer, accounts, previous, nonces, requests, quotes, contracts,
    * positions, trace }`, in the shape the page's renderers read:
    *   - `accounts`: `[{ id, name, role, balance }]`, each with its last `balances` value up to the position;
    *     `previous` is the same as a Map (id -> balance) one position earlier, for the ledger's deltas;
+   *   - `nonces`: actor -> the last nonce the engine consumed, from the origins this connection heard;
    *   - `requests`, `quotes`, `contracts`, `positions`: what this connection's events say about them;
    *     a field nothing said is null (sealed, or not in this recording);
    *   - `trace`: one entry per batch, `{ key, seq, epoch, time, kind, actor, nonce, command, events, balances }`,
@@ -50,7 +52,8 @@ const RfqModel = (() => {
     const info = typeof recording.accountInfo === "function" ? recording.accountInfo : () => undefined;
 
     const balances = new Map(); // account -> balance, as of the batch being applied
-    let previous = new Map();
+    let previous = new Map(); // the balances before the batch at the position (copied once, there)
+    const nonces = new Map(); // actor -> the last nonce the engine consumed, as far as this view heard
     const requests = new Map(); // "epoch:id" -> request
     const quotes = new Map();
     const contracts = new Map();
@@ -117,7 +120,13 @@ const RfqModel = (() => {
       const b = all[i];
       const epoch = b.epoch ?? 0;
       const cmd = commandOf(recording, b);
-      previous = new Map(balances);
+      // One copy, at the position only: a copy per batch made long recordings quadratic.
+      if (i === at) previous = new Map(balances);
+      // Duplicate and NonceGap consume nothing; every other answer to a command consumes its nonce.
+      if (b.origin && !b.events.some((e) => variant(e.event) === "CommandRejected" && UNCONSUMED.includes(body(e.event).reason))) {
+        const last = nonces.get(b.origin.actor);
+        if (last == null || b.origin.nonce > last) nonces.set(b.origin.actor, b.origin.nonce);
+      }
       const rowBalances = (b.balances ?? []).map(({ account, balance }) => ({ account, balance, before: balances.get(account) ?? null }));
       for (const { account, balance } of b.balances ?? []) balances.set(account, balance);
 
@@ -326,6 +335,7 @@ const RfqModel = (() => {
       viewer: recording.viewer ?? "admin",
       accounts,
       previous: at >= 0 ? previous : new Map(),
+      nonces,
       requests: [...requests.values()],
       quotes: [...quotes.values()],
       contracts: [...contracts.values()],

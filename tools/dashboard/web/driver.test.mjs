@@ -635,5 +635,51 @@ await test("the clock is measured again only when no run is active: a run in pro
   gw.close();
 });
 
+await test("stop while the driver waits for the engine to be up: the wait ends at once, nothing is sent", async () => {
+  const server = fakeServer(answering());
+  server.engine = "down";
+  const gw = G.connect("ws://fake", { WebSocket: server.Socket, connectTimeoutMs: 2_000 });
+  await gw.ready;
+  const driver = S.createDriver(gw, { startMarginMs: 0, graceMs: 30, engineWaitMs: 10_000 });
+  const started = Date.now();
+  const many = driver.runMany(["happy_path"], 3, 1);
+  const one = driver.run(funding());
+  await sleep(50);
+  driver.stop();
+  const out = await many;
+  assert.ok(Date.now() - started < 1_000, `took ${Date.now() - started} ms`);
+  assert.deepEqual([out.stopped, out.runs.length, out.pass], [true, 0, false]);
+  await assert.rejects(one, (e) => e.name === "Stopped");
+  assert.equal(server.received.filter((m) => m.type === "command").length, 0);
+  // The driver is still usable once the engine is up.
+  server.engine = "up";
+  server.deliver(status("up"));
+  const ok = await driver.run(funding());
+  assert.equal(ok.pass, true, ok.detail);
+  gw.close();
+});
+
+await test("commandAt is keyed by (epoch, seq): a journal reset's seq 40 is not the old seq 40's command", async () => {
+  let seq = 39;
+  const { server, gw, driver } = await connected((msg, s) => {
+    seq++;
+    s.deliver(sent(msg, 3));
+    s.deliver(batch(seq, { actor: msg.actor, nonce: 3 }, [deposited(msg)]));
+    s.deliver(result(msg, seq));
+  });
+  const first = await driver.run(funding());
+  assert.equal(driver.commandAt(40, 0).id, `${first.id}.1`);
+  // `docker compose down -v`: a fresh journal; its seqs start again.
+  server.deliver(batch(2, null, [], "Tick"));
+  assert.equal(driver.recorder.epoch, 1);
+  seq = 39;
+  const second = await driver.run(funding());
+  assert.equal(driver.commandAt(40, 1).id, `${second.id}.1`);
+  assert.equal(driver.commandAt(40, 0).id, `${first.id}.1`, "the old epoch keeps its own");
+  assert.equal(driver.commandAt(40).id, `${second.id}.1`, "no epoch: the current one");
+  assert.equal(driver.commandAt(40, 2), undefined);
+  gw.close();
+});
+
 console.log(failed ? `${failed} FAILED` : "all gateway client and driver tests passed");
 process.exit(failed ? 1 : 0);

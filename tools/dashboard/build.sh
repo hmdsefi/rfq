@@ -23,6 +23,7 @@ node web/inline.test.mjs
 node web/recorder.test.mjs
 node web/model.test.mjs
 node web/driver.test.mjs
+node web/page.test.mjs
 node web/scenarios.test.mjs "$WASM"
 mkdir -p dist
 # Each NAME=file.js fills the template's /*__NAME_JS__*/ marker (web/inline.mjs). The page template

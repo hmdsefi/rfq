@@ -265,5 +265,116 @@ test("a journal reset: batches of two epochs with the same seq are two trace ent
   assert.deepEqual(m.requests.map((r) => [r.epoch, r.id, variant(r.state), r.legs[0].contract]), [[0, 3, "Expired", 7], [1, 3, "Open", 8]]);
 });
 
+// ---- last nonces, and linear time ------------------------------------------------------------
+
+test("last nonces: one pass over the batches, per actor, the last consumed (Duplicate and NonceGap consume nothing)", () => {
+  const m = M.modelAt(admin);
+  assert.equal(m.nonces.get(alice), 3);
+  assert.equal(m.nonces.get(1), commandAt(L.list).nonce);
+  assert.equal(m.nonces.get(oracle), 2);
+  assert.equal(m.nonces.has(mm1), true);
+  const early = M.modelAt(admin, indexOf(admin, L.req));
+  assert.equal(early.nonces.get(alice), 2, "only up to the position");
+  const frames = [
+    batch(3, [to(20, { QuoteSubmitted: { quote: 3, request: 1, price: 5, expires_at: 9 } })], { origin: { actor: 20, nonce: 2 } }),
+    batch(4, [to(20, { CommandRejected: { reason: "Duplicate" } })], { origin: { actor: 20, nonce: 1 } }),
+    batch(5, [to(20, { CommandRejected: { reason: "NonceGap" } })], { origin: { actor: 20, nonce: 9 } }),
+    batch(6, [to(20, { CommandRejected: { reason: "InvalidState" } })], { origin: { actor: 20, nonce: 3 } }),
+  ];
+  assert.equal(M.modelAt(recording(frames), 2).nonces.get(20), 2);
+  assert.equal(M.modelAt(recording(frames)).nonces.get(20), 3, "a rejection other than Duplicate/NonceGap consumes its nonce");
+});
+
+/**
+ * A long session: `runs` happy_path-shaped runs, 12 batches each, on fresh accounts and contracts
+ * (`t0 × 100 + id`, as the driver scopes them), with the page's commands for the joins.
+ */
+function synthetic(runs) {
+  const batches = [];
+  const commands = new Map();
+  let seq = 0;
+  const bal = (account, free, reserved = 0, escrowed = 0) => ({ account, balance: { free, reserved, escrowed } });
+  for (let k = 0; k < runs; k++) {
+    const t0 = 1_800_000_000_000 + k * 20_000;
+    const [alice, mm1, mm2, oracle] = [10, 20, 21, 4].map((id) => t0 * 100 + id);
+    const add = (make, { origin = null, balances = [], kind = "User", action = null } = {}) => {
+      seq++;
+      batches.push({ seq, epoch: 0, time: t0 + (seq % 10_000), kind, origin, events: make(seq), balances });
+      if (action) commands.set(seq, { actor: origin.actor, nonce: origin.nonce, action });
+      return seq;
+    };
+    for (const [i, acct] of [alice, mm1, mm2].entries()) {
+      const n = k * 4 + i + 2;
+      add(() => [to(acct, { Deposited: { account: acct, amount: 1_000_000_000 } })], { origin: { actor: 1, nonce: n }, balances: [bal(acct, 1_000_000_000)], action: { Deposit: { to: acct, amount: 1_000_000_000 } } });
+    }
+    add(() => [pub({ ContractListed: { contract: t0 } })], {
+      origin: { actor: 1, nonce: k * 4 + 5 },
+      action: { ListContract: { id: t0, description: "Will it rain?", oracle, trading_close: t0 + 5_000, resolution_deadline: t0 + 15_000, dispute_window: 2_000 } },
+    });
+    const req = add((s) => [pub({ RequestOpened: { request: s, leg: 0, contract: t0, side: "BuyYes", qty: 1_000, response_deadline: t0 + 1_500 } })], {
+      origin: { actor: alice, nonce: 2 },
+      balances: [bal(alice, 300_000_000, 700_000_000)],
+      action: { SubmitRequest: { legs: [{ contract: t0, side: "BuyYes", qty: 1_000, limit_price: 7_000 }], response_deadline: t0 + 1_500 } },
+    });
+    const quote = (mm, price) => add((s) => [to(mm, { QuoteSubmitted: { quote: s, request: req, price, expires_at: t0 + 10_000 } })], {
+      origin: { actor: mm, nonce: 2 },
+      balances: [bal(mm, 620_000_000, 380_000_000)],
+      action: { SubmitQuote: { request: req, leg: 0, price, size: 1_000, expires_at: t0 + 10_000 } },
+    });
+    const q1 = quote(mm1, 6_200);
+    const q2 = quote(mm2, 6_000);
+    add(() => [
+      to(mm1, { QuoteLost: { quote: q1 } }),
+      to(mm2, { QuoteSelected: { quote: q2 } }),
+      to(alice, { RequestPresented: { request: req, picks: [{ leg: 0, quote: q2, price: 6_000 }], accept_by: t0 + 3_500 } }),
+    ], { kind: "Tick", balances: [bal(mm1, 1_000_000_000)] });
+    add(() => [to(mm2, { QuoteFilled: { quote: q2, position: k + 1 } }), to(alice, { RequestFilled: { request: req, positions: [k + 1] } })], {
+      origin: { actor: alice, nonce: 3 },
+      balances: [bal(alice, 400_000_000, 0, 600_000_000), bal(mm2, 600_000_000, 0, 400_000_000)],
+      action: { Accept: { request: req, picks: [{ leg: 0, quote: q2, price: 6_000 }] } },
+    });
+    add(() => [pub({ ContractClosed: { contract: t0 } })], { kind: "Tick" });
+    add(() => [pub({ OutcomeProposed: { contract: t0, outcome: "Yes", dispute_until: t0 + 7_200 } })], {
+      origin: { actor: oracle, nonce: 2 },
+      action: { ProposeOutcome: { contract: t0, outcome: "Yes" } },
+    });
+    add(() => [
+      pub({ ContractFinalized: { contract: t0, outcome: "Yes" } }),
+      to(alice, { PositionSettled: { position: k + 1, yes_holder: alice, yes_payout: 1_000_000_000, no_holder: mm2, no_payout: 0 } }),
+      to(mm2, { PositionSettled: { position: k + 1, yes_holder: alice, yes_payout: 1_000_000_000, no_holder: mm2, no_payout: 0 } }),
+    ], { kind: "Tick", balances: [bal(alice, 1_400_000_000), bal(mm2, 600_000_000)] });
+  }
+  return { batches, commandAt: (s) => commands.get(s), viewer: "admin" };
+}
+
+test("linear time: a 26,000-batch session (\"All batches\" after thousands of runs) models well inside a frame budget", () => {
+  const runs = 2_167;
+  const rec = synthetic(runs);
+  assert.ok(rec.batches.length >= 26_000, `${rec.batches.length} batches`);
+  const timed = (position) => {
+    let best = Infinity;
+    let m;
+    for (let i = 0; i < 3; i++) {
+      const t = performance.now();
+      m = M.modelAt(rec, position);
+      best = Math.min(best, performance.now() - t);
+    }
+    return { m, ms: best };
+  };
+  const end = timed();
+  // Generous for a slow CI machine: the quadratic version took seconds here.
+  assert.ok(end.ms < 100, `modelAt over ${rec.batches.length} batches took ${end.ms.toFixed(1)} ms`);
+  assert.equal(end.m.trace.length, rec.batches.length);
+  assert.equal(end.m.requests.length, runs);
+  assert.equal(end.m.positions.filter((p) => p.settled).length, runs);
+  assert.equal(end.m.accounts.length, runs * 3);
+  const mid = timed(13_000);
+  assert.ok(mid.ms < 100, `modelAt at the middle took ${mid.ms.toFixed(1)} ms`);
+  // The previous position's balances are still exact (the ledger's deltas).
+  const last = rec.batches.at(-1);
+  for (const { account } of last.balances) assert.notDeepEqual(end.m.previous.get(account), end.m.accounts.find((a) => a.id === account).balance);
+  console.log(`     (${rec.batches.length} batches: ${end.ms.toFixed(1)} ms at the end, ${mid.ms.toFixed(1)} ms in the middle)`);
+});
+
 console.log(failed ? `${failed} FAILED` : "all model tests passed");
 process.exit(failed ? 1 : 0);

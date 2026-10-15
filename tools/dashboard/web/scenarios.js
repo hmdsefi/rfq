@@ -428,7 +428,7 @@ const RfqScenarios = (() => {
     const active = new Set();
     /** Every command id this driver sent: `{ id, run, step, actor, action, nonce }` (nonce once `sent`). */
     const sentById = new Map();
-    /** seq -> the command whose `result` named that batch. */
+    /** "epoch:seq" -> the command whose `result` named that batch (seqs start again after a journal reset). */
     const bySeq = new Map();
     let lastT0 = 0;
     let runNumber = 0;
@@ -459,7 +459,8 @@ const RfqScenarios = (() => {
       // A result (a late one too, after an unknown outcome) names the batch its command made.
       gateway.on("result", (frame) => {
         const cmd = sentById.get(frame.id);
-        if (cmd) bySeq.set(frame.seq, cmd);
+        // The recorder has the result's batch already (it comes first), so its epoch is the batch's.
+        if (cmd) bySeq.set(`${recorder.epoch}:${frame.seq}`, cmd);
       }),
     ];
 
@@ -493,17 +494,26 @@ const RfqScenarios = (() => {
       return t0;
     }
 
+    /** The current generation and its stop signal: a run or run set started now is stopped by the next `stop()`. */
+    const current = () => ({ gen: generation, stopped: stopSignal.promise });
+
+    /** `promise`, or `Stopped` as soon as generation `at` is stopped. */
+    function orStopped(at, promise) {
+      if (at.gen !== generation) return Promise.reject(new Stopped());
+      return Promise.race([promise, at.stopped.then(() => Promise.reject(new Stopped()))]);
+    }
+
     /**
      * Before runs: the admin view, the engine up, and the clocks measured against each other afresh
      * (they drift). Only while no run is active: a run in progress schedules its steps by the offset,
-     * so it must not move under it.
+     * so it must not move under it. A Stop ends the wait for the engine at once.
      */
-    async function prepare() {
+    async function prepare(at) {
       if (disposed) throw new Error("this driver is disposed");
       if (gateway.view !== "admin") {
         throw new Error("scenarios need the admin view: the verdict reads every event, sealed ones too");
       }
-      if (gateway.engine !== "up") await gateway.untilEngineUp({ timeoutMs: engineWait });
+      if (gateway.engine !== "up") await orStopped(at, gateway.untilEngineUp({ timeoutMs: engineWait }));
       if (measuring) await measuring;
       else if (active.size === 0) {
         measuring = gateway.syncClock(3).finally(() => (measuring = null));
@@ -784,8 +794,15 @@ const RfqScenarios = (() => {
       if (!Number.isInteger(k) || k < 1) throw new RangeError(`k must be a whole number of runs at a time, got ${k}`);
       if (names.length === 0) throw new RangeError("no scenarios to run");
       for (const name of names) if (typeof name === "string" && !byName(name)) throw new Error(`no scenario named ${name}`);
-      const gen = generation;
-      await prepare();
+      const at = current();
+      const gen = at.gen;
+      try {
+        await prepare(at);
+      } catch (e) {
+        if (!(e instanceof Stopped)) throw e;
+        // Stopped before any run started (it was waiting for the engine).
+        return { runs: [], passed: 0, failed: 0, pass: false, stopped: true, concurrency: k, perf: R.aggregatePerf([], 0) };
+      }
       const jobs = [];
       for (let i = 0; i < n; i++) jobs.push(...names);
       const runs = new Array(jobs.length);
@@ -815,11 +832,14 @@ const RfqScenarios = (() => {
       };
     }
 
-    /** One run of `scenario` (a name, or a scenario object like the ones in `scenarios`): its verdict, as in `runMany(...).runs`. */
+    /**
+     * One run of `scenario` (a name, or a scenario object like the ones in `scenarios`): its verdict, as
+     * in `runMany(...).runs`. Rejects with `Stopped` if a Stop came while it waited for the engine.
+     */
     async function run(scenario) {
-      const gen = generation;
-      await prepare();
-      return runOne(scenario, gen);
+      const at = current();
+      await prepare(at);
+      return runOne(scenario, at.gen);
     }
 
     /** Abandons the runs in progress and the run sets' jobs not started yet. The driver stays usable. */
@@ -846,7 +866,8 @@ const RfqScenarios = (() => {
       stop,
       dispose,
       engineNow,
-      commandAt: (seq) => bySeq.get(seq),
+      /** The command that made batch `seq` of `epoch` (default: the recorder's current epoch). */
+      commandAt: (seq, epoch = recorder.epoch) => bySeq.get(`${epoch}:${seq}`),
       get active() {
         return [...active].map((r) => r.result);
       },
@@ -864,6 +885,7 @@ const RfqScenarios = (() => {
     remap,
     resolveStep,
     createDriver,
+    Stopped,
     START_MARGIN_MS,
     WAIT_GRACE_MS,
     GRACE_MS,

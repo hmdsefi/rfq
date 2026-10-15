@@ -501,6 +501,10 @@ const VIEWS = [["admin", "Admin", null], ["alice", "Alice", 10], ["carol", "Caro
 const VIEW_ACCOUNT = Object.fromEntries(VIEWS.filter(([, , id]) => id != null).map(([k, , id]) => [k, id]));
 const viewLabel = (key) => VIEWS.find(([k]) => k === key)?.[1] ?? key;
 const TRACE_ROWS = 400;
+/** In an account view, what stands in for the driver's own record (verdicts, details, steps, timing). */
+const ADMIN_ONLY = "Run results and timing are shown in the Admin view.";
+/** "All batches" after many runs: the lanes, contracts and ledger show the newest this many. */
+const LANE_CAP = 20, CONTRACT_CAP = 10, LEDGER_CAP = 60;
 const RENDER_EVERY_MS = 120;
 const MAX_N = 500;
 const MAX_K = 16;
@@ -593,6 +597,7 @@ function aimView(run) {
   const account = run.t0 * PER_RUN + VIEW_ACCOUNT[page.view];
   page.viewTarget = account;
   page.viewRun = run.id;
+  page.viewAimedAt = Date.now();
   page.viewAccounts.set(account, page.view);
   if (!page.viewConn) {
     const conn = RfqGateway.connect(GATEWAY, { view: { account } });
@@ -616,14 +621,18 @@ function closeViewConn() {
   page.viewRun = null;
 }
 
-/** Display names: the run-scoped account ids with their scenario names. In an account view, only the viewer's own. */
+/**
+ * Display names: the run-scoped account ids with their scenario names. An account view names only the
+ * accounts this page said hello as for that view (what the participant knows of itself); the admin
+ * view names the accounts of the driver's runs.
+ */
 function accountInfo(id) {
   if (GENESIS[id]) return { name: GENESIS[id], role: "system" };
-  const run = page.runsByT0.get(Math.floor(id / PER_RUN));
   const who = SCENARIO_ACCOUNT[id % PER_RUN];
-  if (!run || !who) return undefined;
-  if (page.view !== "admin" && id % PER_RUN !== VIEW_ACCOUNT[page.view]) return undefined;
-  return { name: `${who[0]} (run …${String(run.t0).slice(-4)})`, role: who[1] };
+  if (!who) return undefined;
+  const t0 = Math.floor(id / PER_RUN);
+  const known = page.view === "admin" ? page.runsByT0.has(t0) : page.viewAccounts.get(id) === page.view;
+  return known ? { name: `${who[0]} (run …${String(t0).slice(-4)})`, role: who[1] } : undefined;
 }
 const name = (id) => (id == null ? "?" : accountInfo(id)?.name ?? `#${id}`);
 
@@ -672,15 +681,32 @@ function runFilter(run) {
 }
 
 function recordingNow() {
+  if (page.view !== "admin") {
+    // An account view is exactly what the gateway sent that participant: every frame its connection
+    // recorded. No run filter: deciding which events are a run's takes the driver's (admin) record.
+    // The page's own commands still join, but only through an origin the gateway forwarded to this view;
+    // they are the current journal's (the view connection's epochs count from when it opened).
+    const batches = page.viewRecs.get(page.view)?.allBatches() ?? [];
+    return { batches, commandAt: (seq) => driver.commandAt(seq), viewer: { account: page.viewTarget }, accountInfo, run: null };
+  }
   const run = selectedRun();
-  const admin = page.view === "admin";
-  const source = admin ? rec.allBatches() : page.viewRecs.get(page.view)?.allBatches() ?? [];
-  let batches = source;
+  let batches = rec.allBatches();
   if (run) {
     const f = runFilter(run);
-    batches = source.filter((b) => !admin || b.epoch === run.epoch).map(f).filter(Boolean);
+    batches = batches.filter((b) => b.epoch === run.epoch).map(f).filter(Boolean);
   }
-  return { batches, commandAt: driver.commandAt, viewer: admin ? "admin" : { account: page.viewTarget }, accountInfo, run };
+  return { batches, commandAt: driver.commandAt, viewer: "admin", accountInfo, run };
+}
+
+/** `list` grouped by `key(item)`, in order: one pass, so the lanes are linear in the recording. */
+function groupBy(list, key) {
+  const out = new Map();
+  for (const item of list) {
+    const k = key(item);
+    if (!out.has(k)) out.set(k, []);
+    out.get(k).push(item);
+  }
+  return out;
 }
 
 function computeView() {
@@ -688,7 +714,17 @@ function computeView() {
   const n = r.batches.length;
   const pos = ui.pos == null ? n - 1 : Math.max(0, Math.min(ui.pos, n - 1));
   const M = RfqModel.modelAt(r, n ? pos : -1);
-  return { r, run: r.run, n, pos: n ? pos : -1, M, T0: r.run?.t0 ?? null };
+  const idx = {
+    requestById: new Map(M.requests.map((x) => [x.id, x])),
+    requestsBy: groupBy(M.requests, (x) => x.requester),
+    quotesBy: groupBy(M.quotes, (x) => x.mm),
+    positionsByContract: groupBy(M.positions, (x) => x.contract),
+    positionsByRequest: groupBy(M.positions, (x) => x.request),
+    proposed: M.contracts.filter((c) => RfqModel.variant(c.state) === "Proposed"),
+    // Open to quotes in this view: no event ended it, and its public deadline is still ahead of the engine time here.
+    open: M.requests.filter((x) => RfqModel.variant(x.state) === "Open" && (M.now == null || M.now < x.response_deadline)),
+  };
+  return { r, run: r.run, n, pos: n ? pos : -1, M, idx, T0: r.run?.t0 ?? null };
 }
 
 // ---- Formatting (display only) --------------------------------------------------------------------
@@ -880,9 +916,8 @@ function renderBanners() {
   }
   if (!isAdmin()) {
     const label = viewLabel(page.view);
-    const run = page.runsById.get(page.viewRun);
-    out.push(run
-      ? `<div class="banner banner-info" role="status"><span><b>From now on you see what the gateway sends ${esc(label)} (run …${esc(String(run.t0).slice(-4))}, account ${esc(page.viewTarget)}).</b> A second connection asked for this view; earlier frames stay as they were recorded. Each new run moves it to that run's ${esc(label)}.</span><button class="btn btn-sm" type="button" data-action="view" data-view="admin">Back to Admin</button></div>`
+    out.push(page.viewTarget != null
+      ? `<div class="banner banner-info" role="status"><span><b>From now on you see what the gateway sends ${esc(label)} (run …${esc(String(Math.floor(page.viewTarget / PER_RUN)).slice(-4))}, account ${esc(page.viewTarget)}).</b> A second connection asked for this view; earlier frames stay as they were recorded. Each new run moves it to that run's ${esc(label)}.</span><button class="btn btn-sm" type="button" data-action="view" data-view="admin">Back to Admin</button></div>`
       : `<div class="banner banner-info" role="status"><span><b>View as ${esc(label)} starts with the next run.</b> Each run has its own accounts, so the view connection says hello as that run's ${esc(label)} when it starts. From then on you see what the gateway sends ${esc(label)}.</span></div>`);
   }
   page.errors.forEach((e, i) => out.push(`<div class="banner banner-bad" role="alert"><span>${esc(e)}</span><button class="btn btn-quiet btn-sm" type="button" data-action="dismiss-error" data-index="${i}" data-key="dismiss-${i}">Dismiss</button></div>`));
@@ -913,6 +948,7 @@ function seenExpect(expect, events) {
 
 function renderScenario() {
   const el = document.getElementById("scenario");
+  if (!isAdmin()) return renderScenarioAsViewer(el);
   const run = V.run;
   const name = run?.name ?? document.getElementById("scenario-pick").value;
   const s = RfqScenarios.byName(name);
@@ -943,6 +979,25 @@ function renderScenario() {
     <div class="expect" role="group" aria-label="Expected events, in order${isAdmin() ? "" : ", as this view saw them"}">${chips}</div>`);
 }
 
+/**
+ * An account view's strip: the picked script's name and expectations, lit only by the frames this
+ * view's connection received since its last hello. No driver-sourced data (verdict, detail, steps).
+ */
+function renderScenarioAsViewer(el) {
+  const s = RfqScenarios.byName(document.getElementById("scenario-pick").value);
+  if (!s) return setHtml(el, '<p class="muted">Pick a scenario.</p>');
+  const since = page.viewAimedAt ?? Infinity;
+  const events = V.r.batches.slice(0, V.pos + 1).filter((b) => b.firstAt >= since).flatMap((b) => b.events);
+  const seen = seenExpect(s.expect, events);
+  const chips = s.expect.map((x, i) => `<span class="chip${seen[i] ? " seen" : ""}">${esc(x)}${seen[i] ? '<span class="sr-only"> (seen)</span>' : ""}</span>`).join("");
+  setHtml(el, `<div>
+      <div class="scenario-title"><h2>${esc(s.name)}</h2>${badge(s.kind === "attack" ? "Attack" : "Brief scenario", "b-live")}</div>
+      <p class="muted">The script's narration names sealed prices and limits, so it is shown in the Admin view.</p>
+    </div>
+    <div class="progress"><div>${esc(ADMIN_ONLY)}</div></div>
+    <div class="expect" role="group" aria-label="Expected events, in order, as this view received them since its hello">${chips}</div>`);
+}
+
 // ---- Timeline: the scrubber -----------------------------------------------------------------------
 
 function renderTimeline() {
@@ -964,14 +1019,17 @@ function renderTimeline() {
   const { n, pos } = V;
   const live = ui.pos == null;
   const sel = document.getElementById("tl-run");
-  const options = [`<option value="follow">Follow the newest run</option>`, `<option value="all">All batches</option>`,
-    ...page.runs.slice().reverse().slice(0, 200).map((r) => `<option value="${esc(r.id)}">${esc(`${runTag(r)} ${r.name}${r.done ? ` · ${verdictOf(r)}` : " · running"}`)}</option>`)].join("");
+  // An account view's batches are its connection's, whole: the run list is the driver's record.
+  const options = !isAdmin() ? `<option value="view">Everything the gateway sent ${esc(viewLabel(page.view))}</option>`
+    : [`<option value="follow">Follow the newest run</option>`, `<option value="all">All batches</option>`,
+      ...page.runs.slice().reverse().slice(0, 200).map((r) => `<option value="${esc(r.id)}">${esc(`${runTag(r)} ${r.name}${r.done ? ` · ${verdictOf(r)}` : " · running"}`)}</option>`)].join("");
   if (document.activeElement !== sel) {
     if (sel.patched !== options) {
       sel.innerHTML = options;
       sel.patched = options;
     }
-    if (sel.value !== ui.sel) sel.value = ui.sel;
+    const want = isAdmin() ? ui.sel : "view";
+    if (sel.value !== want) sel.value = want;
   }
   const range = document.getElementById("tl-range");
   range.max = String(Math.max(0, n - 1));
@@ -984,25 +1042,16 @@ function renderTimeline() {
   next.disabled = !n || pos >= n - 1;
   document.getElementById("tl-live").setAttribute("aria-pressed", String(live));
   const what = !cur ? "<span>No batches yet.</span>" : `<span>Batch <b>${pos + 1}</b> of ${n}</span><span>seq <b>${cur.seq}</b></span><span><b>${esc(cur.kind)}</b></span><span>${esc(fmtT(cur.time))}</span>${live ? "<span><b>Live</b>: following the newest batch</span>" : "<span>Pinned: press Live to follow again</span>"}`;
-  const scope = V.run ? `the batches of ${esc(runTag(V.run))} ${esc(V.run.name)}` : "every batch recorded";
-  setHtml(document.getElementById("tl-label"), `${what}<span class="muted">Over ${scope}${isAdmin() ? "" : ` as ${esc(viewLabel(page.view))} received them`}. Every panel shows the state at this batch. ←/→ step.</span>`);
+  const scope = !isAdmin() ? `every batch the gateway sent ${esc(viewLabel(page.view))}`
+    : V.run ? `the batches of ${esc(runTag(V.run))} ${esc(V.run.name)}` : "every batch recorded";
+  setHtml(document.getElementById("tl-label"), `${what}<span class="muted">Over ${scope}. Every panel shows the state at this batch. ←/→ step.</span>`);
 }
 
 // ---- Shared card parts ----------------------------------------------------------------------------
 
-/** The last nonce this view saw consumed for an account: Duplicate and NonceGap consume nothing. */
-function lastNonce(id) {
-  let n = null;
-  for (const e of V.M.trace) {
-    if (e.actor !== id || e.nonce == null) continue;
-    const unconsumed = e.events.some((ev) => ["Duplicate", "NonceGap"].includes(ev.event?.CommandRejected?.reason));
-    if (!unconsumed && (n == null || e.nonce > n)) n = e.nonce;
-  }
-  return n;
-}
-
 function partyHead(a) {
-  const n = lastNonce(a.id);
+  // The model's one-pass map: the last nonce this view saw consumed (Duplicate and NonceGap consume nothing).
+  const n = V.M.nonces.get(a.id);
   return `<div class="party-head"><h3>${esc(a.name)}</h3><span class="meta">account ${a.id}${n != null ? `, nonce ${n}` : ""}</span></div>`;
 }
 
@@ -1039,26 +1088,32 @@ function toastFor(actor) {
 
 const LIVE_QUOTE = ["Active", "Selected"];
 const LIVE_REQUEST = ["Open", "Presented"];
-/** Open to quotes in this view: no event ended it, and its public deadline is still ahead of the engine time at this position. */
-const openForQuotes = (r) => variant(r.state) === "Open" && (V.M.now == null || V.M.now < r.response_deadline);
+
+/** The newest `cap` of `list` (highest id first: a later run's accounts and objects have higher ids), and a note for the rest. */
+function newest(list, cap, what) {
+  if (list.length <= cap) return { shown: list, more: "" };
+  const shown = [...list].sort((a, b) => b.id - a.id).slice(0, cap);
+  return { shown, more: `<p class="empty">… and ${list.length - cap} more ${what}: pick one run in the timeline to see them.</p>` };
+}
 
 // ---- Requesters lane ------------------------------------------------------------------------------
 
 function renderUsers() {
   const el = document.getElementById("user-lane");
-  const mine = V.M.accounts.filter((a) => a.role === "requester");
+  const { shown: mine, more } = newest(V.M.accounts.filter((a) => a.role === "requester"), LANE_CAP, "requesters");
   const empty = isAdmin()
     ? "No requester has money yet: each run's setup funds its Alice and Carol."
     : `As ${esc(viewLabel(page.view))} you don't see who asks or their limits: the gateway sends each account only its own.${["alice", "carol"].includes(page.view) ? " Your card appears once your account's balance arrives." : " Open requests appear in your card."}`;
-  const body = mine.length ? mine.map(requesterCard).join("") : `<article class="party"><p class="empty">${empty}</p></article>`;
+  const body = mine.length ? mine.map(requesterCard).join("") + more : `<article class="party"><p class="empty">${empty}</p></article>`;
   setHtml(el, `<div class="side-head"><h2 id="req-h">Requesters</h2><span>ask for a price</span></div>${body}`);
 }
 
 function requesterCard(a) {
-  const theirs = V.M.requests.filter((r) => r.requester === a.id).sort(byIdDesc);
+  const theirs = [...(V.idx.requestsBy.get(a.id) ?? [])].sort(byIdDesc);
   const live = theirs.filter((r) => LIVE_REQUEST.includes(variant(r.state)));
   const ended = theirs.filter((r) => !LIVE_REQUEST.includes(variant(r.state)));
-  const proposed = V.M.contracts.filter((c) => variant(c.state) === "Proposed");
+  // A run's requester can dispute its own run's contract (an account's t0 is its run's contract id).
+  const proposed = V.idx.proposed.filter((c) => c.id === Math.floor(a.id / PER_RUN));
   const items = [...proposed.map((c) => disputeItem(a, c)), ...live.map((r) => requestItem(a, r)), ...ended.map((r) => requestItem(a, r))].join("");
   return `<article class="party" aria-label="${esc(a.name)}">
       ${partyHead(a)}
@@ -1072,7 +1127,7 @@ function requestItem(a, r) {
   const st = variant(r.state), leg = r.legs[0] ?? {}, where = `u${a.id}`;
   const head = [idlink("request", r.id, `Request #${r.id}`, where), badge(st)];
   if (st === "Rejected") head.push(`<span class="muted" style="font-size:13px">cause: ${esc(r.state.Rejected)}</span>`);
-  const facts = [`<span>Buy <b>${sideName(leg.side)}</b> × <b>${qty(leg.qty)}</b></span>`];
+  const facts = [`<span>Buy <b>${sideName(leg.side)}</b> × <b>${esc(qty(leg.qty))}</b></span>`];
   facts.push(leg.limit_price != null ? `<span>Limit <b>${fmtPrice(leg.limit_price)}</b></span>` : sealedMark("limit sealed"));
   if (leg.contract != null) facts.push(`<span>${idlink("contract", leg.contract, `Contract #${leg.contract}`, `${where}r${r.id}`)}</span>`);
   const rows = [`<div class="item-facts">${facts.join("")}</div>`];
@@ -1083,7 +1138,7 @@ function requestItem(a, r) {
     const picks = r.picks.map((k) => `<span>Best quote ${idlink("quote", k.quote, `#${k.quote}`, `${where}r${r.id}`)} at <b>${fmtPrice(k.price)}</b></span>`).join("");
     rows.push(`<div class="item-facts">${picks}<span>Accept by <span class="countdown">${esc(fmtT(acceptBy))}</span></span></div>`);
   } else if (st === "Filled") {
-    for (const p of V.M.positions.filter((x) => x.request === r.id)) {
+    for (const p of V.idx.positionsByRequest.get(r.id) ?? []) {
       rows.push(`<div class="item-facts"><span>Position #${p.id}</span><span>${p.settled ? "Settled" : "Escrowed (see the ledger)"}</span></div>`);
     }
   }
@@ -1093,7 +1148,7 @@ function requestItem(a, r) {
 function disputeItem(a, c) {
   const { outcome, dispute_until } = c.state.Proposed;
   return `<div class="item">
-      <div class="item-head">${idlink("contract", c.id, `Contract #${c.id}`, `u${a.id}d`)}${badge("Proposed")}<span class="muted" style="font-size:13px">oracle says ${outcomeName(outcome)}</span></div>
+      <div class="item-head">${idlink("contract", c.id, `Contract #${c.id}`, `u${a.id}d`)}${badge("Proposed")}<span class="muted" style="font-size:13px">oracle says ${esc(outcomeName(outcome))}</span></div>
       <div class="item-facts"><span>Anyone may dispute until <b>${esc(fmtT(dispute_until))}</b></span></div>
     </div>`;
 }
@@ -1102,20 +1157,20 @@ function disputeItem(a, c) {
 
 function renderMarketMakers() {
   const el = document.getElementById("mm-lane");
-  const mine = V.M.accounts.filter((a) => a.role === "market_maker");
+  const { shown: mine, more } = newest(V.M.accounts.filter((a) => a.role === "market_maker"), LANE_CAP, "market makers");
   const empty = isAdmin()
     ? "No market maker has money yet: each run's setup funds its MM1 and MM2."
     : `As ${esc(viewLabel(page.view))} you don't see market makers or their quotes. ${["alice", "carol"].includes(page.view) ? "The best quote is presented in your card." : "Your card appears once your account's balance arrives."}`;
-  const body = mine.length ? mine.map(makerCard).join("") : `<article class="party"><p class="empty">${empty}</p></article>`;
+  const body = mine.length ? mine.map(makerCard).join("") + more : `<article class="party"><p class="empty">${empty}</p></article>`;
   setHtml(el, `<div class="side-head"><h2 id="mm-h">Market makers</h2><span>answer with sealed quotes</span></div>${body}`);
 }
 
 function makerCard(a) {
-  const quotes = V.M.quotes.filter((q) => q.mm === a.id).sort(byIdDesc);
+  const quotes = [...(V.idx.quotesBy.get(a.id) ?? [])].sort(byIdDesc);
   const live = quotes.filter((q) => LIVE_QUOTE.includes(q.state));
   const ended = quotes.filter((q) => !LIVE_QUOTE.includes(q.state));
   const quoted = new Set(live.map((q) => q.request));
-  const open = V.M.requests.filter((r) => openForQuotes(r) && r.requester !== a.id && !quoted.has(r.id))
+  const open = V.idx.open.filter((r) => r.requester !== a.id && !quoted.has(r.id))
     .sort((x, y) => x.response_deadline - y.response_deadline || x.id - y.id);
   const items = [...live.map((q) => quoteItem(a, q)), ...open.map((r) => openRequestItem(a, r)), ...ended.map((q) => quoteItem(a, q))].join("");
   return `<article class="party" aria-label="${esc(a.name)}">
@@ -1131,17 +1186,17 @@ function openRequestItem(a, r) {
   const leg = r.legs[0] ?? {}, where = `m${a.id}`;
   return `<div class="item">
       <div class="item-head">${idlink("request", r.id, `Request #${r.id}`, where)}${badge("Open")}<span class="muted" style="font-size:13px">quotes due ${esc(fmtT(r.response_deadline))}</span></div>
-      <div class="item-facts"><span>Buy <b>${sideName(leg.side)}</b> × <b>${qty(leg.qty)}</b></span>${leg.contract != null ? `<span>${idlink("contract", leg.contract, `Contract #${leg.contract}`, `${where}r${r.id}`)}</span>` : ""}${sealedMark("limit sealed")}</div>
+      <div class="item-facts"><span>Buy <b>${sideName(leg.side)}</b> × <b>${esc(qty(leg.qty))}</b></span>${leg.contract != null ? `<span>${idlink("contract", leg.contract, `Contract #${leg.contract}`, `${where}r${r.id}`)}</span>` : ""}${sealedMark("limit sealed")}</div>
     </div>`;
 }
 
 function quoteItem(a, q) {
   const where = `m${a.id}`;
-  const leg = V.M.requests.find((r) => r.id === q.request)?.legs[q.leg ?? 0];
-  const facts = [`<span>Sell ${leg ? sideName(leg.side) : ""} at <b>${fmtPrice(q.price)}</b> × <b>${qty(q.size)}</b></span>`];
+  const leg = V.idx.requestById.get(q.request)?.legs[q.leg ?? 0];
+  const facts = [`<span>Sell ${leg ? sideName(leg.side) : ""} at <b>${fmtPrice(q.price)}</b> × <b>${esc(qty(q.size))}</b></span>`];
   if (LIVE_QUOTE.includes(q.state)) facts.push(`<span>${q.state === "Selected" ? "Firm until" : "Expires"} ${esc(fmtT(q.expires_at))}</span>`);
   else if (q.state === "Filled") {
-    const p = V.M.positions.find((x) => x.request === q.request && (x.yes_holder === a.id || x.no_holder === a.id));
+    const p = (V.idx.positionsByRequest.get(q.request) ?? []).find((x) => x.yes_holder === a.id || x.no_holder === a.id);
     facts.push(p ? `<span>Position #${p.id}</span><span>${p.settled ? "Settled" : "Escrowed (see the ledger)"}</span>` : "<span>Hold moved to escrow</span>");
   } else facts.push("<span>Hold released</span>");
   return `<div class="item">
@@ -1154,8 +1209,8 @@ function quoteItem(a, q) {
 
 function renderContract() {
   const el = document.getElementById("contract");
-  const list = V.M.contracts;
-  setHtml(el, list.length ? list.slice().reverse().map(contractCard).join("")
+  const { shown, more } = newest(V.M.contracts, CONTRACT_CAP, "contracts");
+  setHtml(el, shown.length ? [...shown].sort((a, b) => b.id - a.id).map(contractCard).join("") + more
     : `<article class="panel contract"><div class="contract-main"><p class="empty">${V.n ? "No contract listed in these batches." : "No batches yet. Pick a scenario and press Run: the operator lists the run's contract during setup."}</p></div></article>`);
 }
 
@@ -1180,6 +1235,7 @@ function timeline(c) {
   }
   parts.push(`<div class="tl-mark end" style="left:calc(100% - 2px)"><span>hard deadline ${rel(c.resolution_deadline)}</span></div>`);
   const label = [`Now ${rel(now)}.`, `Trading closes ${rel(c.trading_close)}.`];
+  // Plain text: the whole label is escaped where it is used.
   if (p) label.push(`Proposed ${outcomeName(p.outcome)} at ${rel(p.at)}, dispute window until ${rel(p.until)}.`);
   label.push(`Hard deadline ${rel(c.resolution_deadline)}.`);
   return `<div class="timeline" role="img" aria-label="${esc(label.join(" "))}">${parts.join("")}</div>`;
@@ -1189,9 +1245,9 @@ function contractCard(c) {
   const st = variant(c.state);
   const meta = [badge(st), idlink("contract", c.id, `Contract #${c.id}`, "cc")];
   if (c.oracle != null) meta.push(`<span>Oracle: ${esc(name(c.oracle))}</span>`);
-  if (st === "Proposed") meta.push(`<span>Proposed <b>${outcomeName(c.state.Proposed.outcome)}</b>, dispute until ${esc(fmtT(c.state.Proposed.dispute_until))}</span>`);
-  if (st === "Disputed") meta.push(`<span>Proposed <b>${outcomeName(c.state.Disputed.proposed)}</b>, disputed by ${esc(name(c.dispute?.disputer))}</span>`);
-  if (st === "Final") meta.push(`<span>Outcome <b>${outcomeName(c.state.Final)}</b>${c.ruling ? ` (ruled by the arbiter, bond ${c.ruling.bond_returned ? "returned" : "forfeited"})` : ""}</span>`);
+  if (st === "Proposed") meta.push(`<span>Proposed <b>${esc(outcomeName(c.state.Proposed.outcome))}</b>, dispute until ${esc(fmtT(c.state.Proposed.dispute_until))}</span>`);
+  if (st === "Disputed") meta.push(`<span>Proposed <b>${esc(outcomeName(c.state.Disputed.proposed))}</b>, disputed by ${esc(name(c.dispute?.disputer))}</span>`);
+  if (st === "Final") meta.push(`<span>Outcome <b>${esc(outcomeName(c.state.Final))}</b>${c.ruling ? ` (ruled by the arbiter, bond ${c.ruling.bond_returned ? "returned" : "forfeited"})` : ""}</span>`);
   const known = c.description != null;
   const why = isAdmin()
     ? `${sealedMark("terms unknown")} Another client listed it (or this page wasn't connected yet): its question, oracle and deadlines travel in that listing command, which this page didn't send.`
@@ -1220,7 +1276,7 @@ function contractCard(c) {
 }
 
 function positionsTable(c) {
-  const list = V.M.positions.filter((p) => p.contract === c.id);
+  const list = V.idx.positionsByContract.get(c.id) ?? [];
   if (!list.length) {
     return isAdmin() ? '<p class="empty">No positions yet. One opens when a requester accepts a quote.</p>'
       : '<p class="empty">You hold no positions in this contract. Other parties\' fills stay private.</p>';
@@ -1230,7 +1286,7 @@ function positionsTable(c) {
   const holder = (id, paid) => (id == null ? sealedMark("counterparty sealed until settlement") : `<b>${esc(name(id))}</b>`)
     + (paid != null ? line(`paid ${fmtUsd(paid)}`) : "");
   const rows = list.map((p) => `<tr style="vertical-align:top">
-      <td><b>#${p.id}</b>${line(`${qty(p.qty)} shares`)}${p.settled ? badge("Settled", "b-good") : badge("Escrowed", "b-live")}</td>
+      <td><b>#${p.id}</b>${line(`${esc(qty(p.qty))} shares`)}${p.settled ? badge("Settled", "b-good") : badge("Escrowed", "b-live")}</td>
       <td>${holder(p.yes_holder, p.yes_payout)}</td>
       <td>${holder(p.no_holder, p.no_payout)}</td>
     </tr>`).join("");
@@ -1255,7 +1311,8 @@ function deltaHtml(now, before) {
 function renderLedger() {
   const prev = V.M.previous;
   const rank = (a) => { const i = LEDGER_ORDER.indexOf(a.role); return i < 0 ? LEDGER_ORDER.length : i; };
-  const sorted = [...V.M.accounts].sort((a, b) => rank(a) - rank(b) || a.id - b.id);
+  const { shown, more } = newest(V.M.accounts, LEDGER_CAP, "accounts");
+  const sorted = [...shown].sort((a, b) => rank(a) - rank(b) || a.id - b.id);
   const rows = sorted.map((a) => {
     const b = a.balance, was = prev.get(a.id);
     const cells = [[b.free, was?.free], [b.reserved, was?.reserved], [b.escrowed, was?.escrowed]];
@@ -1270,7 +1327,7 @@ function renderLedger() {
   setHtml(document.getElementById("ledger-table"), rows ? `<table>
       <thead><tr><th scope="col">Account</th><th scope="col">Free</th><th scope="col">Reserved</th><th scope="col">Escrowed</th><th scope="col" class="barcol">Split</th></tr></thead>
       <tbody>${rows}</tbody>
-    </table>` : '<p class="empty" style="padding:12px 16px">No balances in these batches yet.</p>');
+    </table>${more ? `<div style="padding:0 16px">${more}</div>` : ""}` : '<p class="empty" style="padding:12px 16px">No balances in these batches yet.</p>');
   const note = isAdmin()
     ? "Every amount is a `balances` value the engine sent with a batch; deltas are against the previous position. The page adds nothing up."
     : `Only ${esc(viewLabel(page.view))}'s own account: the gateway sends each account only its own balances.`;
@@ -1281,6 +1338,19 @@ function renderLedger() {
 // ---- Runs: results, progress, log -----------------------------------------------------------------
 
 function renderRuns() {
+  if (!isAdmin()) {
+    // The driver's record (verdicts, details naming every participant's steps, timing) is the admin's.
+    setHtml(document.getElementById("run-progress"), "");
+    setHtml(document.getElementById("runs-table"), `<p class="runs-empty">${esc(ADMIN_ONLY)}</p>`);
+    const log = document.getElementById("runlog");
+    if (log.patched !== "") {
+      log.innerHTML = "";
+      log.patched = "";
+    }
+    log.hidden = true;
+    return;
+  }
+  document.getElementById("runlog").hidden = false;
   const set = page.set;
   const active = driver.active;
   const prog = [];
@@ -1302,9 +1372,8 @@ function renderRuns() {
   const rows = shown.map((r) => {
     const v = verdictOf(r);
     const p = r.perf?.latency_us ?? RfqRecorder.summarize(r.commands.filter((c) => !c.recovered).map((c) => c.latency_us));
-    // The detail and the log name every participant's steps: the driver's own (admin) record.
-    const detail = !isAdmin() ? '<span class="muted">in the Admin view</span>' : v === "PASS" ? "" : v === "running" ? `step ${r.step} of ${r.steps}` : esc(r.detail ?? "");
-    const rec = isAdmin() && r.recoveries.length ? `<br><span class="muted">${r.recoveries.map((x) => esc(`${x.step}: ${x.outcome}`)).join("<br>")}</span>` : "";
+    const detail = v === "PASS" ? "" : v === "running" ? `step ${r.step} of ${r.steps}` : esc(r.detail ?? "");
+    const rec = r.recoveries.length ? `<br><span class="muted">${r.recoveries.map((x) => esc(`${x.step}: ${x.outcome}`)).join("<br>")}</span>` : "";
     return `<tr${r.id === current ? ' class="is-current"' : ""}>
         <td><button class="idlink" type="button" data-action="pick-run" data-run="${esc(r.id)}" data-key="pick-${esc(r.id)}">${esc(runTag(r))}<span class="sr-only">, show in the timeline</span></button></td>
         <td>${esc(r.name)}</td>
@@ -1324,8 +1393,7 @@ function renderRuns() {
 
   const run = V.run ?? page.runs.at(-1);
   const log = document.getElementById("runlog");
-  const lines = !isAdmin() ? [`The run log is the driver's own record of every participant's commands: it is shown in the Admin view, not as ${viewLabel(page.view)}.`]
-    : run ? [`${runTag(run)} ${run.name}`, ...run.log] : ["The selected run's log appears here."];
+  const lines = run ? [`${runTag(run)} ${run.name}`, ...run.log] : ["The selected run's log appears here."];
   const html = lines.map((l) => {
     const cls = /outcome unknown|waiting for the engine|STOPPED/.test(l) ? "l-warn" : /^FAIL|failed|unavailable/.test(l) ? "l-bad" : /^PASS|outcome recovered/.test(l) ? "l-good" : "";
     return cls ? `<span class="${cls}">${esc(l)}</span>` : esc(l);
@@ -1341,6 +1409,11 @@ function renderRuns() {
 // ---- Perf: latency histogram and numbers ------------------------------------------------------------
 
 function renderPerf() {
+  if (!isAdmin()) {
+    setHtml(document.getElementById("perf"), `<div class="panel-head"><h2 id="perf-h">Perf</h2></div>
+      <div class="panel-body"><p class="runs-empty" style="padding:0">${esc(ADMIN_ONLY)}</p></div>`);
+    return;
+  }
   const set = page.set ?? page.lastSet;
   const runs = set?.runs ?? [];
   const samples = runs.flatMap((r) => r.commands.filter((c) => !c.recovered).map((c) => c.latency_us));
@@ -1504,9 +1577,9 @@ function actionParts(kind, a) {
       case "Deposit": return [`${fmtUsd(a.amount)} to ${esc(name(a.to))}`];
       case "Withdraw": return [fmtUsd(a.amount)];
       case "ListContract": return [`#${esc(a.id)}`, `closes ${esc(fmtT(a.trading_close))}`, `hard deadline ${esc(fmtT(a.resolution_deadline))}`];
-      case "SubmitRequest": return [...a.legs.map((l) => `Buy ${sideName(l.side)} × ${qty(l.qty)} · limit ${fmtPrice(l.limit_price)}`), `due ${esc(fmtT(a.response_deadline))}`];
+      case "SubmitRequest": return [...a.legs.map((l) => `Buy ${sideName(l.side)} × ${esc(qty(l.qty))} · limit ${fmtPrice(l.limit_price)}`), `due ${esc(fmtT(a.response_deadline))}`];
       case "CancelRequest": case "Reject": return [`req #${esc(a.request)}`];
-      case "SubmitQuote": return [`req #${esc(a.request)}`, `${fmtPrice(a.price)} × ${qty(a.size)}`, `exp ${esc(fmtT(a.expires_at))}`];
+      case "SubmitQuote": return [`req #${esc(a.request)}`, `${fmtPrice(a.price)} × ${esc(qty(a.size))}`, `exp ${esc(fmtT(a.expires_at))}`];
       case "CancelQuote": return [`quote #${esc(a.quote)}`];
       case "Accept": return [`req #${esc(a.request)}`, ...a.picks.map((p) => `#${esc(p.quote)} at ${fmtPrice(p.price)}`)];
       case "ProposeOutcome": case "Rule": return [`#${esc(a.contract)}`, esc(outcomeName(a.outcome))];
@@ -1525,7 +1598,7 @@ function eventParts(ev, ref) {
       case "Deposited": return [`${fmtUsd(d.amount)} to ${esc(name(d.account))}`];
       case "Withdrawn": return [`${fmtUsd(d.amount)} from ${esc(name(d.account))}`];
       case "ContractListed": case "ContractClosed": return [ref("contract", d.contract)];
-      case "RequestOpened": return [ref("request", d.request), `Buy ${sideName(d.side)} × ${qty(d.qty)} on ${ref("contract", d.contract)}`, `due ${esc(fmtT(d.response_deadline))}`];
+      case "RequestOpened": return [ref("request", d.request), `Buy ${sideName(d.side)} × ${esc(qty(d.qty))} on ${ref("contract", d.contract)}`, `due ${esc(fmtT(d.response_deadline))}`];
       case "RequestCancelled": case "RequestExpired": return [ref("request", d.request)];
       case "RequestPresented": return [ref("request", d.request), ...d.picks.map((p) => `pick ${ref("quote", p.quote)} at ${fmtPrice(p.price)}`), `accept by ${esc(fmtT(d.accept_by))}`];
       case "RequestRejected": return [ref("request", d.request), esc(d.cause)];
@@ -1701,7 +1774,7 @@ function inspectorFacts(sel) {
     const facts = [`<span>Requester ${r.requester != null ? `<b>${esc(name(r.requester))}</b>` : sealed}</span>`];
     for (const leg of r.legs) {
       if (!leg) continue;
-      facts.push(`<span>Buy <b>${sideName(leg.side)}</b> × <b>${qty(leg.qty)}</b> on ${idlink("contract", leg.contract, `#${leg.contract}`, where)}</span>`);
+      facts.push(`<span>Buy <b>${sideName(leg.side)}</b> × <b>${esc(qty(leg.qty))}</b> on ${idlink("contract", leg.contract, `#${leg.contract}`, where)}</span>`);
       facts.push(`<span>Limit ${leg.limit_price != null ? `<b>${fmtPrice(leg.limit_price)}</b>` : sealed}</span>`);
     }
     facts.push(`<span>Quotes due <b>${esc(fmtT(r.response_deadline))}</b></span>`);
@@ -1716,7 +1789,7 @@ function inspectorFacts(sel) {
     return {
       badge: badge(q.state),
       facts: `<span>Market maker <b>${esc(name(q.mm))}</b></span><span>On ${idlink("request", q.request, `request #${q.request}`, where)}</span>`
-        + `<span>Sells at <b>${fmtPrice(q.price)}</b> × <b>${qty(q.size)}</b></span><span>${q.state === "Selected" ? "Firm until" : "Expires"} <b>${esc(fmtT(q.expires_at))}</b></span>`,
+        + `<span>Sells at <b>${fmtPrice(q.price)}</b> × <b>${esc(qty(q.size))}</b></span><span>${q.state === "Selected" ? "Firm until" : "Expires"} <b>${esc(fmtT(q.expires_at))}</b></span>`,
     };
   }
   const c = V.M.contracts.find((x) => x.id === sel.id);
@@ -2109,7 +2182,8 @@ async function startRuns(kind, scenario) {
     if (kind === "one") await driver.run(picked);
     else await driver.runMany(names, n, k);
   } catch (e) {
-    addError(`${label}: ${e.message}`);
+    // Stopped while it waited for the engine: nothing ran, nothing to report.
+    if (e?.name !== "Stopped") addError(`${label}: ${e.message}`);
   }
   const set = page.set;
   set.finished = Date.now();
@@ -2179,6 +2253,7 @@ app.addEventListener("input", (e) => {
 
 app.addEventListener("change", (e) => {
   if (e.target.id === "tl-run") {
+    if (!isAdmin()) return;
     ui.sel = e.target.value;
     ui.pos = null;
     render();
@@ -2198,7 +2273,8 @@ app.addEventListener("keydown", (e) => {
     document.getElementById(`tab-${ui.tab}`)?.focus();
     return;
   }
-  if (e.key === "Enter" && ["run-n-count", "run-k"].includes(e.target.id)) startRuns(e.target.id === "run-n-count" ? "n" : "all");
+  // Enter in N runs ×N; Enter in the concurrency field starts nothing (it belongs to Run ×N and Run all alike).
+  if (e.key === "Enter" && e.target.id === "run-n-count") startRuns("n");
 });
 
 // The timeline's arrow keys, anywhere a control doesn't use them itself.
@@ -2242,7 +2318,9 @@ document.addEventListener("visibilitychange", () => {
   schedule();
 });
 
-addEventListener("pagehide", () => {
+// A page kept in the back/forward cache comes back: keep the driver (the client reconnects by itself).
+addEventListener("pagehide", (e) => {
+  if (e.persisted) return;
   driver.dispose();
   closeViewConn();
   gw.close();
