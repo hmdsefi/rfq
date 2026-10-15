@@ -22,9 +22,12 @@
 //!   restart a client sees `down`, then the `Resume` batch, then `up`. At start-up nothing has
 //!   failed, so the first connection is enough.
 //! - **Outcome unknown.** A command already offered when the engine goes down may still be
-//!   applied. Its sender is told so, with the nonce to resend it with (a repeat is a harmless
+//!   applied. Its sender is told so, with the nonce N to resend it with (a repeat is a harmless
 //!   `Duplicate`), and still gets its `result` if the batch comes later. A command never offered
-//!   is `engine unavailable`.
+//!   is `engine unavailable`. Until a batch with origin `(actor, N)` settles N (the retry's or the
+//!   late original's), the actor's other commands wait and only the retry with N is sent: a probe
+//!   search could otherwise consume N, and the retry would get `Duplicate` for a command that was
+//!   never applied. After [`UNRESOLVED_HOLD_US`] (60 s) the hold is released with a log line.
 //! - **Liveness.** Down with ingress connected, nothing would ever publish (commands are
 //!   refused), so about every second the hub offers a probe that the engine always rejects as
 //!   `Duplicate` (nonce 0). Its batch is internal, and brings the engine back up.
@@ -52,6 +55,9 @@ const MAX_ORPHAN_PROBES: usize = 1_024;
 /// Commands whose outcome is unknown, remembered so that a late batch still gives the sender its
 /// `result`. Past this many, a late batch is forwarded without one.
 const MAX_UNKNOWN: usize = 1_024;
+/// How long (µs) an actor's commands wait for its unresolved nonce to settle (gateway.md §6) before
+/// the hub gives up on the retry and lets them go: probing may then consume that nonce.
+pub const UNRESOLVED_HOLD_US: u64 = 60_000_000;
 /// How often (µs) a liveness probe goes out while the engine is down and ingress is connected.
 pub const LIVENESS_EVERY_US: u64 = 1_000_000;
 /// The liveness probe's actor: the demo genesis operator. Any actor would do: nonce 0 is never
@@ -160,6 +166,14 @@ struct Unknown {
     received_at: u64,
 }
 
+/// An actor's nonce whose outcome is unknown: its command was offered when the engine stopped
+/// answering, so the engine may or may not have consumed it.
+struct Unresolved {
+    nonce: u64,
+    /// When the engine went down, on the caller's monotonic clock (µs).
+    since: u64,
+}
+
 /// Liveness probes (see [`LIVENESS_EVERY_US`]).
 #[derive(Default)]
 struct Liveness {
@@ -197,6 +211,8 @@ pub struct Hub {
     /// Commands in flight when the engine went down, by `(actor, nonce)`, until their batch
     /// comes, a later command's batch shows it never will, or the client resends the nonce.
     unknown: BTreeMap<(AccountId, u64), Unknown>,
+    /// Per actor, the nonce of a command whose outcome is unknown (gateway.md §6).
+    unresolved: BTreeMap<AccountId, Unresolved>,
     liveness: Liveness,
 }
 
@@ -243,6 +259,7 @@ impl Hub {
             current: None,
             orphan_probes: BTreeSet::new(),
             unknown: BTreeMap::new(),
+            unresolved: BTreeMap::new(),
             liveness: Liveness::default(),
         }
     }
@@ -258,7 +275,7 @@ impl Hub {
             Input::Close(conn) => self.close(conn),
             Input::Text(conn, text) => self.text(conn, &text, now_us, wall_ms, &mut out),
             Input::Batch(b) => self.batch(&b, now_us, &mut out),
-            Input::Ingress { connected } => self.ingress(connected, &mut out),
+            Input::Ingress { connected } => self.ingress(connected, now_us, &mut out),
             Input::Tick => self.tick(now_us, &mut out),
             Input::OfferFailed { actor, nonce, why } => {
                 self.offer_failed(actor, nonce, why, now_us, &mut out)
@@ -354,6 +371,11 @@ impl Hub {
     /// Unless `actor` has something on ingress, puts its next waiting command there: with its
     /// explicit nonce, or the book's next one, or, for an actor the book doesn't know, the first
     /// probe of a nonce search.
+    ///
+    /// While the actor has an unresolved nonce N (gateway.md §6), only a command with the explicit
+    /// nonce N goes (the client's safe retry, wherever it is in the queue); the others wait. A
+    /// probe search now could end by consuming N, and the retry would then get `Duplicate` for a
+    /// command the engine never applied.
     fn advance(&mut self, actor: AccountId, now_us: u64, out: &mut Vec<Effect>) {
         let Some(a) = self.actors.get_mut(&actor) else {
             return;
@@ -365,6 +387,15 @@ impl Hub {
             self.actors.remove(&actor);
             return;
         };
+        if let Some(u) = self.unresolved.get(&actor) {
+            let n = u.nonce;
+            if let Some(retry) = a.waiting.iter().position(|w| w.nonce == Some(n))
+                && let Some(w) = a.waiting.remove(retry)
+            {
+                self.dispatch(actor, n, w, now_us, out);
+            }
+            return;
+        }
         let Some(nonce) = front.nonce.or_else(|| self.book.next(actor)) else {
             let nonce = self.book.start_sync(actor);
             tracing::debug!(actor = actor.0, nonce, "nonce probe");
@@ -380,16 +411,21 @@ impl Hub {
             });
             return;
         };
-        let Some(Waiting {
+        if let Some(w) = a.waiting.pop_front() {
+            self.dispatch(actor, nonce, w, now_us, out);
+        }
+    }
+
+    /// Puts `w`, taken off `actor`'s queue, on ingress with `nonce`; the actor has nothing in
+    /// flight.
+    fn dispatch(&mut self, actor: AccountId, nonce: u64, w: Waiting, now_us: u64, out: &mut Vec<Effect>) {
+        let Waiting {
             conn,
             id,
             action,
             received_at,
             ..
-        }) = a.waiting.pop_front()
-        else {
-            return;
-        };
+        } = w;
         tracing::info!(
             conn = conn.0,
             actor = actor.0,
@@ -410,15 +446,17 @@ impl Hub {
                 nonce,
             },
         );
-        a.in_flight = Some(InFlight {
-            nonce,
-            sent_at: now_us,
-            what: Flight::Command {
-                conn: Some(conn),
-                id,
-                received_at,
-            },
-        });
+        if let Some(a) = self.actors.get_mut(&actor) {
+            a.in_flight = Some(InFlight {
+                nonce,
+                sent_at: now_us,
+                what: Flight::Command {
+                    conn: Some(conn),
+                    id,
+                    received_at,
+                },
+            });
+        }
     }
 
     fn batch(&mut self, b: &EventBatch, now_us: u64, out: &mut Vec<Effect>) {
@@ -431,6 +469,19 @@ impl Hub {
         {
             self.book.observe(b.seq, origin, &b.events);
         }
+        // Any batch of an unresolved `(actor, N)`, the retry's or the late original's, settles N
+        // (the book has just learnt from it): the actor's waiting commands go on afterwards.
+        let settled = match b.origin {
+            Some((actor, nonce))
+                if whose != Whose::Liveness
+                    && self.unresolved.get(&actor).is_some_and(|u| u.nonce == nonce) =>
+            {
+                self.unresolved.remove(&actor);
+                tracing::info!(actor = actor.0, nonce, "nonce settled");
+                Some(actor)
+            }
+            _ => None,
+        };
         match whose {
             Whose::Probe { .. } | Whose::OrphanProbe | Whose::Liveness => {
                 if let Some(rest) = without_probe(b) {
@@ -471,6 +522,9 @@ impl Hub {
             _ => whose,
         };
         self.current = Some((chunk(b), whose));
+        if let Some(actor) = settled {
+            self.advance(actor, now_us, out);
+        }
 
         self.last_seq = Some(self.last_seq.map_or(b.seq, |last| last.max(b.seq)));
         // A batch shows the engine working only if it came while ingress is connected, or if it
@@ -611,10 +665,10 @@ impl Hub {
         }
     }
 
-    fn ingress(&mut self, connected: bool, out: &mut Vec<Effect>) {
+    fn ingress(&mut self, connected: bool, now_us: u64, out: &mut Vec<Effect>) {
         self.connected = connected;
         match (connected, self.engine) {
-            (false, EngineState::Up) => self.go_down("the ingress publication is not connected", out),
+            (false, EngineState::Up) => self.go_down("the ingress publication is not connected", now_us, out),
             (true, EngineState::Down) if self.fresh => {
                 self.set_engine(EngineState::Up, "ingress connected", out)
             }
@@ -623,6 +677,20 @@ impl Hub {
     }
 
     fn tick(&mut self, now_us: u64, out: &mut Vec<Effect>) {
+        // A retry that never comes must not hold an actor for ever: past the hold, its commands go
+        // on as usual (a probe search may then consume the nonce).
+        let mut released = Vec::new();
+        self.unresolved.retain(|&actor, u| {
+            let keep = now_us.saturating_sub(u.since) <= UNRESOLVED_HOLD_US;
+            if !keep {
+                released.push((actor, u.nonce));
+            }
+            keep
+        });
+        for (actor, nonce) in released {
+            tracing::warn!("nonce unresolved actor={} nonce={} released", actor.0, nonce);
+            self.advance(actor, now_us, out);
+        }
         if self.engine == EngineState::Up {
             let late = self
                 .actors
@@ -630,7 +698,7 @@ impl Hub {
                 .filter_map(|a| a.in_flight.as_ref())
                 .any(|f| now_us.saturating_sub(f.sent_at) > COMMAND_TIMEOUT_US);
             if late {
-                self.go_down("no batch within 3 s of a command", out);
+                self.go_down("no batch within 3 s of a command", now_us, out);
             }
         }
         // Down with a node connected (a hung engine, or one whose `Resume` was missed): commands
@@ -703,7 +771,7 @@ impl Hub {
         }
         // Whatever it was, an unconnected ingress means the engine is gone.
         if why == OfferFailure::Unconnected {
-            self.ingress(false, out);
+            self.ingress(false, now_us, out);
         }
     }
 
@@ -712,7 +780,7 @@ impl Hub {
     /// A command already offered may still be applied: its sender learns the outcome is unknown
     /// and how to retry safely, and still gets the `result` if its batch comes. A command never
     /// offered is `engine unavailable`.
-    fn go_down(&mut self, why: &str, out: &mut Vec<Effect>) {
+    fn go_down(&mut self, why: &str, now_us: u64, out: &mut Vec<Effect>) {
         self.fresh = false;
         for (actor, a) in std::mem::take(&mut self.actors) {
             if let Some(f) = a.in_flight {
@@ -724,6 +792,16 @@ impl Hub {
                         received_at,
                     } => {
                         self.reply(out, conn, &error(Some(id.clone()), &unknown_outcome(f.nonce)));
+                        // Until the retry with this nonce (or the original's late batch) settles
+                        // it, the actor's other commands wait (see `advance`).
+                        tracing::info!(actor = actor.0, nonce = f.nonce, "outcome unknown");
+                        self.unresolved.insert(
+                            actor,
+                            Unresolved {
+                                nonce: f.nonce,
+                                since: now_us,
+                            },
+                        );
                         if self.unknown.len() < MAX_UNKNOWN {
                             self.unknown.insert(
                                 (actor, f.nonce),
@@ -1293,7 +1371,8 @@ mod tests {
             "nonce 5 may or may not have been consumed"
         );
 
-        // After the restart, the actor is probed again, and nothing old comes back.
+        // After the restart nothing old comes back. ALICE's next command waits for nonce 5 to
+        // settle (no retry here, so for the 60 s hold); then the actor is probed again.
         hub.handle(Input::Ingress { connected: true }, 20, WALL);
         batch(
             &mut hub,
@@ -1307,8 +1386,9 @@ mod tests {
             },
             30,
         );
+        assert!(offers(&command(&mut hub, 1, "c3", ALICE, 40)).is_empty());
         assert_eq!(
-            offers(&command(&mut hub, 1, "c3", ALICE, 40)),
+            offers(&hub.handle(Input::Tick, 60_000_011, WALL)),
             vec![probe(ALICE, 1)]
         );
     }
@@ -1925,6 +2005,158 @@ mod tests {
             3_400_000,
         );
         assert_eq!(types(&frames(&fx, 1)), ["batch"], "c1's entry is gone");
+    }
+
+    /// A command for `actor` with an explicit nonce: a client's safe retry.
+    fn with_nonce(id: &str, actor: AccountId, nonce: u64) -> Value {
+        json!({"type": "command", "id": id, "actor": actor.0, "nonce": nonce,
+            "action": {"Withdraw": {"amount": 1}}})
+    }
+
+    /// ALICE's c1 (nonce 5) was offered, then the engine stopped answering; it is back up now.
+    fn alice_unresolved_at_5() -> Hub {
+        let mut hub = up();
+        open(&mut hub, 1, None);
+        known(&mut hub, 20, ALICE, 4);
+        known(&mut hub, 21, MM1, 9);
+        assert_eq!(
+            offers(&command(&mut hub, 1, "c1", ALICE, 0)),
+            vec![withdraw(ALICE, 5)]
+        );
+        let fx = hub.handle(Input::Tick, 3_000_001, WALL);
+        assert_eq!(
+            frames(&fx, 1)[0],
+            json!({"type": "error", "id": "c1", "error": unknown_outcome(5)})
+        );
+        batch(&mut hub, resume(22), 3_100_000);
+        assert_eq!(hub.engine, EngineState::Up);
+        hub
+    }
+
+    /// The review's reproduction (gateway.md §6). If c1 was lost before the engine took it, nonce 5
+    /// is free; a probe search started by ALICE's next command would end by consuming exactly 5,
+    /// and the client's safe retry with 5 would then get `Duplicate` although c1 was never applied.
+    /// So while 5 is unresolved ALICE's other commands wait: no probe, no nonce-less dispatch. The
+    /// retry with 5 goes, ahead of them; its batch settles 5, and the waiting command goes with 6.
+    #[test]
+    fn an_unresolved_nonce_holds_the_actor_until_the_retry_settles_it() {
+        let mut hub = alice_unresolved_at_5();
+        let fx = command(&mut hub, 1, "c2", ALICE, 3_200_000);
+        assert!(offers(&fx).is_empty(), "no probe for ALICE: {fx:?}");
+        assert!(frames(&fx, 1).is_empty(), "c2 waits, with no error");
+        assert!(hub.handle(Input::Tick, 3_300_000, WALL).is_empty());
+
+        let fx = text(&mut hub, 1, with_nonce("r1", ALICE, 5), 3_400_000);
+        assert_eq!(offers(&fx), vec![withdraw(ALICE, 5)], "the safe retry goes");
+        assert_eq!(
+            frames(&fx, 1),
+            vec![json!({"type": "sent", "id": "r1", "actor": 10, "nonce": 5})]
+        );
+
+        // c1 never reached the engine: the retry is applied, and 5 is settled.
+        let fx = batch(
+            &mut hub,
+            user_batch(23, (ALICE, 5), vec![withdrawn(ALICE)]),
+            3_500_000,
+        );
+        assert_eq!(offers(&fx), vec![withdraw(ALICE, 6)], "c2 goes with 6");
+        let got = frames(&fx, 1);
+        assert_eq!(types(&got), ["batch", "result", "sent"]);
+        assert_eq!(got[1]["id"], "r1");
+        assert_eq!(
+            got[2],
+            json!({"type": "sent", "id": "c2", "actor": 10, "nonce": 6})
+        );
+        assert!(hub.unresolved.is_empty());
+    }
+
+    /// The original's late batch settles the nonce too, whether or not the hub still has its record
+    /// for the sender's `result`: the actor's waiting commands then go on from the book.
+    #[test]
+    fn a_late_original_settles_the_unresolved_nonce() {
+        let mut hub = alice_unresolved_at_5();
+        assert!(offers(&command(&mut hub, 1, "c2", ALICE, 3_200_000)).is_empty());
+        let fx = batch(
+            &mut hub,
+            user_batch(23, (ALICE, 5), vec![withdrawn(ALICE)]),
+            3_300_000,
+        );
+        let got = frames(&fx, 1);
+        assert_eq!(types(&got), ["batch", "result", "sent"]);
+        assert_eq!(got[1]["id"], "c1", "c1's sender still gets its result");
+        assert_eq!(offers(&fx), vec![withdraw(ALICE, 6)]);
+
+        // The same, after another actor's batch dropped the record of c1 (unknown.clear()).
+        let mut hub = alice_unresolved_at_5();
+        command(&mut hub, 1, "m1", MM1, 3_200_000);
+        batch(
+            &mut hub,
+            user_batch(23, (MM1, 10), vec![withdrawn(MM1)]),
+            3_250_000,
+        );
+        assert!(hub.unknown.is_empty());
+        assert!(offers(&command(&mut hub, 1, "c2", ALICE, 3_300_000)).is_empty());
+        let fx = batch(
+            &mut hub,
+            user_batch(
+                24,
+                (ALICE, 5),
+                vec![rejected(ALICE, RejectReason::InsufficientFunds)],
+            ),
+            3_400_000,
+        );
+        assert_eq!(types(&frames(&fx, 1)), ["batch", "sent"]);
+        assert_eq!(
+            offers(&fx),
+            vec![withdraw(ALICE, 6)],
+            "a rejection consumed 5 too"
+        );
+    }
+
+    /// Unresolved for more than 60 s: released with a log line, and the actor is probed as usual.
+    #[test]
+    fn an_unresolved_nonce_is_released_after_60s() {
+        let mut hub = alice_unresolved_at_5();
+        assert!(offers(&command(&mut hub, 1, "c2", ALICE, 3_200_000)).is_empty());
+        // Unresolved since the engine went down, at 3 000 001.
+        assert!(
+            offers(&hub.handle(Input::Tick, 63_000_001, WALL)).is_empty(),
+            "60 s is not more than 60 s"
+        );
+        let fx = hub.handle(Input::Tick, 63_000_002, WALL);
+        assert_eq!(offers(&fx), vec![probe(ALICE, 1)], "normal probing");
+        assert!(hub.unresolved.is_empty());
+    }
+
+    /// Only ALICE waits: other actors' commands go as usual, and their batches (which drop the
+    /// hub's record of c1 for the result) do not release ALICE.
+    #[test]
+    fn an_unresolved_nonce_holds_only_its_actor() {
+        let mut hub = alice_unresolved_at_5();
+        assert!(offers(&command(&mut hub, 1, "c2", ALICE, 3_200_000)).is_empty());
+        assert_eq!(
+            offers(&command(&mut hub, 1, "m1", MM1, 3_200_000)),
+            vec![withdraw(MM1, 10)]
+        );
+        let carol = AccountId(40);
+        assert_eq!(
+            offers(&command(&mut hub, 1, "x1", carol, 3_200_000)),
+            vec![probe(carol, 1)],
+            "an unknown actor is probed"
+        );
+        let fx = batch(
+            &mut hub,
+            user_batch(23, (MM1, 10), vec![withdrawn(MM1)]),
+            3_300_000,
+        );
+        assert_eq!(types(&frames(&fx, 1)), ["batch", "result"]);
+        assert!(offers(&fx).is_empty(), "ALICE is still held: {fx:?}");
+        // Explicit nonces other than 5 wait too: only the retry of 5 goes.
+        assert!(offers(&text(&mut hub, 1, with_nonce("g", ALICE, 9), 3_400_000)).is_empty());
+        assert_eq!(
+            offers(&text(&mut hub, 1, with_nonce("r1", ALICE, 5), 3_500_000)),
+            vec![withdraw(ALICE, 5)]
+        );
     }
 
     /// Down by a timeout with ingress still connected: a hung engine. Nothing else would ever

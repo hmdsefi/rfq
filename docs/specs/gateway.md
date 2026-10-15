@@ -83,7 +83,7 @@ Nonces are strict per actor (`last + 1`). The gateway keeps a nonce book with `l
 - An actor the gateway has never seen is unknown. Before its first command, the gateway finds `last` with probes, as `rfq-demo` does today:
   - Each probe is `Withdraw { amount: 0 }` with a guessed nonce. `Duplicate` means too low, `NonceGap` means too high, and `InvalidInput` means it was exactly `last + 1` and has been consumed.
   - The probe logic moves from `rfq-demo` into `rfq-app::client::nonce`, so both use one implementation.
-- Commands for one actor are sent in order. A second command for the same actor waits until the first has its batch, so the nonces never race.
+- Commands for one actor are sent in order. A second command for the same actor waits until the first has its batch, so the nonces never race. (One exception: while the actor's outcome is unknown, its retry goes ahead of the commands waiting behind it, §6.)
 
 ## 6. Engine status
 
@@ -91,6 +91,7 @@ Nonces are strict per actor (`last + 1`). The gateway keeps a nonce book with `l
 - **Up:** the publication is connected again and the engine has shown it works since: a batch that arrived while connected, or a restarted node's `Resume`. A batch polled while disconnected was published before the failure and does not count.
 - The status is broadcast on every change. A command that arrives while the engine is down is answered with `error: engine unavailable` and is not queued; so is every command still waiting its turn when the engine goes down.
 - **A command in flight when the engine goes down may still be applied.** It was offered to ingress, and a node that comes back (a hung engine resuming, or a restarted node reading what was left on ingress) applies it. Its sender gets `outcome unknown: … resend it with nonce N …` instead of `engine unavailable`, and still gets its `result` if the batch comes later. The batch whose `origin` is `(actor, N)` is the truth: it says whether and how the command was applied. To retry safely, resend it with the same explicit nonce `N`: if the first one was applied, the repeat is rejected as `Duplicate` and applies nothing.
+- **While a command's outcome is unknown, the gateway holds that participant's other commands** until the retry with the same nonce `N` (or the late original) settles it: the first batch with origin `(actor, N)`, whatever it says. Meanwhile only a command with the explicit nonce `N` is sent, ahead of the waiting ones; the others wait in order, and the gateway sends no nonce probe for that participant (a probe search could end by consuming `N`, and the retry would then be a `Duplicate` for a command that was never applied). The hold lasts at most 60 s: then it is released (logged as `nonce unresolved actor=… nonce=… released`) and the participant's commands go on as usual.
 - **Liveness probe.** While the engine is down and ingress is connected (a hung engine, or a node whose `Resume` was missed), commands are refused, so nothing would ever publish. About every second the gateway offers its own probe: `Withdraw { amount: 0 }` as the operator (account 1) with nonce 0. Nonce 0 is never above an actor's last nonce, so the engine always rejects it, as `Duplicate` (as `NotInitialized` before genesis), and consumes nothing. Its batch is the gateway's own: the rejection and the `origin` are stripped, and it is no news for the nonce book. What is left, the events and balances of any timers that fell due in the same apply, is forwarded to clients like any other batch (nothing is forwarded when nothing is left). It arrives while connected, so it marks the engine up.
 - After a restart, the node's first output is the `Resume` batch (§2.3). A client sees down, then `Resume`, then normal batches.
 
@@ -109,7 +110,8 @@ Nonces are strict per actor (`last + 1`). The gateway keeps a nonce book with `l
 - each command sent (actor, nonce, kind of action);
 - each result (seq, latency);
 - each engine status change;
-- each nonce sync (actor, last found, probes used).
+- each nonce sync (actor, last found, probes used);
+- each unknown outcome (actor, nonce), and when that nonce is settled or released.
 
 Together with the node's `applied seq hash` lines, `docker compose logs -f gateway engine` shows every step.
 
