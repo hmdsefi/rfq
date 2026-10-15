@@ -51,6 +51,18 @@ pub trait Transport {
 4. Log `state_hash`, then enter the live loop at `last_seq + 1`.
 5. If the journal was non-empty (a restart, not a fresh start), the first live-loop iteration sequences `Resume`, stamped with the wall clock, before any ingress command or `Tick`. The engine handles it before firing due timers, so downtime can't eat an open dispute window ([engine.md §6.3](engine.md)). A live iteration that starts more than `STALL_GAP_MS` (1 s) after the previous one does the same: the loop polls about every millisecond, so such a gap means the process was paused, a step blocked (for example on egress back pressure), or the clock jumped forward.
 
+## Journal growth and retention (designed, not built)
+
+The log only grows, and every start replays all of it. A command is a small bincode record plus Aeron's 32-byte frame header, roughly 100–200 bytes, so 1,000 commands/s is on the order of 10–20 GB a day. Replay itself is fast ([architecture](../architecture/overview.md), measured numbers); disk and start-up time are what grow. The design, snapshot then truncate:
+
+1. **Snapshot.** Every N commands, after a batch is durable and applied, write the whole `Engine` (bincode, the bytes `state_hash` hashes) with its `last_seq` and hash to a recording of its own. A snapshot is never ahead of the journal.
+2. **Start from it.** Load the newest snapshot whose hash verifies and replay only `seq > S`. A missing or corrupt snapshot falls back to an older one, then to the full log.
+3. **Truncate.** Purge the log recordings that end at or before `S` (Archive `purgeRecording`), and the segment files of the current recording that lie wholly before `S` (`purgeSegments`, at a segment boundary).
+4. **Never past the slowest reader.** The journal is also the outbox of the effect workers ([architecture §7](../architecture/overview.md)), so retention stops at their checkpoint. For audit, segments are copied to cold storage before they are purged.
+5. **Bounded snapshots** need pruning of terminal objects from memory ([quote-lifetime.md](quote-lifetime.md)).
+
+Aeron Cluster, the production path ([architecture §6](../architecture/overview.md)), has snapshots and log truncation built in. Today, `docker compose down -v` starts an empty journal.
+
 ## Live loop (batching)
 
 Poll up to `MAX_BATCH` ingress messages → sequence and append them all → `wait_durable(last)` → apply the whole batch → publish one `EventBatch` per command that has an `origin` or events (a `Tick` that emits nothing publishes nothing; a `Resume` is always published). Batching amortises the durability wait without changing order, and applying everything before publishing anything means a failed publish can never leave memory behind the journal.
