@@ -134,8 +134,14 @@ fn submit_request_validation() {
         ))
     };
     assert_eq!(
-        submit(vec![leg(c, 10, 7_000), leg(c, 10, 7_000)], DEADLINE),
-        Some(RejectReason::Unsupported)
+        submit(vec![], DEADLINE),
+        Some(RejectReason::InvalidInput),
+        "no legs"
+    );
+    assert_eq!(
+        submit(vec![leg(c, 10, 7_000), leg(ContractId(9), 10, 7_000)], DEADLINE),
+        Some(RejectReason::UnknownObject),
+        "every leg is validated, not only the first (multi-leg: tests/multi_leg.rs)"
     );
     assert_eq!(
         submit(vec![leg(c, 10, 7_000)], 500),

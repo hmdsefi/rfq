@@ -63,6 +63,12 @@ pub struct Genesis {
     pub config: Config,
 }
 
+/// The most legs one request may have (engine.md §8). More, or none, is `InvalidInput`.
+///
+/// A request's legs all live in one engine and one command validates and escrows every one of them,
+/// so the cap bounds the work of that command (and the size of one `RequestOpened` burst).
+pub const MAX_LEGS: usize = 8;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LegSpec {
     pub contract: ContractId,

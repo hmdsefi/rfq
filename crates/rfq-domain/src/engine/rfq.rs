@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use super::{Engine, Handled, Out, VALIDATED};
-use crate::command::{LegSpec, Pick, ReservationPolicy, SelectionPolicy};
+use crate::command::{LegSpec, MAX_LEGS, Pick, ReservationPolicy, SelectionPolicy};
 use crate::event::{Emitted, Event, RejectReason};
 use crate::model::*;
 use crate::types::*;
@@ -15,8 +15,9 @@ impl Engine {
         out: &mut Out,
     ) -> Handled {
         let cfg = self.config();
-        if legs.len() != 1 {
-            return Err(RejectReason::Unsupported); // multi-leg is designed, not built (RFC P6)
+        // The cap also bounds every `leg` index below, so the `u32` conversions can't fail.
+        if legs.is_empty() || legs.len() > MAX_LEGS {
+            return Err(RejectReason::InvalidInput);
         }
         let earliest = self
             .now
@@ -373,7 +374,8 @@ impl Engine {
         Ok(())
     }
 
-    /// Escrows every leg in one command. All checks run before the first mutation.
+    /// Escrows every leg in one command. All checks (the request, every leg's contract, every pick,
+    /// the funds) run before the first mutation.
     pub(super) fn accept(
         &mut self,
         actor: AccountId,
@@ -390,6 +392,18 @@ impl Engine {
         let SelectionPolicy::SealedAtDeadline = self.config().selection;
         if !matches!(r.state, RequestState::Presented { .. }) {
             return Err(RejectReason::InvalidState);
+        }
+        // Defence in depth (engine.md §8 rule 5): `submit_request` makes `accept_by < trading_close`
+        // for every leg, so no contract can leave `Trading` while the request is `Presented`. If one
+        // ever did, the whole request fails here, before the first mutation.
+        for l in &r.legs {
+            let c = self
+                .contracts
+                .get(&l.contract)
+                .ok_or(RejectReason::UnknownObject)?;
+            if c.state != ContractState::Trading {
+                return Err(RejectReason::InvalidState);
+            }
         }
         if picks.len() != r.legs.len() {
             return Err(RejectReason::Mismatch);
@@ -534,5 +548,180 @@ impl Engine {
             }
         };
         out.push(Emitted::public(event));
+    }
+}
+
+// `accept`'s per-leg `Trading` check (engine.md §8 rule 5) is defence in depth: `submit_request` keeps
+// `accept_by` below every leg's `trading_close`, so no scripted flow reaches it. This forces a
+// contract out of `Trading` directly, which only a unit test inside the crate can do.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::command::{Action, Command, Config, Genesis, SequencedCommand};
+
+    const OPERATOR: AccountId = AccountId(1);
+    const ALICE: AccountId = AccountId(10);
+    const MM: AccountId = AccountId(20);
+    const DEADLINE: Timestamp = 10_000;
+
+    fn price(bps: u16) -> Price {
+        Price::new(bps).unwrap()
+    }
+
+    /// Applies `cmd` at `time` as the next seq. A user command takes the actor's next nonce.
+    fn apply(
+        e: &mut Engine,
+        time: Timestamp,
+        actor: Option<AccountId>,
+        action: Option<Action>,
+    ) -> Vec<Emitted> {
+        let cmd = match (actor, action) {
+            (Some(actor), Some(action)) => Command::User {
+                actor,
+                nonce: e.nonces.get(&actor).copied().unwrap_or(0) + 1,
+                action,
+            },
+            _ => Command::Tick,
+        };
+        e.apply(&SequencedCommand {
+            seq: e.last_seq() + 1,
+            time,
+            cmd,
+        })
+    }
+
+    fn reason(out: &[Emitted]) -> Option<RejectReason> {
+        out.iter().find_map(|e| match e.event {
+            Event::CommandRejected { reason } => Some(reason),
+            _ => None,
+        })
+    }
+
+    /// Two markets, a two-leg request quoted on both legs and presented; returns Alice's picks.
+    fn presented() -> (Engine, Vec<Pick>) {
+        let mut e = Engine::new();
+        e.apply(&SequencedCommand {
+            seq: 1,
+            time: 0,
+            cmd: Command::Genesis(Genesis {
+                operator: OPERATOR,
+                arbiter: AccountId(2),
+                treasury: AccountId(3),
+                config: Config::default(),
+            }),
+        });
+        let user = |e: &mut Engine, actor, action| {
+            let out = apply(e, 0, Some(actor), Some(action));
+            assert_eq!(reason(&out), None);
+        };
+        for to in [ALICE, MM] {
+            user(
+                &mut e,
+                OPERATOR,
+                Action::Deposit {
+                    to,
+                    amount: 1_000 * ONE_DOLLAR,
+                },
+            );
+        }
+        for id in [1, 2] {
+            user(
+                &mut e,
+                OPERATOR,
+                Action::ListContract {
+                    id: ContractId(id),
+                    description: "m".into(),
+                    oracle: AccountId(4),
+                    trading_close: 1_000_000,
+                    resolution_deadline: 2_000_000,
+                    dispute_window: 10_000,
+                },
+            );
+        }
+        let leg = |id| LegSpec {
+            contract: ContractId(id),
+            side: Side::BuyYes,
+            qty: 100,
+            limit_price: price(7_000),
+        };
+        let request = RequestId(e.last_seq() + 1);
+        user(
+            &mut e,
+            ALICE,
+            Action::SubmitRequest {
+                legs: vec![leg(1), leg(2)],
+                response_deadline: DEADLINE,
+            },
+        );
+        for (leg, bps) in [(0, 6_200), (1, 6_000)] {
+            user(
+                &mut e,
+                MM,
+                Action::SubmitQuote {
+                    request,
+                    leg,
+                    price: price(bps),
+                    size: 100,
+                    expires_at: 100_000,
+                },
+            );
+        }
+        let out = apply(&mut e, DEADLINE, None, None);
+        let picks = out
+            .iter()
+            .find_map(|x| match &x.event {
+                Event::RequestPresented { picks, .. } => Some(picks.clone()),
+                _ => None,
+            })
+            .expect("presented");
+        assert_eq!(e.check_invariants(), Ok(()));
+        (e, picks)
+    }
+
+    #[test]
+    fn accept_rechecks_every_leg_contract_is_trading() {
+        for forced in [1, 2] {
+            let (mut e, picks) = presented();
+            let request = *e.requests.keys().next().expect("one request");
+            let balances = [ALICE, MM].map(|a| e.balance(a));
+            e.contracts.get_mut(&ContractId(forced)).unwrap().state = ContractState::Closed;
+
+            let out = apply(
+                &mut e,
+                DEADLINE + 1,
+                Some(ALICE),
+                Some(Action::Accept {
+                    request,
+                    picks: picks.clone(),
+                }),
+            );
+
+            assert_eq!(
+                reason(&out),
+                Some(RejectReason::InvalidState),
+                "contract {forced}"
+            );
+            assert!(matches!(
+                e.requests[&request].state,
+                RequestState::Presented { .. }
+            ));
+            assert!(e.quotes.values().all(|q| q.state == QuoteState::Selected));
+            assert!(e.positions.is_empty(), "nothing was escrowed");
+            assert_eq!([ALICE, MM].map(|a| e.balance(a)), balances, "no balance moved");
+
+            // Control: with the contract `Trading` again the same picks fill, so the re-check was
+            // the only thing that stopped the accept above.
+            e.contracts.get_mut(&ContractId(forced)).unwrap().state = ContractState::Trading;
+            let out = apply(
+                &mut e,
+                DEADLINE + 2,
+                Some(ALICE),
+                Some(Action::Accept { request, picks }),
+            );
+            assert_eq!(reason(&out), None, "contract {forced}");
+            assert_eq!(e.requests[&request].state, RequestState::Filled);
+            assert_eq!(e.positions.len(), 2);
+            assert_eq!(e.check_invariants(), Ok(()));
+        }
     }
 }

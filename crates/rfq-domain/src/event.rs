@@ -20,6 +20,8 @@ pub enum RejectReason {
     UnknownObject,
     InvalidState,
     InvalidInput,
+    /// No longer produced: it answered a multi-leg request before multi-leg was built (2026-10-16).
+    /// Kept, because enum variants are part of the journal's wire format and later ones keep their indices.
     Unsupported,
     SelfTrade,
     InsufficientFunds,
