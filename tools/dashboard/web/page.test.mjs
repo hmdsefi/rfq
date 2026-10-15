@@ -253,8 +253,8 @@ function loadPage() {
 
 /** The rendered output of the regions that show data (the static docs, controls and drills excluded). */
 const DATA_REGIONS = [
-  "banners", "scenario", "timeline", "user-lane", "contract", "mm-lane", "ledger-table", "ledger-note",
-  "run-progress", "runs-table", "runlog", "perf", "trace-head", "log", "inspector", "tb-status",
+  "banners", "scenario", "timeline", "tl-run", "tl-label", "user-lane", "contract", "mm-lane", "ledger-table",
+  "ledger-note", "run-progress", "runs-table", "runlog", "perf", "trace-head", "log", "inspector", "tb-status",
 ];
 const rendered = (document) => DATA_REGIONS.map((id) => `<${id}>${document.getElementById(id).innerHTML}</${id}>`).join("\n");
 

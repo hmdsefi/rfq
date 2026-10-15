@@ -299,8 +299,12 @@ await test("unknown outcome, applied before: the engine rejects the retry as Dup
   assert.equal(run.pass, true, run.detail);
   assert.equal(run.labels.dep, 40);
   assert.deepEqual(run.recoveries.map((r) => [r.step, r.nonce, r.seq]), [["dep", 7, 40]]);
-  assert.match(run.recoveries[0].outcome, /^applied once \(Duplicate on retry\)$/);
-  assert.ok(run.log.some((l) => l.includes("outcome recovered: applied once (Duplicate on retry)")), run.log.join("\n"));
+  // The Duplicate proves only that the nonce was taken; the original's own batch says how.
+  assert.equal(run.recoveries[0].outcome, "nonce 7 taken once (Duplicate on retry); original: applied");
+  assert.ok(
+    run.log.some((l) => l.includes("outcome recovered: nonce 7 taken once (Duplicate on retry); original: applied")),
+    run.log.join("\n"),
+  );
   assert.equal(run.commands[0].recovered, true);
   // A command that waited out an outage is not a latency sample.
   assert.equal(run.perf.commands, 0);
@@ -334,7 +338,10 @@ await test("unknown outcome, applied before, but its batch was never heard: said
   assert.match(run.detail, /expected event Deposited/);
   assert.equal("dep" in run.labels, false);
   assert.equal(run.recoveries[0].seq, null);
-  assert.match(run.recoveries[0].outcome, /never heard here/);
+  assert.equal(
+    run.recoveries[0].outcome,
+    "nonce 7 taken once (Duplicate on retry); original not heard — whether it was applied is unknown",
+  );
   gw.close();
 });
 
@@ -378,8 +385,60 @@ await test("unknown outcome, not applied: the retry is applied, and the label is
   const run = await driver.run(funding());
   assert.equal(run.pass, true, run.detail);
   assert.equal(run.labels.dep, 42);
-  assert.equal(run.recoveries[0].outcome, "applied on retry");
-  assert.ok(run.log.some((l) => l.includes("outcome recovered: applied on retry")), run.log.join("\n"));
+  assert.equal(run.recoveries[0].outcome, "retry applied");
+  assert.ok(run.log.some((l) => l.includes("outcome recovered: retry applied")), run.log.join("\n"));
+  gw.close();
+});
+
+const insufficient = { audience: { Account: 1 }, event: { CommandRejected: { reason: "InsufficientFunds" } } };
+
+await test("unknown outcome, the original was rejected (it took the nonce): the retry's Duplicate is never called applied", async () => {
+  const { gw, driver } = await connected((msg, s) => {
+    if (isRetry(msg)) {
+      s.deliver(sent(msg));
+      s.deliver(batch(41, { actor: msg.actor, nonce: 7 }, [duplicate]));
+      s.deliver(result(msg, 41));
+      return;
+    }
+    s.deliver(sent(msg, 7));
+    setTimeout(() => {
+      s.deliver({ type: "error", id: msg.id, error: UNKNOWN(7) });
+      s.deliver(status("down"));
+      setTimeout(() => {
+        s.deliver(status("up"));
+        s.deliver(batch(40, { actor: msg.actor, nonce: 7 }, [insufficient]));
+        s.deliver(result(msg, 40));
+      }, 20);
+    }, 10);
+  });
+  const run = await driver.run(funding());
+  assert.equal(run.pass, false);
+  assert.equal(run.labels.dep, 40, "the original's batch is the step's");
+  assert.equal(run.recoveries[0].outcome, "nonce 7 taken once (Duplicate on retry); original: rejected: InsufficientFunds");
+  assert.ok(!run.log.some((l) => /recovered: .*applied/.test(l)), run.log.join("\n"));
+  gw.close();
+});
+
+await test("unknown outcome, the retry is rejected (not as Duplicate): said so, never applied", async () => {
+  const { gw, driver } = await connected((msg, s) => {
+    if (isRetry(msg)) {
+      s.deliver(sent(msg));
+      s.deliver(batch(42, { actor: msg.actor, nonce: 7 }, [insufficient]));
+      s.deliver(result(msg, 42));
+      return;
+    }
+    s.deliver(sent(msg, 7));
+    setTimeout(() => {
+      s.deliver({ type: "error", id: msg.id, error: UNKNOWN(7) });
+      s.deliver(status("down"));
+      setTimeout(() => s.deliver(status("up")), 20);
+    }, 10);
+  });
+  const run = await driver.run(funding());
+  assert.equal(run.pass, false);
+  assert.equal(run.labels.dep, 42);
+  assert.equal(run.recoveries[0].outcome, "retry rejected: InsufficientFunds");
+  assert.ok(run.log.some((l) => l.includes("outcome recovered: retry rejected: InsufficientFunds")), run.log.join("\n"));
   gw.close();
 });
 
@@ -540,6 +599,80 @@ await test("runMany: bad arguments are refused; t0 is distinct for runs started 
   assert.equal(new Set(many.runs.map((r) => r.accounts.alice)).size, 6);
   assert.equal(many.perf.runs, 6);
   assert.equal(many.perf.commands, 6);
+  gw.close();
+});
+
+// ---- run sets ride through an outage: each next run waits for the engine ------------------------
+
+/**
+ * A server whose engine goes down when the first run of a set ends and, unless `backAfterMs` is null,
+ * comes back that much later. While down it refuses every command, as the gateway does.
+ */
+async function outageAfterFirstRun({ backAfterMs, engineWaitMs }) {
+  let engine = "up";
+  let refused = 0;
+  const answer = answering();
+  const server = fakeServer((msg, s) => {
+    if (engine !== "up") {
+      refused++;
+      s.deliver({ type: "error", id: msg.id, error: "engine unavailable" });
+      return;
+    }
+    answer(msg, s);
+  });
+  const gw = G.connect("ws://fake", { WebSocket: server.Socket, connectTimeoutMs: 2_000 });
+  await gw.ready;
+  let ended = 0;
+  const driver = S.createDriver(gw, {
+    startMarginMs: 0,
+    graceMs: 30,
+    engineWaitMs,
+    onRunEnd: () => {
+      if (++ended !== 1) return;
+      engine = "down";
+      server.deliver(status("down"));
+      if (backAfterMs != null) {
+        setTimeout(() => {
+          engine = "up";
+          server.deliver(status("up"));
+        }, backAfterMs);
+      }
+    },
+  });
+  return { server, gw, driver, refused: () => refused };
+}
+
+await test("run sets: a run that would start while the engine is down waits for it instead of failing", async () => {
+  const { server, gw, driver, refused } = await outageAfterFirstRun({ backAfterMs: 150, engineWaitMs: 2_000 });
+  const out = await driver.runMany([funding()], 3, 1);
+  assert.equal(out.passed, 3, out.runs.map((r) => r.detail).join("; "));
+  assert.equal(refused(), 0, "nothing was sent while the engine was down");
+  assert.match(out.runs[1].log[0], /^the engine was down: waited \d+ ms for it before starting$/);
+  assert.equal(out.runs[2].log.some((l) => l.includes("waited")), false, "up again: the third did not wait");
+  assert.equal(server.received.filter((m) => m.type === "command").length, 3);
+  gw.close();
+});
+
+await test("run sets: the wait is bounded; past it the runs fail without sending anything, and the set ends", async () => {
+  const { server, gw, driver } = await outageAfterFirstRun({ backAfterMs: null, engineWaitMs: 100 });
+  const started = Date.now();
+  const out = await driver.runMany([funding()], 3, 1);
+  assert.ok(Date.now() - started < 1_000, `one wait, not one per run: took ${Date.now() - started} ms`);
+  assert.deepEqual(out.runs.map((r) => r.pass), [true, false, false]);
+  for (const r of out.runs.slice(1)) assert.match(r.detail, /^not started: the engine was not up again within 0\.1 s$/);
+  assert.equal(server.received.filter((m) => m.type === "command").length, 1, "only the first run's command");
+  gw.close();
+});
+
+await test("run sets: a Stop ends the wait for the engine at once; the run never starts", async () => {
+  const { gw, driver } = await outageAfterFirstRun({ backAfterMs: null, engineWaitMs: 10_000 });
+  const started = Date.now();
+  const many = driver.runMany([funding()], 3, 1);
+  await sleep(150);
+  driver.stop();
+  const out = await many;
+  assert.ok(Date.now() - started < 1_000, `took ${Date.now() - started} ms`);
+  assert.deepEqual([out.stopped, out.runs.length, out.runs[0].pass], [true, 1, true]);
   gw.close();
 });
 

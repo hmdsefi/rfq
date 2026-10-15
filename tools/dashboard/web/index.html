@@ -1093,7 +1093,9 @@ const LIVE_REQUEST = ["Open", "Presented"];
 function newest(list, cap, what) {
   if (list.length <= cap) return { shown: list, more: "" };
   const shown = [...list].sort((a, b) => b.id - a.id).slice(0, cap);
-  return { shown, more: `<p class="empty">… and ${list.length - cap} more ${what}: pick one run in the timeline to see them.</p>` };
+  // Only the admin view has a run picker in the timeline.
+  const how = isAdmin() ? ": pick one run in the timeline to see them" : "";
+  return { shown, more: `<p class="empty">… and ${list.length - cap} more ${what}${how}.</p>` };
 }
 
 // ---- Requesters lane ------------------------------------------------------------------------------
@@ -1395,7 +1397,7 @@ function renderRuns() {
   const log = document.getElementById("runlog");
   const lines = run ? [`${runTag(run)} ${run.name}`, ...run.log] : ["The selected run's log appears here."];
   const html = lines.map((l) => {
-    const cls = /outcome unknown|waiting for the engine|STOPPED/.test(l) ? "l-warn" : /^FAIL|failed|unavailable/.test(l) ? "l-bad" : /^PASS|outcome recovered/.test(l) ? "l-good" : "";
+    const cls = /outcome unknown|waiting for the engine|engine was down|STOPPED|outcome recovered: (?!rejected by design).*(?:rejected|unknown)/.test(l) ? "l-warn" : /^FAIL|failed|unavailable/.test(l) ? "l-bad" : /^PASS|outcome recovered/.test(l) ? "l-good" : "";
     return cls ? `<span class="${cls}">${esc(l)}</span>` : esc(l);
   }).join("\n");
   if (log.patched !== html) {
@@ -1494,17 +1496,21 @@ function histogram(samples, s) {
 
 const DRILLS = [
   ["drill-crash", "Engine crash mid-run", [["1", "docker compose kill engine"], ["2", "docker compose start engine"]], [
-    "after the kill: status “engine down”; the command in flight says “outcome unknown”; runs that start now are refused with “engine unavailable”",
-    "after the start: “engine up”, a Resume row in the trace, and the in-flight command's safe retry with the same nonce (“applied once” or “applied on retry”)",
-    "docker compose logs engine shows replayed seq=… hash=…",
+    "after the kill: status “engine down” (when nothing is being sent, noticing can take up to about 10 s); the command in flight says “outcome unknown … nonce N”; the next runs of a Run ×N wait for the engine",
+    "after the start: a Resume row in the trace, “engine up”, then the in-flight command's safe retry with the same nonce N: “nonce N taken once (Duplicate on retry)” with what the original did, or “retry applied” / “retry rejected”; a run that was in flight may still FAIL on timing (its quotes expired meanwhile), and the waiting runs start and pass",
+    "docker compose logs engine shows replayed seq=… hash=…, the hash it had before the kill",
   ]],
   ["drill-stall", "Stall", [["", "docker compose pause engine; sleep 2; docker compose unpause engine"]], [
     "a Resume row right after the unpause",
-    "open dispute windows extended (OutcomeProposed again, with a later dispute_until)",
+    "open dispute windows extended (OutcomeProposed again, with a later dispute_until), so a run in flight may FAIL on timing: the engine is right",
   ]],
-  ["drill-aeron", "Driver crash", [["", "docker compose kill aeron"]], [
-    "the engine and the gateway halt; Docker restarts them (up to 3 times)",
-    "the page shows Reconnecting, then Connected again without a reload",
+  ["drill-aeron", "Driver crash", [["1", "docker compose kill aeron"], ["2", "docker compose up -d aeron engine gateway"]], [
+    "after the kill: the page shows Reconnecting, and about 10 s later the engine and the gateway exit; nothing comes back by itself (Docker does not restart a container you killed, and the engine and gateway can't rejoin its dead IPC namespace)",
+    "after the up: the engine replays its journal (replayed seq=… hash=…, the same hash) and the page is Connected again without a reload",
+  ]],
+  ["drill-term", "Driver crash, self-healing", [["", "docker compose exec aeron kill -TERM 1"]], [
+    "the driver exits and Docker restarts it in about 1 s; the engine and the gateway follow, and the engine replays its journal (the same hash)",
+    "the page shows Reconnecting, then Connected again without a reload; runs in flight lose their connection",
   ]],
 ];
 
@@ -1727,7 +1733,8 @@ function renderTrace() {
     return traceRow(e, e === last, open);
   });
   const cols = { key: "cols", cls: "log-cols", hidden: true, inner: "<span>seq</span><span>time</span><span>nonce</span><span>command</span><span>events</span>" };
-  const more = all.length > TRACE_ROWS ? [{ key: "more", cls: "trace-more", inner: `${all.length - TRACE_ROWS} earlier rows not shown: pick one run in the timeline to see all of its rows.` }] : [];
+  const how = isAdmin() ? ": pick one run in the timeline to see all of its rows" : "";
+  const more = all.length > TRACE_ROWS ? [{ key: "more", cls: "trace-more", inner: `${all.length - TRACE_ROWS} earlier rows not shown${how}.` }] : [];
   const none = { rejections: "No rejections up to here.", money: "No balance moved up to here.", clock: "No Tick or Resume up to here." }[ui.filter] ?? "No batches up to here.";
   const empty = { key: "empty", cls: "empty", inner: `<p style="padding:10px 16px">${none}</p>` };
   patchList(document.getElementById("log"), [cols, ...more, ...rows, ...(rows.length ? [] : [empty])]);

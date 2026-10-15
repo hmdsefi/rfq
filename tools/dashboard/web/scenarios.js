@@ -416,7 +416,8 @@ const RfqScenarios = (() => {
    *
    * Besides `run` and `runMany`: `stop()` abandons the runs in progress (they send nothing more; the
    * engine finishes what was already sent) and keeps the driver usable; `dispose()` stops and lets go
-   * of the connection; `commandAt(seq)` is the command the driver sent that made batch `seq`.
+   * of the connection; `commandAt(seq, epoch = recorder.epoch)` is the command the driver sent that
+   * made batch `seq` of that journal epoch (seqs start again after a journal reset).
    */
   function createDriver(gateway, opts = {}) {
     if (DRIVEN.has(gateway)) throw new Error("this gateway connection already has a driver: dispose() it first");
@@ -521,13 +522,20 @@ const RfqScenarios = (() => {
       }
     }
 
-    async function runOne(which, gen, t0 = allocT0()) {
+    /**
+     * Plays one run. `before` is what happened before it started, in a run set: `waitedMs` for the
+     * engine to be up, or `blocked`, the error that keeps it from starting (it then fails, sending
+     * nothing).
+     */
+    async function runOne(which, gen, before = {}) {
       const scenario = typeof which === "string" ? byName(which) : which;
       if (!scenario) throw new Error(`no scenario named ${which}; the scenarios are ${scenarios.map((s) => s.name).join(", ")}`);
-      const run = newRun(scenario, t0, gen);
+      const run = newRun(scenario, allocT0(), gen);
       active.add(run);
       opts.onRunStart?.(run.result);
       try {
+        if (before.blocked) throw before.blocked;
+        if (before.waitedMs != null) run.log(`the engine was down: waited ${before.waitedMs} ms for it before starting`);
         await play(run);
       } catch (e) {
         run.fail(e);
@@ -754,6 +762,8 @@ const RfqScenarios = (() => {
         const retried = recorder.batches.get(answer.result.seq);
         let seq = answer.result.seq;
         let how;
+        // Never "applied" for a rejection: a rejected command consumed its nonce too, and a Duplicate
+        // on the retry proves only that the nonce was taken, not that the original succeeded.
         if (cmd.nonce !== undefined) {
           // An attack step sends a nonce that is not its own to consume (a replay or a gap): the engine
           // rejects it however often it is sent, so nothing can have been applied and the retry is
@@ -767,13 +777,22 @@ const RfqScenarios = (() => {
             .batchList()
             .find((b) => b.origin?.actor === cmd.actor && b.origin.nonce === nonce && b.seq !== seq && !unconsumed(b.events));
           seq = original ? original.seq : null;
-          how = original
-            ? "applied once (Duplicate on retry)"
-            : "applied once (Duplicate on retry), but its own batch was never heard here: its seq, and so what it made, is unknown";
+          const taken = `nonce ${nonce} taken once (Duplicate on retry)`;
+          const rejected = original ? rejectionOf(original.events) : null;
+          how = !original
+            ? `${taken}; original not heard — whether it was applied is unknown`
+            : rejected
+              ? `${taken}; original: rejected: ${rejected}`
+              : `${taken}; original: applied`;
         } else {
-          // Not applied before, or the original's late batch answered the resend (gateway.md §6): the
-          // command's batch is the answer's either way.
-          how = "applied on retry";
+          // Not taken before, or the original's late batch answered the resend (gateway.md §6): the
+          // command's batch is the answer's either way, and it says whether it was applied.
+          const rejected = retried ? rejectionOf(retried.events) : null;
+          how = !retried
+            ? "retry answered, but its batch was never heard here — whether it was applied is unknown"
+            : rejected
+              ? `retry rejected: ${rejected}`
+              : "retry applied";
         }
         run.log(`${what}: outcome recovered: ${how}`);
         run.result.recoveries.push({ step: step.label, nonce, outcome: how, seq, retry_seq: answer.result.seq });
@@ -808,10 +827,37 @@ const RfqScenarios = (() => {
       const runs = new Array(jobs.length);
       let next = 0;
       const started = Date.now();
+      // The engine went down during the set: each next run waits for it (up to `engineWait`, a Stop
+      // ends the wait) instead of failing at once with `engine unavailable`. Once a wait has timed
+      // out, the runs after it fail at once while the engine stays down, so the set still ends.
+      let gaveUp = null;
+      const engineBack = async () => {
+        if (gateway.engine === "up") {
+          gaveUp = null;
+          return {};
+        }
+        if (gaveUp) return { blocked: gaveUp };
+        const since = Date.now();
+        try {
+          await orStopped(at, gateway.untilEngineUp({ timeoutMs: engineWait }));
+        } catch (e) {
+          if (e instanceof Stopped) throw e;
+          gaveUp ??= new Error(`not started: ${e.message}`);
+          return { blocked: gaveUp };
+        }
+        return { waitedMs: Date.now() - since };
+      };
       const worker = async () => {
         while (next < jobs.length && gen === generation) {
           const i = next++;
-          runs[i] = await runOne(jobs[i], gen);
+          let before;
+          try {
+            before = await engineBack();
+          } catch (e) {
+            if (!(e instanceof Stopped)) throw e;
+            break; // stopped while it waited: this run never started
+          }
+          runs[i] = await runOne(jobs[i], gen, before);
         }
       };
       await Promise.all(Array.from({ length: Math.min(k, jobs.length) }, worker));
