@@ -254,7 +254,7 @@ function loadPage() {
 /** The rendered output of the regions that show data (the static docs, controls and drills excluded). */
 const DATA_REGIONS = [
   "banners", "scenario", "timeline", "tl-run", "tl-label", "user-lane", "contract", "mm-lane", "ledger-table",
-  "ledger-note", "run-progress", "runs-table", "runlog", "perf", "trace-head", "log", "inspector", "tb-status",
+  "ledger-note", "run-progress", "runs-table", "runlog", "trace-head", "log", "inspector", "tb-status",
 ];
 const rendered = (document) => DATA_REGIONS.map((id) => `<${id}>${document.getElementById(id).innerHTML}</${id}>`).join("\n");
 
@@ -294,7 +294,7 @@ await test("an account view renders only what the gateway sent it: no driver det
       assert.ok(at < 0, `"${needle}" in MM1's view:\n${out.slice(Math.max(0, at - 200), at + 200)}`);
     }
     // In their place, the sentence.
-    for (const id of ["scenario", "runs-table", "perf"]) {
+    for (const id of ["scenario", "runs-table"]) {
       assert.ok(document.getElementById(id).innerHTML.includes("Run results and timing are shown in the Admin view."), id);
     }
     // What MM1 did receive is there: its own balance (named, it is the viewer) and the public listing.

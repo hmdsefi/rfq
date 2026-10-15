@@ -316,7 +316,7 @@ a.idlink, button.idlink { color: var(--accent); text-decoration: underline; text
 }
 </style>
 <style>
-/* Live mode (v2, DESIGN §11): status bar, run controls, timeline, runs, perf and failure drills.
+/* Live mode (v2, DESIGN §11): status bar, run controls, timeline, runs and failure drills.
    Same tokens, lines and radii as the approved design; nothing here changes the blocks above. */
 .runctl { flex-wrap: wrap; }
 .runctl .num-in { width: 64px; min-height: 32px; padding: 0 8px; border: 1px solid var(--line-2); border-radius: var(--r); background: var(--surface); color: var(--ink); }
@@ -355,8 +355,7 @@ a.idlink, button.idlink { color: var(--accent); text-decoration: underline; text
 .row-events { padding-left: 64px; }
 .row-events li { overflow-wrap: anywhere; }
 @media (max-width: 720px) { .row-events { padding-left: 16px; } }
-/* Runs, perf and drills */
-.two { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+/* Runs and drills */
 .runs-table td, .runs-table th { white-space: nowrap; }
 .runs-table td.detail { white-space: normal; min-width: 180px; }
 .runs-table td.num, .runs-table th.num { text-align: right; }
@@ -368,20 +367,6 @@ a.idlink, button.idlink { color: var(--accent); text-decoration: underline; text
 .runlog .l-warn { color: var(--warn); font-weight: 600; }
 .runlog .l-bad { color: var(--bad); font-weight: 600; }
 .runlog .l-good { color: var(--ok); font-weight: 600; }
-.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); gap: 8px; }
-.tile { border: 1px solid var(--line); border-radius: var(--r); padding: 7px 10px; display: grid; gap: 1px; }
-.tile span { font-size: 12.5px; color: var(--ink-3); }
-.tile b { font-size: 17px; font-weight: 600; }
-.histo { width: 100%; height: auto; display: block; }
-.histo .bar { fill: var(--accent); }
-.histo .hit { fill: transparent; cursor: default; }
-.histo .bin:hover .bar { fill: var(--escrow-ink); }
-.histo .base { stroke: var(--line-2); stroke-width: 1; }
-.histo .tick { fill: var(--ink-3); font: 400 12px var(--sans); }
-.histo .mark { stroke: var(--ink-2); stroke-width: 1.5; stroke-dasharray: 3 3; }
-.histo .mark-label { fill: var(--ink-2); font: 600 12px var(--sans); }
-.histo .count { fill: var(--ink-2); font: 600 12px var(--sans); }
-.tip { position: fixed; z-index: 30; pointer-events: none; padding: 5px 9px; border-radius: var(--r); background: var(--ink); color: var(--surface); font-size: 12.5px; white-space: nowrap; }
 .drills { display: grid; gap: 12px; }
 .drill { border: 1px solid var(--line); border-radius: var(--r); padding: 10px 12px; display: grid; gap: 8px; background: var(--inset); }
 .drill h3 { font-size: 14px; }
@@ -389,7 +374,6 @@ a.idlink, button.idlink { color: var(--accent); text-decoration: underline; text
 .cmd-row code { flex: 1; min-width: 0; padding: 6px 9px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); font: 12.5px/1.5 var(--mono); overflow-wrap: anywhere; user-select: all; }
 .drill ul { margin: 0; padding-left: 18px; display: grid; gap: 2px; font-size: 13px; color: var(--ink-2); }
 .copied { font-size: 12.5px; color: var(--ok); font-weight: 600; }
-@media (max-width: 1100px) { .two { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 720px) { #scenario-pick { min-width: 0; max-width: 100%; } .runs-panel { overflow-x: auto; } }
 </style>
 </head>
@@ -460,12 +444,9 @@ a.idlink, button.idlink { color: var(--accent); text-decoration: underline; text
       <pre class="runlog" id="runlog" aria-label="Run log"></pre>
     </section>
 
-    <div class="two">
-      <section class="panel" id="perf" aria-labelledby="perf-h"></section>
-      <section class="panel" id="drills" aria-labelledby="drills-h"></section>
-    </div>
-
     <section class="panel" id="panels" aria-label="Deliverables"></section>
+
+    <section class="panel" id="drills" aria-labelledby="drills-h"></section>
   </main>
 
   <!-- Trace: one row per batch, filled by renderTrace and renderInspector -->
@@ -477,7 +458,6 @@ a.idlink, button.idlink { color: var(--accent); text-decoration: underline; text
     <div class="inspector" id="inspector" aria-labelledby="insp-h"></div>
   </aside>
 </div>
-<div class="tip" id="tip" hidden></div>
 
 <script>/*__RECORDER_JS__*/</script>
 <script>/*__GATEWAY_JS__*/</script>
@@ -815,7 +795,6 @@ function render() {
   renderMarketMakers();
   renderLedger();
   renderRuns();
-  renderPerf();
   renderDrills();
   renderTrace();
   renderInspector();
@@ -1406,90 +1385,6 @@ function renderRuns() {
     log.patched = html;
     if (atEnd) log.scrollTop = log.scrollHeight;
   }
-}
-
-// ---- Perf: latency histogram and numbers ------------------------------------------------------------
-
-function renderPerf() {
-  if (!isAdmin()) {
-    setHtml(document.getElementById("perf"), `<div class="panel-head"><h2 id="perf-h">Perf</h2></div>
-      <div class="panel-body"><p class="runs-empty" style="padding:0">${esc(ADMIN_ONLY)}</p></div>`);
-    return;
-  }
-  const set = page.set ?? page.lastSet;
-  const runs = set?.runs ?? [];
-  const samples = runs.flatMap((r) => r.commands.filter((c) => !c.recovered).map((c) => c.latency_us));
-  const s = RfqRecorder.summarize(samples);
-  const wall = set ? ((set.finished ?? Date.now()) - set.started) / 1000 : 0;
-  const done = runs.filter((r) => r.done);
-  const tiles = [
-    ["p50", s.p50 == null ? "—" : `${ms(s.p50)} ms`],
-    ["p95", s.p95 == null ? "—" : `${ms(s.p95)} ms`],
-    ["max", s.max == null ? "—" : `${ms(s.max)} ms`],
-    ["commands / s", wall > 0 && samples.length ? (samples.length / wall).toFixed(1) : "—"],
-    ["runs passed", set ? `${done.filter((r) => r.pass).length} of ${set.total}` : "—"],
-  ].map(([k, v]) => `<div class="tile"><span>${k}</span><b class="num">${v}</b></div>`).join("");
-  const caption = set
-    ? `${esc(set.label)}${set.k > 1 ? ` at concurrency ${set.k}` : ""}: ${samples.length} commands over ${wall.toFixed(1)} s (the scenarios' own waits included).`
-    : "Run a scenario to see its numbers.";
-  setHtml(document.getElementById("perf"), `<div class="panel-head"><h2 id="perf-h">Perf</h2><span class="muted" style="font-size:13px">gateway latency, command → batch</span></div>
-    <div class="panel-body" style="display:grid;gap:12px">
-      <div class="tiles">${tiles}</div>
-      ${histogram(samples, s)}
-      <p class="muted" style="font-size:13px">${caption}</p>
-    </div>`);
-}
-
-/** Bin width (ms) from a nice set: the smallest that keeps the bins at 24 or fewer. */
-function binWidth(lo, hi) {
-  for (const w of [0.1, 0.2, 0.25, 0.5, 1, 2, 2.5, 5, 10, 20, 25, 50, 100, 250, 500, 1000]) if ((hi - lo) / w <= 24) return w;
-  return Math.ceil((hi - lo) / 24);
-}
-
-function histogram(samples, s) {
-  if (!samples.length) return '<p class="empty">No latency samples yet.</p>';
-  const vals = samples.map((us) => us / 1000);
-  const min = Math.min(...vals), max = Math.max(...vals);
-  const w = binWidth(Math.floor(min), max);
-  const lo = Math.floor(min / w) * w;
-  const nb = Math.max(1, Math.floor((max - lo) / w) + 1);
-  const counts = new Array(nb).fill(0);
-  for (const v of vals) counts[Math.min(nb - 1, Math.floor((v - lo) / w))]++;
-  const top = Math.max(...counts);
-  const topBin = counts.indexOf(top); // the one bin whose count is labelled
-  // T leaves a row above the tallest bar's count for the p50 / p95 labels.
-  const W = 560, H = 200, L = 8, R = 8, T = 36, B = 34;
-  const slot = (W - L - R) / nb;
-  const bw = Math.min(24, slot - 2);
-  const y = (c) => T + (H - T - B) * (1 - c / top);
-  const x = (v) => L + ((v - lo) / w) * slot;
-  const base = H - B;
-  const bars = counts.map((c, i) => {
-    const bx = L + i * slot + (slot - bw) / 2;
-    const tip = `${(lo + i * w).toFixed(w < 1 ? 2 : 0)}–${(lo + (i + 1) * w).toFixed(w < 1 ? 2 : 0)} ms: ${c} command${c === 1 ? "" : "s"}`;
-    const h = base - y(c);
-    const r = Math.min(4, h, bw / 2);
-    const path = c ? `M${bx} ${base}V${y(c) + r}Q${bx} ${y(c)} ${bx + r} ${y(c)}H${bx + bw - r}Q${bx + bw} ${y(c)} ${bx + bw} ${y(c) + r}V${base}Z` : "";
-    return `<g class="bin">${c ? `<path class="bar" d="${path}"/>` : ""}${i === topBin ? `<text class="count" x="${bx + bw / 2}" y="${y(c) - 5}" text-anchor="middle">${c}</text>` : ""}<rect class="hit" x="${L + i * slot}" y="${T}" width="${slot}" height="${base - T}" data-tip="${esc(tip)}"><title>${esc(tip)}</title></rect></g>`;
-  }).join("");
-  const every = Math.max(1, Math.ceil(nb / 6));
-  const ticks = [];
-  for (let i = 0; i <= nb; i += every) {
-    const anchor = i === 0 ? "start" : i === nb ? "end" : "middle";
-    ticks.push(`<text class="tick" x="${L + i * slot}" y="${base + 16}" text-anchor="${anchor}">${(lo + i * w).toFixed(w < 1 ? 1 : 0)}${i === nb ? " ms" : ""}</text>`);
-  }
-  const marks = [["p50", s.p50], ["p95", s.p95]].map(([k, us]) => {
-    const mx = x(us / 1000);
-    // p50's label sits left of its line and p95's right of it, so the two never collide; each flips
-    // inward near an edge so it never clips.
-    const left = k === "p50" ? mx > L + 40 : mx > W - R - 40;
-    return `<line class="mark" x1="${mx}" x2="${mx}" y1="6" y2="${base}"/><text class="mark-label" x="${left ? mx - 4 : mx + 4}" y="14"${left ? ' text-anchor="end"' : ""}>${k}</text>`;
-  }).join("");
-  const label = `Latency histogram of ${samples.length} commands: p50 ${ms(s.p50)} ms, p95 ${ms(s.p95)} ms, max ${ms(s.max)} ms; the tallest bin holds ${top}.`;
-  return `<svg class="histo" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(label)}">
-      ${bars}<line class="base" x1="${L}" x2="${W - R}" y1="${base}" y2="${base}"/>${marks}${ticks.join("")}
-      ${nb % every ? `<text class="tick" x="${W - R}" y="${base + 16}" text-anchor="end">ms</text>` : ""}
-    </svg>`;
 }
 
 // ---- Failure drills ---------------------------------------------------------------------------------
@@ -2293,20 +2188,6 @@ document.addEventListener("keydown", (e) => {
   if (t.closest?.("input, select, textarea, [role=tab], [contenteditable]")) return;
   e.preventDefault();
   moveTo((V?.pos ?? 0) + (e.key === "ArrowLeft" ? -1 : 1));
-});
-
-// Histogram hover: one tooltip, positioned at the pointer.
-const tip = document.getElementById("tip");
-app.addEventListener("pointermove", (e) => {
-  const hit = e.target.closest?.(".histo .hit");
-  if (!hit) {
-    if (!tip.hidden) tip.hidden = true;
-    return;
-  }
-  tip.textContent = hit.dataset.tip;
-  tip.hidden = false;
-  tip.style.left = `${Math.min(innerWidth - tip.offsetWidth - 8, e.clientX + 12)}px`;
-  tip.style.top = `${e.clientY - 34}px`;
 });
 
 const topbar = document.getElementById("topbar");

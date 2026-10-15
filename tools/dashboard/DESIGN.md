@@ -254,8 +254,8 @@ The in-browser (WASM) engine was to stay only as an **offline fallback**, labell
 3. Batches stream in. The page shows each request, quote and contract moving through its D1 states (Open → Presented → Filled, Active → Selected → Filled, Trading → … → Final), the events with their audiences, and money moving between free, reserved and escrowed. Money comes from the engine's `balances` in each batch.
 4. At the end: PASS or FAIL against the scenario's expected events (the same lists as the tests).
 5. **Timeline.** The whole run is recorded. A scrubber steps through it batch by batch, even if it took milliseconds. Every panel shows the state at the scrubbed position.
-6. **Perf.** Per-command latency (sent → result) as p50 / p95 / max, commands per second, **Run ×N**, **Run all**, and a concurrency setting for parallel runs. Runs are scoped like `rfq-demo` (per-run account ids = `t0 × 100 + id`, contract `t0`), so parallel and repeated runs never see each other's objects.
-7. **Failures**, from a terminal: a "Failure drills" panel lists the commands and what to watch for.
+6. **Runs.** **Run ×N**, **Run all**, and a concurrency setting for parallel runs. The Runs table shows each run's per-command latency (sent → result) as p50 / p95 / max. Runs are scoped like `rfq-demo` (per-run account ids = `t0 × 100 + id`, contract `t0`), so parallel and repeated runs never see each other's objects.
+7. **Failures**, from a terminal: a "Failure drills" panel, at the bottom of the page under the D1–D5 tabs, lists the commands and what to watch for.
 
    | Drill | Command | What to watch |
    |---|---|---|
@@ -271,7 +271,7 @@ The in-browser (WASM) engine was to stay only as an **offline fallback**, labell
 - **Data source.** The recorded stream of gateway frames replaces the WASM `snapshot`. Object states come from the events (each event is a transition). Balances come from `balances`. A requester's own limit comes from the command the page itself sent as that requester.
 - **The clock** is the engine's. The +100 ms / +1 s / Next timer buttons are gone in live mode.
 - **Kept:** lanes, contract card, trace, ledger, D1–D5 panels, view-as.
-- **New:** a connection and engine status bar, Run / Run ×N / Run all / concurrency, the timeline scrubber, the perf panel, the failure drills panel.
+- **New:** a connection and engine status bar, Run / Run ×N / Run all / concurrency, the timeline scrubber, the runs table, the failure drills panel.
 - **Scenario scripts** are declarative JS, one per preset, with the same steps, timings and expect lists as `rfq_testkit::scenarios` and the D3 attack presets.
 
 ### 11.3 Acceptance (live mode)
