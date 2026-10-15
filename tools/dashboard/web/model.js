@@ -11,6 +11,11 @@
 // gateway forwards an origin only to the view that sent the command (gateway.md §4), so in an account
 // view the page's knowledge of the other participants' commands never reaches the model.
 //
+// A request has one or more legs (engine.md §8): `RequestOpened` comes once per leg with its index, a
+// presented request has one pick per leg, and a fill has one position per leg. A quote's leg is the
+// leg of the page's own `SubmitQuote` (`QuoteSubmitted` carries none); a view without that command learns
+// it from the presented picks, and until then it is null: no leg is guessed for a multi-leg request.
+//
 // Nothing here computes money or fires a timer: every amount is a `balances` value or an event field.
 const RfqModel = (() => {
   const variant = (v) => (typeof v === "string" ? v : Object.keys(v)[0]);
@@ -89,6 +94,7 @@ const RfqModel = (() => {
           epoch,
           contract: null,
           request: null,
+          leg: null,
           qty: null,
           yes_holder: null,
           yes_lock: null,
@@ -101,12 +107,21 @@ const RfqModel = (() => {
       }
       return positions.get(k(epoch, id));
     };
-    /** A position opened by the request's fill: its contract, qty, and the holder on `holderSide`'s side. */
-    const fillPosition = (epoch, pid, request, holder, holderBuysYes) => {
+    /**
+     * The leg index of quote `q` of request `r`: the quote's own (its command's, or the presented picks'),
+     * else the request's only leg. A multi-leg request's quote with no known leg has none: null.
+     */
+    const legIndexOf = (q, r) => q.leg ?? (r && r.legs.length === 1 ? 0 : null);
+    /**
+     * A position opened by the request's fill, for leg `legIndex` of `request`: its contract, qty and leg,
+     * and the holder on `holderBuysYes`'s side. An unknown leg (null) leaves the leg's fields unknown.
+     */
+    const fillPosition = (epoch, pid, request, legIndex, holder, holderBuysYes) => {
       const p = positionFor(epoch, pid);
-      const leg = request?.legs[0];
+      const leg = request && legIndex != null ? request.legs[legIndex] : null;
       if (request) p.request = request.id;
       if (leg) {
+        p.leg = legIndex;
         p.contract = leg.contract;
         p.qty = leg.qty;
         const c = contracts.get(k(epoch, leg.contract));
@@ -215,6 +230,17 @@ const RfqModel = (() => {
             if (r) {
               r.state = { Presented: { accept_by: d.accept_by } };
               r.picks = d.picks;
+              // The engine names each pick's leg: the leg's selection, and the leg of a quote whose own command
+              // this view never had (its `QuoteSelected` came first, with no leg to put it on).
+              for (const p of d.picks) {
+                const leg = r.legs[p.leg];
+                if (leg) leg.selected = p.quote;
+                const q = quotes.get(k(epoch, p.quote));
+                if (q && q.leg == null) {
+                  q.leg = p.leg;
+                  if (leg && !leg.quotes.includes(q.id)) leg.quotes.push(q.id);
+                }
+              }
               // Presented goes to the requester only: whoever hears it is the requester.
               if (r.requester == null && owner != null) r.requester = owner;
             }
@@ -226,7 +252,12 @@ const RfqModel = (() => {
               r.state = "Filled";
               if (r.requester == null && owner != null) r.requester = owner;
             }
-            for (const pid of d.positions) fillPosition(epoch, pid, r, r?.requester ?? owner, r ? r.legs[0]?.side === "BuyYes" : null);
+            // One position per leg, in leg order (the engine's `accept` makes them in that order): a position
+            // a `QuoteFilled` already tied to its leg keeps that leg.
+            d.positions.forEach((pid, i) => {
+              const legIndex = positions.get(k(epoch, pid))?.leg ?? i;
+              fillPosition(epoch, pid, r, legIndex, r?.requester ?? owner, r?.legs[legIndex] ? r.legs[legIndex].side === "BuyYes" : null);
+            });
             break;
           }
           case "RequestCancelled":
@@ -256,7 +287,9 @@ const RfqModel = (() => {
             };
             quotes.set(k(epoch, d.quote), q);
             const r = requests.get(k(epoch, d.request));
-            const leg = r?.legs[q.leg ?? 0];
+            const legIndex = legIndexOf(q, r);
+            if (legIndex != null && q.leg == null) q.leg = legIndex; // the request's only leg
+            const leg = legIndex != null ? r.legs[legIndex] : null;
             if (leg && !leg.quotes.includes(q.id)) leg.quotes.push(q.id);
             break;
           }
@@ -274,7 +307,9 @@ const RfqModel = (() => {
             if (!q) break;
             q.state = name.slice("Quote".length);
             if (name === "QuoteSelected") {
-              const leg = requests.get(k(epoch, q.request))?.legs[q.leg ?? 0];
+              const r = requests.get(k(epoch, q.request));
+              const legIndex = r ? legIndexOf(q, r) : null;
+              const leg = legIndex != null ? r.legs[legIndex] : null;
               if (leg) leg.selected = q.id;
             }
             break;
@@ -283,8 +318,10 @@ const RfqModel = (() => {
             const q = quotes.get(k(epoch, d.quote));
             if (q) q.state = "Filled";
             const r = q ? requests.get(k(epoch, q.request)) : null;
-            // The maker takes the other side of the requester's.
-            fillPosition(epoch, d.position, r, q?.mm ?? owner, r ? r.legs[0]?.side !== "BuyYes" : null);
+            // The maker takes the other side of the requester's, on the leg the quote is for.
+            const legIndex = q && r ? legIndexOf(q, r) : null;
+            const leg = legIndex != null ? r.legs[legIndex] : null;
+            fillPosition(epoch, d.position, r, legIndex, q?.mm ?? owner, leg ? leg.side !== "BuyYes" : null);
             break;
           }
           case "PositionSettled": {

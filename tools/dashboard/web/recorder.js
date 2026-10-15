@@ -66,8 +66,9 @@ const RfqRecorder = (() => {
 
   /**
    * What belongs to one scenario run on a shared, long-lived engine (see rfq-demo's `scope.rs`).
-   * The run's contract is `t0`, its accounts are `t0 * 100 + id`, and its requests and quotes are the
-   * ones whose id is the `seq` of one of its own commands. `owns` keeps exactly the events about those.
+   * The run's contract is `t0` (a multi-leg run lists extra markets instead, `t0 * 10 + k` for k in 1..=9),
+   * its accounts are `t0 * 100 + id`, and its requests and quotes are the ones whose id is the `seq` of
+   * one of its own commands. `owns` keeps exactly the events about those.
    */
   class Scope {
     constructor(t0) {
@@ -92,6 +93,20 @@ const RfqRecorder = (() => {
     /** Records a command this run sent, so its batch counts as the run's. */
     sent(actor, nonce) {
       this.origins.add(originKey(actor, nonce));
+    }
+
+    /**
+     * The run's own contract, or one of its extra markets: `t0 * 10 + k` for k in 1..=9 (what a script's
+     * `ctx.contractN(k)` gives; `k = 0` is not one, so it can't be mistaken for the run's own). Rust:
+     * `Scope::owns_contract`. Its `checked_mul` leaves a key that cannot be multiplied by 10 owning only its
+     * own contract; here that is a key whose product is not a safe integer.
+     */
+    ownsContract(id) {
+      if (id === this.key) return true;
+      const base = this.key * 10;
+      if (!Number.isSafeInteger(base)) return false;
+      const k = id - base;
+      return k >= 1 && k <= 9;
     }
 
     /**
@@ -120,7 +135,7 @@ const RfqRecorder = (() => {
         case "Ruled":
         case "DisputeBondReturned":
         case "ContractFinalized":
-          return b.contract === this.key;
+          return this.ownsContract(b.contract);
         case "RequestOpened":
         case "RequestCancelled":
         case "RequestExpired":

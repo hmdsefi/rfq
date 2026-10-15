@@ -1,6 +1,7 @@
-// The 12 scenarios as data, and the driver that plays one as its participants through the gateway:
-// dashboard -> WebSocket -> rfq-gateway -> Aeron -> rfq-node. Plain script (inlined in the page, or
-// `require`d by Node); it needs recorder.js (and, in the page, that script comes first).
+// The 14 scenarios as data (eight brief ones, six attacks), and the driver that plays one as its
+// participants through the gateway: dashboard -> WebSocket -> rfq-gateway -> Aeron -> rfq-node. Plain
+// script (inlined in the page, or `require`d by Node); it needs recorder.js (and, in the page, that
+// script comes first).
 //
 //   const driver = RfqScenarios.createDriver(gateway);              // gateway: RfqGateway.connect(...)
 //   const { runs, perf } = await driver.runMany(["happy_path"], 20, 4);
@@ -71,6 +72,18 @@ const RfqScenarios = (() => {
     /** One contract per run, keyed by its start time so reruns never collide. */
     contract() {
       return this.t0;
+    }
+
+    /**
+     * The run's `k`th extra market (`k` in 1..=9), for a multi-leg script: `t0 * 10 + k` (testkit's
+     * `Ctx::contract_n`). Distinct runs never collide, and for a millisecond clock the id stays below
+     * 2^53, so it is exact in a JS number. The run's scope owns these ids too (`Scope.ownsContract`).
+     */
+    contractN(k) {
+      if (!Number.isInteger(k) || k < 1 || k > 9) throw new RangeError(`a run has extra markets 1..=9, not ${k}`);
+      const id = this.t0 * 10 + k;
+      if (!Number.isSafeInteger(id)) throw new RangeError(`market id ${id} is not a safe integer`);
+      return id;
     }
 
     recordLabel(label, seq) {
@@ -160,31 +173,41 @@ const RfqScenarios = (() => {
   /** A step that only waits (testkit's `Tick`): the engine fires its own timers. */
   const wait = (at) => ({ at, wait: true });
 
-  /**
-   * Funds everyone and lists the run's contract (closes at +5 s, hard deadline at +15 s).
-   * Rust: `rfq_testkit::scenarios::setup`; the dashboard's `presets::setup` is the same.
-   */
-  function setup() {
-    const steps = [
+  /** Deposits $1,000 for Alice, both market makers and Carol. Rust: `rfq_testkit::scenarios::fund`. */
+  const fund = () =>
+    [
       ["fund_alice", ALICE],
       ["fund_mm1", MM1],
       ["fund_mm2", MM2],
       ["fund_carol", CAROL],
     ].map(([label, to]) => send(0, label, OPERATOR, () => ({ Deposit: { to, amount: dollars(1_000) } })));
-    steps.push(
-      send(0, "list", OPERATOR, (c) => ({
-        ListContract: {
-          id: c.contract(),
-          description: "Will it rain in Paris on 2026-11-01?",
-          oracle: ORACLE,
-          trading_close: c.at(5_000),
-          resolution_deadline: c.at(15_000),
-          dispute_window: 2_000,
-        },
-      })),
-    );
-    return steps;
-  }
+
+  /** The operator lists a market that closes at +5 s, with a hard deadline at +15 s. Rust: `scenarios::list`. */
+  const list = (label, id, description) =>
+    send(0, label, OPERATOR, (c) => ({
+      ListContract: {
+        id: id(c),
+        description,
+        oracle: ORACLE,
+        trading_close: c.at(5_000),
+        resolution_deadline: c.at(15_000),
+        dispute_window: 2_000,
+      },
+    }));
+
+  /**
+   * Funds everyone and lists the run's contract (closes at +5 s, hard deadline at +15 s).
+   * Rust: `rfq_testkit::scenarios::setup`; the dashboard's `presets::setup` is the same.
+   */
+  const setup = () => [...fund(), list("list", (c) => c.contract(), "Will it rain in Paris on 2026-11-01?")];
+
+  /** Funds everyone and lists three markets (Paris, London, Rome), each closing at +5 s. Rust: `scenarios::three_markets`. */
+  const threeMarkets = () => [
+    ...fund(),
+    list("list_paris", (c) => c.contractN(1), "Will it rain in Paris on 2026-11-01?"),
+    list("list_london", (c) => c.contractN(2), "Will it rain in London on 2026-11-01?"),
+    list("list_rome", (c) => c.contractN(3), "Will it rain in Rome on 2026-11-01?"),
+  ];
 
   /** Alice asks for 1000 YES with a sealed 0.70 limit; quotes due at +1.5 s. Rust: the `req` step of `quoted()` (`presets::request`). */
   const request = (at) =>
@@ -213,6 +236,21 @@ const RfqScenarios = (() => {
   /** Quoted, then accepted at +2 s. Rust: `scenarios::filled`. */
   const filled = () => [...quoted(), accept(2_000)];
 
+  /** One request for 400 YES on each of the three markets (limit 0.70 each), quotes due at +1.5 s. Rust: `scenarios::three_leg_request`. */
+  const threeLegRequest = () =>
+    send(100, "req", ALICE, (c) => ({
+      SubmitRequest: {
+        legs: [1, 2, 3].map((k) => ({ contract: c.contractN(k), side: "BuyYes", qty: 400, limit_price: price(7_000) })),
+        response_deadline: c.at(1_500),
+      },
+    }));
+
+  /** `mm` quotes leg `leg` of the request at `bps`, firm to +10 s. Rust: `scenarios::leg_quote`. */
+  const legQuote = (at, label, mm, leg, bps) =>
+    send(at, label, mm, (c) => ({
+      SubmitQuote: { request: c.request("req"), leg, price: price(bps), size: 400, expires_at: c.at(10_000) },
+    }));
+
   /** The oracle proposes YES. Rust: the `propose` step of `scenarios::all` (happy, disputed). */
   const propose = (at) => send(at, "propose", ORACLE, (c) => ({ ProposeOutcome: { contract: c.contract(), outcome: "Yes" } }));
 
@@ -225,6 +263,10 @@ const RfqScenarios = (() => {
     disputed_ruled_invalid:
       "Carol disputes the proposed outcome with a bond; the arbiter rules INVALID and the positions are refunded.",
     oracle_silent_hard_deadline: "The oracle never proposes: at the hard deadline the contract resolves INVALID and refunds everyone.",
+    multi_leg_happy:
+      "Alice asks for 400 YES in each of three markets in one request; MM1 quotes legs 1 and 3, MM2 leg 2. One accept fills all three legs.",
+    multi_leg_leg2_fails:
+      "Leg 2 of 3 is never quoted: at the deadline the whole request expires, no leg fills, and every hold is released in that one command.",
   };
 
   // Each script below names its Rust source. `expect` is checked by `containsInOrder` (testkit's
@@ -292,6 +334,65 @@ const RfqScenarios = (() => {
       kind: "brief",
       steps: [...filled(), wait(15_100)],
       expect: ["RequestFilled", "ContractClosed", "ContractFinalized", "PositionSettled"],
+    },
+    // Rust: `rfq_testkit::scenarios::all()`, `multi_leg_happy` (engine.md §8). Three markets, one request, a
+    // quote on every leg, and one accept fills all three legs. MM1 backs legs 0 and 2, MM2 backs leg 1.
+    // `markets`: how many extra markets the run lists (`ctx.contractN(1..=markets)`); a script without it
+    // lists the run's one contract, `t0`.
+    {
+      name: "multi_leg_happy",
+      kind: "brief",
+      markets: 3,
+      steps: [
+        ...threeMarkets(),
+        threeLegRequest(),
+        legQuote(300, "q1", MM1, 0, 6_200),
+        legQuote(400, "q2", MM2, 1, 6_000),
+        legQuote(500, "q3", MM1, 2, 6_400),
+        wait(1_600),
+        accept(2_000),
+      ],
+      expect: [
+        "RequestOpened",
+        "RequestOpened",
+        "RequestOpened",
+        "QuoteSubmitted",
+        "QuoteSubmitted",
+        "QuoteSubmitted",
+        "QuoteSelected",
+        "QuoteSelected",
+        "QuoteSelected",
+        "RequestPresented",
+        "QuoteFilled",
+        "QuoteFilled",
+        "QuoteFilled",
+        "RequestFilled",
+      ],
+    },
+    // Rust: `rfq_testkit::scenarios::all()`, `multi_leg_leg2_fails`. Leg 2 of 3 fails: legs 1 and 3 are
+    // quoted, leg 2 is not, so at the deadline the whole request expires and the requester's and both MMs'
+    // holds are all released in that one command.
+    {
+      name: "multi_leg_leg2_fails",
+      kind: "brief",
+      markets: 3,
+      steps: [
+        ...threeMarkets(),
+        threeLegRequest(),
+        legQuote(300, "q1", MM1, 0, 6_200),
+        legQuote(400, "q3", MM2, 2, 6_000),
+        wait(1_600),
+      ],
+      expect: [
+        "RequestOpened",
+        "RequestOpened",
+        "RequestOpened",
+        "QuoteSubmitted",
+        "QuoteSubmitted",
+        "QuoteLost",
+        "QuoteLost",
+        "RequestExpired",
+      ],
     },
     // Rust: `tools/dashboard/src/presets.rs`, `attacks()`, `wrong_price`. Alice accepts at 0.61
     // instead of the presented 0.60; the quote stays firm and her real accept fills.
@@ -665,7 +766,8 @@ const RfqScenarios = (() => {
     async function play(run) {
       const { scenario, ctx, result } = run;
       const t0 = ctx.t0;
-      run.log(`${scenario.name}: t0=${t0} (engine now + ${startMargin} ms), contract ${t0}`);
+      const lists = scenario.markets ? `markets ${ctx.contractN(1)}..${ctx.contractN(scenario.markets)}` : `contract ${t0}`;
+      run.log(`${scenario.name}: t0=${t0} (engine now + ${startMargin} ms), ${lists}`);
       for (const [i, step] of scenario.steps.entries()) {
         check(run);
         result.step = i + 1;
@@ -818,8 +920,8 @@ const RfqScenarios = (() => {
     /**
      * Runs each of `names` `n` times, `k` at a time, and returns every run's verdict and the aggregate
      * perf: `{ runs, passed, failed, pass, stopped, perf }`. Runs are scoped (accounts `t0 * 100 + id`,
-     * contract `t0`, distinct `t0` 1 ms apart at least), so none sees another's events. `runs` is in the
-     * order the jobs were given (names interleaved: each name once, then again, ...); after a Stop it
+     * contract `t0` or markets `t0 * 10 + k`, distinct `t0` 1 ms apart at least), so none sees another's
+     * events. `runs` is in the order the jobs were given (names interleaved: each name once, then again, ...); after a Stop it
      * holds only the runs that had started.
      */
     async function runMany(names, n, k) {

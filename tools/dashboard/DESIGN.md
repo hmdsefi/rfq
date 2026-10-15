@@ -12,10 +12,10 @@ The page is used in the 30-minute defense to *trace, justify, attack and extend*
 - show market makers quoting, replacing and cancelling, users requesting, accepting and rejecting, and the match happening at the deadline;
 - let the presenter act as any participant and try "what if…" moves on the spot;
 - give an **admin trace** of everything: every command, every event (sealed ones too), every balance and hold, every state transition;
-- cover the five deliverables (D1–D5) with real engine output, or with a clearly labelled design where the brief allows design only (multi-leg).
+- cover the five deliverables (D1–D5) with real engine output. Multi-leg was a labelled design (P6) until the PO decided to build it on 2026-10-16; its two stories now run live (§11).
 
 **Success** means three things:
-- each of the 6 brief scenarios and the attack presets runs in one click with the expected events;
+- each of the 8 brief scenarios (six single-leg, two multi-leg) and the attack presets runs in one click with the expected events;
 - the presenter can take over at any step;
 - every number on screen comes from the engine, never from page logic.
 
@@ -24,7 +24,7 @@ The page is used in the 30-minute defense to *trace, justify, attack and extend*
 - No server, no Aeron, no Docker: the Aeron path is already shown by `scripts/demo.sh`.
 - No auth, accounts or persistence: a page reload starts fresh.
 - No changes to `crates/` or to the workspace manifests.
-- No multi-leg *execution*: the engine rejects more than one leg (P6). The multi-leg panel is a design walkthrough and is labelled that way.
+- No form for composing a multi-leg request by hand. Multi-leg is built (engine.md §8) and shown by two scripted scenarios, `multi_leg_happy` and `multi_leg_leg2_fails`; the Multi-leg tab runs them.
 - No mobile layout beyond "doesn't break": it is presented on a laptop or projector.
 
 ## 3. Users and views
@@ -68,20 +68,24 @@ The chosen view stays in place across a reset.
    - (c) The ledger table: free, reserved and escrowed per account, with deltas against the previous command, and the ledger total, which only `Deposit` and `Withdraw` change (I1).
    - (d) **Replay check**: rebuild from the command log in a fresh engine and compare state hashes.
 6. **Deliverable panels** (secondary):
-   - **D1** the request, quote and contract state machines, with the current state of the selected object lit and the last transition labelled with who triggered it; a *Multi-leg (designed, not built, P6)* tab walking through engine.md §8's "leg 2 of 3" table;
+   - **D1** the request, quote and contract state machines, with the current state of the selected object lit and the last transition labelled with who triggered it; a *Multi-leg (built)* tab with a Run button for `multi_leg_leg2_fails` and one for `multi_leg_happy`, and the three-step walkthrough of engine.md §8's "leg 2 of 3" table: steps 1 and 2 are played by `multi_leg_leg2_fails`, and step 3 (the alternative path) is pinned by the engine test `a_selected_leg_cannot_be_withdrawn`;
    - **D3** failure modes R1–R9 and F1–F15 with their test names, each linked to the preset that demonstrates it where one exists;
    - **D4** resolution paths (undisputed, disputed then ruled, oracle silent, unruled dispute);
    - **D5** the two seams, read from this run's `Genesis` (`ReservationPolicy::FullHold`, `SelectionPolicy::SealedAtDeadline`), with invariant and non-invariant lists.
 
 ## 5. Presets
 
-**Brief scenarios.** All six come straight from `rfq_testkit::scenarios::all()`, the same scripts as the tests and the Aeron demo:
+**Brief scenarios.** All eight come straight from `rfq_testkit::scenarios::all()`, the same scripts as the tests and the Aeron demo:
 - `happy_path`
 - `mm_cannot_withdraw_after_selection`
 - `no_quotes_expire`
 - `requester_lapses`
 - `disputed_ruled_invalid`
 - `oracle_silent_hard_deadline`
+- `multi_leg_happy`: one request for three markets, a quote on every leg, and one accept fills all three legs
+- `multi_leg_leg2_fails`: legs 1 and 3 are quoted, leg 2 is not, so at the deadline the whole request expires and every hold is released in that one command
+
+The two multi-leg scenarios list three markets (Paris, London, Rome) as `ContractId(t0 * 10 + k)` for k = 1..=3 (`Ctx::contract_n`), and a run's scope owns those ids too.
 
 When a preset finishes, the page runs `contains_in_order` against the scenario's `expect` list and shows PASS or FAIL.
 
@@ -168,13 +172,13 @@ Errors come back as `{"error": "..."}`, never as a trap.
 
 ## 8. Acceptance criteria
 
-1. All 6 brief presets show PASS. All 6 attack presets show their pinned answer.
+1. All 8 brief presets show PASS. All 6 attack presets show their pinned answer.
 2. From any preset step, take-over allows quote, cancel, request, accept, reject, propose, dispute, rule and clock moves.
 3. View-as filtering hides sealed data exactly as the event audiences say.
 4. The ledger total changes only on `Deposit` and `Withdraw`, and the I1–I5 status is shown after every command.
 5. The replay check matches after every preset and after manual play.
 6. `git diff --stat crates/ Cargo.toml Cargo.lock` is empty.
-7. The page carries the label "Demo aid — not part of the engine", and the multi-leg tab says "designed, not built (P6)".
+7. The page carries the label "Demo aid — not part of the engine", and the multi-leg tab says "Built" (it said "designed, not built (P6)" until multi-leg was built, 2026-10-16).
 
 ## 9. Risks
 
@@ -243,7 +247,7 @@ The in-browser (WASM) engine was to stay only as an **offline fallback**, labell
 ### 11.1 What the presenter does
 
 1. Start the stack (`docker compose up -d aeron engine gateway`) and open `dist/rfq-dashboard.html`. The status bar shows "Connected to the gateway, engine up".
-2. Pick a scenario in the combo box (the 6 brief scenarios and 6 attacks) and press **Run**. The page then acts as every participant:
+2. Pick a scenario in the combo box (the 8 brief scenarios and 6 attacks) and press **Run**. The page then acts as every participant:
    - the operator funds the accounts and lists the contract;
    - Alice submits the request;
    - MM1 and MM2 quote;
@@ -254,7 +258,7 @@ The in-browser (WASM) engine was to stay only as an **offline fallback**, labell
 3. Batches stream in. The page shows each request, quote and contract moving through its D1 states (Open → Presented → Filled, Active → Selected → Filled, Trading → … → Final), the events with their audiences, and money moving between free, reserved and escrowed. Money comes from the engine's `balances` in each batch.
 4. At the end: PASS or FAIL against the scenario's expected events (the same lists as the tests).
 5. **Timeline.** The whole run is recorded. A scrubber steps through it batch by batch, even if it took milliseconds. Every panel shows the state at the scrubbed position.
-6. **Runs.** **Run ×N**, **Run all**, and a concurrency setting for parallel runs. The Runs table shows each run's per-command latency (sent → result) as p50 / p95 / max. Runs are scoped like `rfq-demo` (per-run account ids = `t0 × 100 + id`, contract `t0`), so parallel and repeated runs never see each other's objects.
+6. **Runs.** **Run ×N**, **Run all**, and a concurrency setting for parallel runs. The Runs table shows each run's per-command latency (sent → result) as p50 / p95 / max. Runs are scoped like `rfq-demo` (per-run account ids = `t0 × 100 + id`, contract `t0`, or for a multi-leg run its markets `t0 × 10 + k`, k = 1..=9), so parallel and repeated runs never see each other's objects.
 7. **Failures**, from a terminal: a "Failure drills" panel, at the bottom of the page under the D1–D5 tabs, lists the commands and what to watch for.
 
    | Drill | Command | What to watch |
@@ -271,12 +275,18 @@ The in-browser (WASM) engine was to stay only as an **offline fallback**, labell
 - **Data source.** The recorded stream of gateway frames replaces the WASM `snapshot`. Object states come from the events (each event is a transition). Balances come from `balances`. A requester's own limit comes from the command the page itself sent as that requester.
 - **The clock** is the engine's. The +100 ms / +1 s / Next timer buttons are gone in live mode.
 - **Kept:** lanes, contract card, trace, ledger, D1–D5 panels, view-as.
+- **Multi-leg requests** (engine.md §8) are drawn from the events and balances alone:
+  - A request card lists every leg: its market (the contract's question once the page knows the listing, else its id), side, qty, and the limit for its own requester only. The market makers' open-request cards list every leg and mark each limit sealed.
+  - A `Presented` request lists a pick per leg and a `Filled` one a position per leg. A quote shows its leg ("leg 2 of 3"): the leg of the page's own `SubmitQuote`, else the leg the presented picks name it with, else none, because `QuoteSubmitted` carries no leg and no leg is guessed.
+  - The contract area shows every market the run listed, side by side, each as a compact card that names its leg and holds its own position. Markets are ordered by the run's `t0`, then by the order the run listed them. The compact card has no timeline: the contract's deadlines are in the inspector, one click away.
+  - An `Expired` multi-leg request says in its card and in the trace row that no leg was filled and every hold was released, and the balances under that row show the release. The page adds nothing up.
+  - Sealing is unchanged: an account view renders only its own connection's frames, so MM2's view of a multi-leg run has the public legs, its own quote and balance, and none of MM1's prices, Alice's limits or the markets' terms (`page.test.mjs`).
 - **New:** a connection and engine status bar, Run / Run ×N / Run all / concurrency, the timeline scrubber, the runs table, the failure drills panel.
 - **Scenario scripts** are declarative JS, one per preset, with the same steps, timings and expect lists as `rfq_testkit::scenarios` and the D3 attack presets.
 
 ### 11.3 Acceptance (live mode)
 
-1. With the stack up, all 12 scenarios PASS from the combo box, one by one and with **Run all**.
+1. With the stack up, all 14 scenarios PASS from the combo box, one by one and with **Run all**.
 2. **Run ×20** at concurrency 4 passes every run and shows latency percentiles.
 3. Each failure drill shows what the table says, and the page recovers without a reload.
 4. View as Alice / MM1 shows only what gateway.md §4 allows. Spot-checked in the DOM, as in D8.

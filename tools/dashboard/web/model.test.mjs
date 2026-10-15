@@ -265,6 +265,191 @@ test("a journal reset: batches of two epochs with the same seq are two trace ent
   assert.deepEqual(m.requests.map((r) => [r.epoch, r.id, variant(r.state), r.legs[0].contract]), [[0, 3, "Expired", 7], [1, 3, "Open", 8]]);
 });
 
+// ---- multi-leg: one request, three legs (engine.md §8) ------------------------------------------------
+
+/**
+ * A 3-leg request on three markets (101 Paris, 102 London, 103 Rome), as the engine and gateway send it:
+ * Alice (10) buys YES 400 on each at a sealed 0.70 limit; MM1 (20) quotes legs 0 and 2, MM2 (21) quotes leg 1.
+ * `fill` ends it with Alice's accept, else the timer expires it (`quoteLeg2`: whether anyone quotes leg 1).
+ * Returns the frames each connection got, the page's commands by seq, and the ids.
+ */
+function threeLegs({ fill }) {
+  const [alice, mm1, mm2, op] = [10, 20, 21, 1];
+  const markets = [[101, "Paris"], [102, "London"], [103, "Rome"]];
+  const commands = new Map();
+  const frames = [];
+  const bal = (account, free, reserved = 0, escrowed = 0) => ({ account, balance: { free, reserved, escrowed } });
+  const add = (seq, events, { origin = null, balances = [], kind = "User", action = null } = {}) => {
+    frames.push(batch(seq, events, { origin, balances, kind }));
+    if (action) commands.set(seq, { actor: origin.actor, nonce: origin.nonce, action });
+  };
+  [alice, mm1, mm2].forEach((a, i) => add(2 + i, [to(a, { Deposited: { account: a, amount: 1_000_000_000 } })], {
+    origin: { actor: op, nonce: 1 + i }, balances: [bal(a, 1_000_000_000)], action: { Deposit: { to: a, amount: 1_000_000_000 } },
+  }));
+  markets.forEach(([id, city], i) => add(5 + i, [pub({ ContractListed: { contract: id } })], {
+    origin: { actor: op, nonce: 4 + i },
+    action: { ListContract: { id, description: `Will it rain in ${city} on 2026-11-01?`, oracle: 4, trading_close: 50_000, resolution_deadline: 150_000, dispute_window: 2_000 } },
+  }));
+  const REQ = 9;
+  add(REQ, markets.map(([contract], leg) => pub({ RequestOpened: { request: REQ, leg, contract, side: "BuyYes", qty: 400, response_deadline: 11_500 } })), {
+    origin: { actor: alice, nonce: 1 },
+    balances: [bal(alice, 160_000_000, 840_000_000)],
+    action: { SubmitRequest: { legs: markets.map(([contract]) => ({ contract, side: "BuyYes", qty: 400, limit_price: 7_000 })), response_deadline: 11_500 } },
+  });
+  const quote = (seq, mm, leg, price, balances) => add(seq, [to(mm, { QuoteSubmitted: { quote: seq, request: REQ, price, expires_at: 13_500 } })], {
+    origin: { actor: mm, nonce: 1 },
+    balances,
+    action: { SubmitQuote: { request: REQ, leg, price, size: 400, expires_at: 20_000 } },
+  });
+  // MM1 holds $152 + $144 of its $1,000, MM2 $160 (the demo's 400-share legs).
+  quote(11, mm1, 0, 6_200, [bal(mm1, 848_000_000, 152_000_000)]);
+  quote(12, mm2, fill ? 1 : 2, 6_000, [bal(mm2, 840_000_000, 160_000_000)]);
+  if (fill) quote(13, mm1, 2, 6_400, [bal(mm1, 704_000_000, 296_000_000)]);
+  const quotes = fill ? { q0: 11, q1: 12, q2: 13 } : { q0: 11, q2: 12 };
+  if (fill) {
+    const picks = [[0, 11, 6_200], [1, 12, 6_000], [2, 13, 6_400]].map(([leg, q, price]) => ({ leg, quote: q, price }));
+    add(14, [
+      to(mm1, { QuoteSelected: { quote: 11 } }), to(mm2, { QuoteSelected: { quote: 12 } }), to(mm1, { QuoteSelected: { quote: 13 } }),
+      to(alice, { RequestPresented: { request: REQ, picks, accept_by: 13_500 } }),
+    ], { kind: "Tick" });
+    add(15, [
+      to(mm1, { QuoteFilled: { quote: 11, position: 1 } }), to(mm2, { QuoteFilled: { quote: 12, position: 2 } }), to(mm1, { QuoteFilled: { quote: 13, position: 3 } }),
+      to(alice, { RequestFilled: { request: REQ, positions: [1, 2, 3] } }),
+    ], {
+      origin: { actor: alice, nonce: 2 },
+      balances: [bal(alice, 256_000_000, 0, 744_000_000), bal(mm1, 704_000_000, 0, 296_000_000), bal(mm2, 840_000_000, 0, 160_000_000)],
+      action: { Accept: { request: REQ, picks } },
+    });
+  } else {
+    // Leg 1 has no quote: the deadline expires the whole request and releases every hold in this one batch.
+    add(13, [
+      to(mm1, { QuoteLost: { quote: 11 } }), to(mm2, { QuoteLost: { quote: 12 } }), pub({ RequestExpired: { request: REQ } }),
+    ], {
+      kind: "Tick",
+      balances: [bal(alice, 1_000_000_000), bal(mm1, 1_000_000_000), bal(mm2, 1_000_000_000)],
+    });
+  }
+  return { frames, commandAt: (seq) => commands.get(seq), REQ, quotes, ids: { alice, mm1, mm2 }, markets };
+}
+
+/** The frames of `account`'s view of `all`, as the gateway filters them (gateway.md §4). */
+function viewOf(all, account) {
+  return all.flatMap((f) => {
+    const events = f.events.filter((e) => e.audience === "Public" || e.audience.Account === account);
+    const balances = f.balances.filter((b) => b.account === account);
+    if (!events.length && !balances.length) return [];
+    return [{ ...f, events, balances, origin: f.origin?.actor === account ? f.origin : null }];
+  });
+}
+
+/** Whether the number `n` appears as a number (not as part of a longer one) in `text`. */
+const hasNumber = (text, n) => new RegExp(`(?<![0-9])${n}(?![0-9])`).test(text);
+const modelOf = (ml, frames = ml.frames, extra = {}) => recording(frames, "admin", { commandAt: ml.commandAt, ...extra });
+
+test("a 3-leg request opens with every leg: market, side, qty, and the sealed limit from the requester's own command", () => {
+  const ml = threeLegs({ fill: true });
+  const rec = modelOf(ml);
+  const m = M.modelAt(rec, indexOf(rec, ml.REQ));
+  const r = m.requests[0];
+  assert.equal(r.legs.length, 3);
+  assert.deepEqual(r.legs.map((l) => [l.contract, l.side, l.qty, l.limit_price]), [[101, "BuyYes", 400, 7_000], [102, "BuyYes", 400, 7_000], [103, "BuyYes", 400, 7_000]]);
+  assert.equal(r.requester, ml.ids.alice);
+  assert.deepEqual(m.contracts.map((c) => [c.id, c.description]), ml.markets.map(([id, city]) => [id, `Will it rain in ${city} on 2026-11-01?`]));
+});
+
+test("Presented with 3 picks: one per leg, each leg's selected quote, and each quote's own leg", () => {
+  const ml = threeLegs({ fill: true });
+  const rec = modelOf(ml);
+  const m = M.modelAt(rec, indexOf(rec, 14));
+  const r = m.requests[0];
+  assert.equal(variant(r.state), "Presented");
+  assert.deepEqual(r.picks, [{ leg: 0, quote: 11, price: 6_200 }, { leg: 1, quote: 12, price: 6_000 }, { leg: 2, quote: 13, price: 6_400 }]);
+  assert.deepEqual(r.legs.map((l) => l.selected), [11, 12, 13]);
+  assert.deepEqual(m.quotes.map((q) => [q.id, q.mm, q.leg, q.state]), [[11, ml.ids.mm1, 0, "Selected"], [12, ml.ids.mm2, 1, "Selected"], [13, ml.ids.mm1, 2, "Selected"]]);
+  assert.deepEqual(r.legs.map((l) => l.quotes), [[11], [12], [13]], "each quote is on its own leg");
+  assert.deepEqual(m.positions, []);
+});
+
+test("Filled with 3 positions: one per leg, on that leg's market and qty, the maker on the other side of each", () => {
+  const ml = threeLegs({ fill: true });
+  const m = M.modelAt(modelOf(ml));
+  assert.equal(variant(m.requests[0].state), "Filled");
+  assert.deepEqual(
+    m.positions.map((p) => [p.id, p.leg, p.contract, p.qty, p.request, p.yes_holder, p.no_holder]),
+    [[1, 0, 101, 400, ml.REQ, ml.ids.alice, ml.ids.mm1], [2, 1, 102, 400, ml.REQ, ml.ids.alice, ml.ids.mm2], [3, 2, 103, 400, ml.REQ, ml.ids.alice, ml.ids.mm1]],
+  );
+  assert.deepEqual(m.contracts.map((c) => c.positions), [[1], [2], [3]], "one position per market");
+  assert.deepEqual(m.quotes.map((q) => q.state), ["Filled", "Filled", "Filled"]);
+  // The money is the engine's: Alice escrowed $744 of her $840 hold and the rest is free again.
+  assert.deepEqual(m.accounts.find((a) => a.id === ml.ids.alice).balance, { free: 256_000_000, reserved: 0, escrowed: 744_000_000 });
+});
+
+test("as Alice: Filled lists every position from RequestFilled, leg by leg; her counterparties stay sealed", () => {
+  const ml = threeLegs({ fill: true });
+  const m = M.modelAt(modelOf(ml, viewOf(ml.frames, ml.ids.alice), { viewer: { account: ml.ids.alice } }));
+  const r = m.requests[0];
+  assert.deepEqual([r.requester, variant(r.state), r.legs.map((l) => l.limit_price)], [ml.ids.alice, "Filled", [7_000, 7_000, 7_000]]);
+  assert.deepEqual(r.picks.map((p) => p.leg), [0, 1, 2]);
+  assert.deepEqual(m.positions.map((p) => [p.id, p.leg, p.contract, p.qty, p.yes_holder, p.no_holder]), [[1, 0, 101, 400, ml.ids.alice, null], [2, 1, 102, 400, ml.ids.alice, null], [3, 2, 103, 400, ml.ids.alice, null]]);
+  assert.deepEqual(m.quotes, []);
+  const text = JSON.stringify(m, (k, v) => (v instanceof Map ? [...v] : v));
+  for (const id of [ml.ids.mm1, ml.ids.mm2]) assert.ok(!hasNumber(text, id), `account ${id} in Alice's model`);
+});
+
+test("Expired (leg 2 of 3 unquoted): no position, every quote Lost, and every balance back to what it was before the request", () => {
+  const ml = threeLegs({ fill: false });
+  const rec = modelOf(ml);
+  const before = M.modelAt(rec, indexOf(rec, 12));
+  // Not vacuous: just before the deadline the three accounts do hold money.
+  assert.deepEqual(before.accounts.map((a) => a.balance.reserved), [840_000_000, 152_000_000, 160_000_000]);
+  const m = M.modelAt(rec);
+  const r = m.requests[0];
+  assert.equal(variant(r.state), "Expired");
+  assert.equal(r.legs.length, 3);
+  assert.deepEqual(m.quotes.map((q) => [q.id, q.leg, q.state]), [[11, 0, "Lost"], [12, 2, "Lost"]]);
+  assert.deepEqual(r.legs.map((l) => l.quotes.length), [1, 0, 1], "leg 1 never had a quote");
+  assert.deepEqual(m.positions, []);
+  assert.deepEqual(m.accounts.map((a) => a.balance), [1, 2, 3].map(() => ({ free: 1_000_000_000, reserved: 0, escrowed: 0 })));
+  // The batch that expired it carries all three accounts' balances: that is the release, in one command.
+  const expiring = m.trace.at(-1);
+  assert.deepEqual(expiring.events.map((e) => variant(e.event)), ["QuoteLost", "QuoteLost", "RequestExpired"]);
+  assert.deepEqual(expiring.balances.map((b) => [b.before.reserved, b.balance.reserved]), [[840_000_000, 0], [152_000_000, 0], [160_000_000, 0]]);
+});
+
+test("as MM2 during the Expired story: its own quote and leg, the public legs; never MM1's price, Alice's limit or her account", () => {
+  const ml = threeLegs({ fill: false });
+  const m = M.modelAt(modelOf(ml, viewOf(ml.frames, ml.ids.mm2), { viewer: { account: ml.ids.mm2 } }));
+  const r = m.requests[0];
+  assert.deepEqual(r.legs.map((l) => [l.contract, l.side, l.qty, l.limit_price]), [[101, "BuyYes", 400, null], [102, "BuyYes", 400, null], [103, "BuyYes", 400, null]]);
+  assert.equal(r.requester, null);
+  assert.equal(variant(r.state), "Expired", "RequestExpired is public");
+  assert.deepEqual(m.quotes.map((q) => [q.id, q.mm, q.leg, q.price, q.state]), [[12, ml.ids.mm2, 2, 6_000, "Lost"]]);
+  assert.deepEqual(m.contracts.map((c) => c.description), [null, null, null], "the listing's terms went to the operator only");
+  const text = JSON.stringify(m, (k, v) => (v instanceof Map ? [...v] : v));
+  for (const needle of [ml.ids.alice, ml.ids.mm1, 6_200, 7_000, 152_000_000]) assert.ok(!hasNumber(text, needle), `${needle} in MM2's model`);
+});
+
+test("a quote's leg is its own command's; without one, only the presented picks name it, and no leg is guessed", () => {
+  const ml = threeLegs({ fill: true });
+  // The same recording, but the page has no commands (another client's run): nothing says which leg a quote is for.
+  const rec = modelOf(ml, ml.frames, { commandAt: () => undefined });
+  const open = M.modelAt(rec, indexOf(rec, 13));
+  assert.deepEqual(open.quotes.map((q) => q.leg), [null, null, null]);
+  assert.deepEqual(open.requests[0].legs.map((l) => l.quotes), [[], [], []], "an unknown leg is not leg 0");
+  const presented = M.modelAt(rec, indexOf(rec, 14));
+  assert.deepEqual(presented.quotes.map((q) => q.leg), [0, 1, 2], "the engine's picks name them");
+  assert.deepEqual(presented.requests[0].legs.map((l) => l.selected), [11, 12, 13]);
+  // The fill maps each position through its quote's leg.
+  const filled = M.modelAt(rec);
+  assert.deepEqual(filled.positions.map((p) => [p.id, p.leg, p.contract]), [[1, 0, 101], [2, 1, 102], [3, 2, 103]]);
+  // A single-leg request has only one leg to name: that stays leg 0, as before.
+  const single = M.modelAt(recording([
+    batch(3, [pub({ RequestOpened: { request: 3, leg: 0, contract: 7, side: "BuyYes", qty: 5, response_deadline: 9 } })]),
+    batch(4, [to(20, { QuoteSubmitted: { quote: 4, request: 3, price: 4_000, expires_at: 9 } })]),
+  ]));
+  assert.deepEqual([single.quotes[0].leg, single.requests[0].legs[0].quotes], [0, [4]]);
+});
+
 // ---- last nonces, and linear time ------------------------------------------------------------
 
 test("last nonces: one pass over the batches, per actor, the last consumed (Duplicate and NonceGap consume nothing)", () => {

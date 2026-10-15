@@ -367,6 +367,39 @@ test("the objects of a run are the seqs of its own commands: quotes, requests, r
   assert.equal(scope.owns(t, settled(77, 78)), false);
 });
 
+test("a run's extra markets are owned too: t0 * 10 + k for k in 1..=9, no other (rfq-demo scope.rs)", () => {
+  const scope = new R.Scope(1_000);
+  const tick = batch(5, [], { kind: "Tick" });
+  const finalized = (c) => pub(ev("ContractFinalized", { contract: c, outcome: "Yes" }));
+  const listed = (c) => pub(ev("ContractListed", { contract: c }));
+  assert.equal(scope.owns(tick, finalized(1_000)), true, "the run's own contract");
+  for (let k = 1; k <= 9; k++) {
+    assert.equal(scope.owns(tick, finalized(10_000 + k)), true, `market ${k}`);
+    assert.equal(scope.owns(tick, listed(10_000 + k)), true, `market ${k} listed`);
+  }
+  assert.equal(scope.owns(tick, finalized(10_000)), false, "t0 * 10 is not a market");
+  assert.equal(scope.owns(tick, finalized(10_010)), false, "k = 10 is not a market");
+  assert.equal(scope.owns(tick, finalized(20_001)), false, "another run's market");
+  assert.equal(scope.owns(tick, finalized(999)), false);
+  // A key whose times 10 is not a safe integer owns only its own contract (the Rust scope's checked_mul).
+  const huge = new R.Scope(Number.MAX_SAFE_INTEGER);
+  assert.equal(huge.owns(tick, finalized(1)), false);
+  assert.equal(huge.owns(tick, finalized(Number.MAX_SAFE_INTEGER)), true);
+  assert.equal(scope.unclassified.size, 0);
+});
+
+test("two runs' markets stay apart: each market id is owned by exactly one run", () => {
+  const a = new R.Scope(1_800_000_000_000);
+  const b = new R.Scope(1_800_000_000_001); // one ms later: its markets are 10 ids further on
+  const tick = batch(5, [], { kind: "Tick" });
+  for (let k = 1; k <= 9; k++) {
+    const mine = pub(ev("ContractListed", { contract: 1_800_000_000_000 * 10 + k }));
+    assert.deepEqual([a.owns(tick, mine), b.owns(tick, mine)], [true, false], `market ${k} of run a`);
+    const theirs = pub(ev("ContractListed", { contract: 1_800_000_000_001 * 10 + k }));
+    assert.deepEqual([a.owns(tick, theirs), b.owns(tick, theirs)], [false, true], `market ${k} of run b`);
+  }
+});
+
 test("every event the engine can emit has a rule (none is unclassified)", () => {
   const names = [
     "Initialized", "CommandRejected", "Deposited", "Withdrawn", "ContractListed", "ContractClosed",

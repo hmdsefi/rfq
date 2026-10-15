@@ -1,5 +1,6 @@
 // Checks the JS scripts against their Rust source, with no network. The Rust presets (the testkit's
-// six scenarios and the six attacks, `src/presets.rs`) run in the dashboard's wasm engine and leave a
+// eight scenarios, the six brief ones and the two multi-leg ones, and the six attacks, `src/presets.rs`)
+// run in the dashboard's wasm engine and leave a
 // trace: every command with its actor, nonce, action and time. Each JS script, resolved step by step
 // the way the driver does, must produce exactly those commands, and its own events must pass its
 // `expect` list.
@@ -34,8 +35,11 @@ function test(name, fn) {
 const { presets } = call({ op: "presets" });
 const rust = presets.filter((p) => p.kind !== "sandbox");
 
-test("the same 12 scenarios, in the same order, with the same kind, summary and expect list", () => {
+test("the same 14 scenarios (8 brief, 6 attacks), in the same order, with the same kind, summary and expect list", () => {
   assert.deepEqual(S.names(), rust.map((p) => p.name));
+  assert.equal(rust.filter((p) => p.kind === "brief").length, 8);
+  assert.equal(rust.filter((p) => p.kind === "attack").length, 6);
+  assert.deepEqual(S.names().slice(6, 8), ["multi_leg_happy", "multi_leg_leg2_fails"]);
   for (const p of rust) {
     const js = S.byName(p.name);
     assert.equal(js.kind, p.kind, `${p.name}: kind`);
@@ -99,6 +103,11 @@ for (const p of rust) {
     }
     assert.equal(scope.unclassified.size, 0, [...scope.unclassified].join(", "));
     assert.deepEqual(R.containsInOrder(own, js.expect), { ok: true, error: null });
+    // Every market the run listed is the run's own: the one contract t0, or t0 * 10 + k for each extra market.
+    const listed = (events) => events.filter((e) => R.eventName(e) === "ContractListed").map((e) => R.eventBody(e).contract);
+    const everyListing = trace.flatMap((entry) => listed(entry.events));
+    assert.deepEqual(listed(own), everyListing, `${p.name}: a market it listed is not the run's own`);
+    assert.deepEqual(everyListing, js.markets ? Array.from({ length: js.markets }, (_, i) => T0 * 10 + i + 1) : [T0], `${p.name}: its markets`);
     // The expect list is not trivially met: a rejection pinned to another reason is not.
     assert.equal(R.containsInOrder(own, [...js.expect, "CommandRejected(Overflow)"]).ok, false);
   });
@@ -131,9 +140,13 @@ test("remap maps the Deposit target and the oracle, and refuses an action it doe
   assert.throws(() => S.remap({ Mint: { amount: 1 } }, f), /does not know the action Mint/);
 });
 
-test("ctx: contract, at, labels, picks", () => {
+test("ctx: contract, contractN, at, labels, picks", () => {
   const ctx = new S.Ctx(5_000);
   assert.equal(ctx.contract(), 5_000);
+  // The run's kth extra market is t0 * 10 + k, k in 1..=9 (testkit's `Ctx::contract_n`).
+  assert.deepEqual([1, 2, 9].map((k) => ctx.contractN(k)), [50_001, 50_002, 50_009]);
+  for (const k of [0, 10, 1.5, -1, "1", undefined]) assert.throws(() => ctx.contractN(k), /extra markets 1\.\.=9/, `k = ${k}`);
+  assert.ok(Number.isSafeInteger(new S.Ctx(1_800_000_000_000).contractN(9)), "a millisecond clock stays exact in a JS number");
   assert.equal(ctx.at(1_500), 6_500);
   assert.throws(() => ctx.request("req"), /label req has no seq yet/);
   ctx.recordLabel("req", 42);

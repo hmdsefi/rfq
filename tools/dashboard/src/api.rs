@@ -357,10 +357,10 @@ mod tests {
     }
 
     #[test]
-    fn the_catalogue_lists_the_sandbox_and_twelve_presets() {
+    fn the_catalogue_lists_the_sandbox_and_fourteen_presets() {
         let out = call(&mut None, json!({"op": "presets"}));
         let list = out["presets"].as_array().expect("presets");
-        assert_eq!(list.len(), 13);
+        assert_eq!(list.len(), 15);
         assert_eq!(list[0]["kind"], "sandbox");
     }
 

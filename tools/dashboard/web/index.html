@@ -339,6 +339,13 @@ a.idlink, button.idlink { color: var(--accent); text-decoration: underline; text
 .scrub-label { font-size: 13px; color: var(--ink-2); display: flex; flex-wrap: wrap; gap: 4px 14px; }
 .scrub-label b { color: var(--ink); font-weight: 600; }
 .btn[aria-pressed="true"] { background: var(--accent-tint); border-color: var(--accent); color: var(--escrow-ink); font-weight: 600; }
+/* Multi-leg (engine.md §8): the request's markets sit side by side, each a compact card; any other contract keeps the full width. */
+#contract { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+#contract > * { grid-column: 1 / -1; }
+#contract > .contract.market { grid-column: auto; grid-template-columns: minmax(0, 1fr); align-content: start; padding: 14px 16px; }
+.contract.market .contract-q { font-size: 17px; }
+.built { display: inline-flex; padding: 2px 8px; border-radius: 4px; border: 1px solid var(--ok); background: var(--ok-tint); color: var(--ok); font-size: 12.5px; font-weight: 600; }
+.row-note.is-release { color: var(--ok); }
 /* Trace: a Resume is the engine coming back, not a timer */
 .row.is-resume { background: var(--warn-tint); }
 .row.is-resume .what { color: var(--warn); }
@@ -689,6 +696,22 @@ function groupBy(list, key) {
   return out;
 }
 
+/** The legs a request has, as `[leg, index]`: one for most, up to 8 (engine.md §8); a leg this view never heard is left out. */
+const legsOf = (r) => r.legs.flatMap((leg, i) => (leg ? [[leg, i]] : []));
+
+/**
+ * The run a contract belongs to (its `t0`), to order contracts and to tell a multi-leg run's market from a
+ * run's own contract: that is `t0` itself, and the markets are `t0 * 10 + k`. Display only: the page knows
+ * the runs it started; a contract of no such run stands for itself.
+ */
+function contractRun(id) {
+  if (page.runsByT0.has(id)) return id;
+  const t0 = Math.floor(id / 10);
+  return id % 10 !== 0 && page.runsByT0.has(t0) ? t0 : id;
+}
+/** Contracts newest run first, a run's markets in the order it listed them. */
+const newerContract = (a, b) => contractRun(b.id) - contractRun(a.id) || a.id - b.id;
+
 function computeView() {
   const r = recordingNow();
   const n = r.batches.length;
@@ -700,6 +723,13 @@ function computeView() {
     quotesBy: groupBy(M.quotes, (x) => x.mm),
     positionsByContract: groupBy(M.positions, (x) => x.contract),
     positionsByRequest: groupBy(M.positions, (x) => x.request),
+    contractById: new Map(M.contracts.map((x) => [x.id, x])),
+    quoteById: new Map(M.quotes.map((x) => [x.id, x])),
+    // Which legs of multi-leg requests are on each contract: its market's place in the request.
+    legsOn: groupBy(M.requests.flatMap((r) => {
+      const legs = legsOf(r);
+      return legs.length > 1 ? legs.map(([leg, i]) => ({ request: r.id, leg: i, of: legs.length, contract: leg.contract })) : [];
+    }), (x) => x.contract),
     proposed: M.contracts.filter((c) => RfqModel.variant(c.state) === "Proposed"),
     // Open to quotes in this view: no event ended it, and its public deadline is still ahead of the engine time here.
     open: M.requests.filter((x) => RfqModel.variant(x.state) === "Open" && (M.now == null || M.now < x.response_deadline)),
@@ -1065,13 +1095,30 @@ function toastFor(actor) {
   }).join("");
 }
 
+/** How many legs request `id` has in this view; 0 for a request it never heard opened. */
+const legCount = (id) => {
+  const r = V.idx.requestById.get(id);
+  return r ? legsOf(r).length : 0;
+};
+/** "leg 2 of 3" for a leg of a request with several legs; "" for a single-leg request or when no leg is known. */
+function legTag(request, leg) {
+  if (leg == null) return "";
+  const n = legCount(request);
+  return n > 1 ? `leg ${leg + 1} of ${n}` : n === 0 && leg > 0 ? `leg ${leg + 1}` : "";
+}
+/** A leg's market: the contract's question once the listing's terms are known (admin), else its id. Selects the contract. */
+const marketLink = (contract, where) => idlink("contract", contract, V.idx.contractById.get(contract)?.description ?? `Contract #${contract}`, where);
+
 const LIVE_QUOTE = ["Active", "Selected"];
 const LIVE_REQUEST = ["Open", "Presented"];
 
-/** The newest `cap` of `list` (highest id first: a later run's accounts and objects have higher ids), and a note for the rest. */
-function newest(list, cap, what) {
+/**
+ * The newest `cap` of `list` (highest id first: a later run's accounts and objects have higher ids, unless
+ * `order` says otherwise), and a note for the rest.
+ */
+function newest(list, cap, what, order = (a, b) => b.id - a.id) {
   if (list.length <= cap) return { shown: list, more: "" };
-  const shown = [...list].sort((a, b) => b.id - a.id).slice(0, cap);
+  const shown = [...list].sort(order).slice(0, cap);
   // Only the admin view has a run picker in the timeline.
   const how = isAdmin() ? ": pick one run in the timeline to see them" : "";
   return { shown, more: `<p class="empty">… and ${list.length - cap} more ${what}${how}.</p>` };
@@ -1093,8 +1140,8 @@ function requesterCard(a) {
   const theirs = [...(V.idx.requestsBy.get(a.id) ?? [])].sort(byIdDesc);
   const live = theirs.filter((r) => LIVE_REQUEST.includes(variant(r.state)));
   const ended = theirs.filter((r) => !LIVE_REQUEST.includes(variant(r.state)));
-  // A run's requester can dispute its own run's contract (an account's t0 is its run's contract id).
-  const proposed = V.idx.proposed.filter((c) => c.id === Math.floor(a.id / PER_RUN));
+  // A run's requester can dispute its own run's contract (an account's t0 is its run's t0, and the contract's).
+  const proposed = V.idx.proposed.filter((c) => contractRun(c.id) === Math.floor(a.id / PER_RUN));
   const items = [...proposed.map((c) => disputeItem(a, c)), ...live.map((r) => requestItem(a, r)), ...ended.map((r) => requestItem(a, r))].join("");
   return `<article class="party" aria-label="${esc(a.name)}">
       ${partyHead(a)}
@@ -1104,24 +1151,49 @@ function requesterCard(a) {
     </article>`;
 }
 
+/** What a request that ended without a fill says: every leg ends with it, and every hold is released in that one command. */
+const ENDED_WHOLE = { Expired: "expired", Cancelled: "was cancelled", Rejected: "was rejected" };
+
 function requestItem(a, r) {
-  const st = variant(r.state), leg = r.legs[0] ?? {}, where = `u${a.id}`;
+  const st = variant(r.state), where = `u${a.id}`;
+  const legs = legsOf(r), multi = legs.length > 1;
   const head = [idlink("request", r.id, `Request #${r.id}`, where), badge(st)];
+  if (multi) head.push(`<span class="muted" style="font-size:13px">${legs.length} legs, all or nothing</span>`);
   if (st === "Rejected") head.push(`<span class="muted" style="font-size:13px">cause: ${esc(r.state.Rejected)}</span>`);
-  const facts = [`<span>Buy <b>${sideName(leg.side)}</b> × <b>${esc(qty(leg.qty))}</b></span>`];
-  facts.push(leg.limit_price != null ? `<span>Limit <b>${fmtPrice(leg.limit_price)}</b></span>` : sealedMark("limit sealed"));
-  if (leg.contract != null) facts.push(`<span>${idlink("contract", leg.contract, `Contract #${leg.contract}`, `${where}r${r.id}`)}</span>`);
-  const rows = [`<div class="item-facts">${facts.join("")}</div>`];
+  // One row per leg: its market, side, qty, and the limit (the requester's own card only; sealed elsewhere).
+  const rows = (legs.length ? legs : [[{}, 0]]).map(([leg, i]) => {
+    const facts = [];
+    if (multi) facts.push(`<span><b>Leg ${i + 1} of ${legs.length}</b></span>`, `<span>${marketLink(leg.contract, `${where}r${r.id}l${i}`)}</span>`);
+    facts.push(`<span>Buy <b>${sideName(leg.side)}</b> × <b>${esc(qty(leg.qty))}</b></span>`);
+    facts.push(leg.limit_price != null ? `<span>Limit <b>${fmtPrice(leg.limit_price)}</b></span>` : sealedMark("limit sealed"));
+    if (!multi && leg.contract != null) facts.push(`<span>${idlink("contract", leg.contract, `Contract #${leg.contract}`, `${where}r${r.id}`)}</span>`);
+    // The admin heard every quote: which legs have one is what "leg 2 of 3 fails" is about.
+    if (multi && isAdmin()) {
+      const qs = (leg.quotes ?? []).map((id) => `${idlink("quote", id, `#${id}`, `${where}r${r.id}l${i}`)} ${esc(V.idx.quoteById.get(id)?.state ?? "")}`);
+      facts.push(`<span>${qs.length ? `Quotes ${qs.join(", ")}` : `<b>no quote${st === "Open" ? " yet" : ""}</b>`}</span>`);
+    }
+    return `<div class="item-facts">${facts.join("")}</div>`;
+  });
   if (st === "Open") {
     rows.push(`<div class="item-facts"><span>Quotes due <span class="countdown">${esc(fmtT(r.response_deadline))}</span></span></div>`);
   } else if (st === "Presented") {
     const acceptBy = r.state.Presented.accept_by;
-    const picks = r.picks.map((k) => `<span>Best quote ${idlink("quote", k.quote, `#${k.quote}`, `${where}r${r.id}`)} at <b>${fmtPrice(k.price)}</b></span>`).join("");
-    rows.push(`<div class="item-facts">${picks}<span>Accept by <span class="countdown">${esc(fmtT(acceptBy))}</span></span></div>`);
+    const pick = (k) => `<span>Best quote ${idlink("quote", k.quote, `#${k.quote}`, `${where}r${r.id}`)} at <b>${fmtPrice(k.price)}</b></span>`;
+    const accept = `<span>Accept by <span class="countdown">${esc(fmtT(acceptBy))}</span></span>`;
+    if (multi) {
+      // A pick per leg, in the engine's order.
+      for (const k of r.picks) rows.push(`<div class="item-facts"><span><b>Leg ${k.leg + 1} of ${legs.length}</b></span>${pick(k)}</div>`);
+      rows.push(`<div class="item-facts">${accept}</div>`);
+    } else rows.push(`<div class="item-facts">${r.picks.map(pick).join("")}${accept}</div>`);
   } else if (st === "Filled") {
     for (const p of V.idx.positionsByRequest.get(r.id) ?? []) {
-      rows.push(`<div class="item-facts"><span>Position #${p.id}</span><span>${p.settled ? "Settled" : "Escrowed (see the ledger)"}</span></div>`);
+      const leg = multi && p.leg != null ? `<span><b>Leg ${p.leg + 1} of ${legs.length}</b></span>` : "";
+      rows.push(`<div class="item-facts">${leg}<span>Position #${p.id}</span><span>${p.settled ? "Settled" : "Escrowed (see the ledger)"}</span></div>`);
     }
+  } else if (multi && ENDED_WHOLE[st]) {
+    // From the state the engine's event gave it: no position was made, and the same command released every hold
+    // (the balances above, and the trace's rows, are the engine's numbers for it).
+    rows.push(`<div class="item-facts"><span><b>No leg was filled:</b> the request ${ENDED_WHOLE[st]} as a whole and every hold was released in that one command.</span></div>`);
   }
   return `<div class="item"><div class="item-head">${head.join("")}</div>${rows.join("")}</div>`;
 }
@@ -1162,26 +1234,37 @@ function makerCard(a) {
     </article>`;
 }
 
-/** An open request as every MM sees it: contract, side, qty and deadline. Never the limit, even as admin. */
+/** An open request as every MM sees it: each leg's contract, side and qty, and the deadline. Never the limit, even as admin. */
 function openRequestItem(a, r) {
-  const leg = r.legs[0] ?? {}, where = `m${a.id}`;
+  const where = `m${a.id}`;
+  const legs = legsOf(r), multi = legs.length > 1;
+  const rows = (legs.length ? legs : [[{}, 0]]).map(([leg, i]) => {
+    const market = multi ? `<span><b>Leg ${i + 1} of ${legs.length}</b></span><span>${marketLink(leg.contract, `${where}r${r.id}l${i}`)}</span>`
+      : leg.contract != null ? `<span>${idlink("contract", leg.contract, `Contract #${leg.contract}`, `${where}r${r.id}`)}</span>` : "";
+    return `<div class="item-facts">${market}<span>Buy <b>${sideName(leg.side)}</b> × <b>${esc(qty(leg.qty))}</b></span>${sealedMark("limit sealed")}</div>`;
+  });
   return `<div class="item">
-      <div class="item-head">${idlink("request", r.id, `Request #${r.id}`, where)}${badge("Open")}<span class="muted" style="font-size:13px">quotes due ${esc(fmtT(r.response_deadline))}</span></div>
-      <div class="item-facts"><span>Buy <b>${sideName(leg.side)}</b> × <b>${esc(qty(leg.qty))}</b></span>${leg.contract != null ? `<span>${idlink("contract", leg.contract, `Contract #${leg.contract}`, `${where}r${r.id}`)}</span>` : ""}${sealedMark("limit sealed")}</div>
+      <div class="item-head">${idlink("request", r.id, `Request #${r.id}`, where)}${badge("Open")}${multi ? `<span class="muted" style="font-size:13px">${legs.length} legs</span>` : ""}<span class="muted" style="font-size:13px">quotes due ${esc(fmtT(r.response_deadline))}</span></div>
+      ${rows.join("")}
     </div>`;
 }
 
 function quoteItem(a, q) {
   const where = `m${a.id}`;
-  const leg = V.idx.requestById.get(q.request)?.legs[q.leg ?? 0];
+  // The quote's own leg (its command's, or the presented picks'): never leg 0 by default.
+  const r = V.idx.requestById.get(q.request);
+  const leg = r && q.leg != null ? r.legs[q.leg] : null;
+  const tag = legTag(q.request, q.leg);
   const facts = [`<span>Sell ${leg ? sideName(leg.side) : ""} at <b>${fmtPrice(q.price)}</b> × <b>${esc(qty(q.size))}</b></span>`];
+  if (tag && leg) facts.push(`<span>${marketLink(leg.contract, `${where}q${q.id}`)}</span>`);
   if (LIVE_QUOTE.includes(q.state)) facts.push(`<span>${q.state === "Selected" ? "Firm until" : "Expires"} ${esc(fmtT(q.expires_at))}</span>`);
   else if (q.state === "Filled") {
-    const p = (V.idx.positionsByRequest.get(q.request) ?? []).find((x) => x.yes_holder === a.id || x.no_holder === a.id);
+    // The maker's position on this quote's leg (an MM can back several legs of one request).
+    const p = (V.idx.positionsByRequest.get(q.request) ?? []).find((x) => (x.yes_holder === a.id || x.no_holder === a.id) && (q.leg == null || x.leg == null || x.leg === q.leg));
     facts.push(p ? `<span>Position #${p.id}</span><span>${p.settled ? "Settled" : "Escrowed (see the ledger)"}</span>` : "<span>Hold moved to escrow</span>");
   } else facts.push("<span>Hold released</span>");
   return `<div class="item">
-      <div class="item-head">${idlink("quote", q.id, `Quote #${q.id}`, where)}${badge(q.state)}<span class="muted" style="font-size:13px">on request ${idlink("request", q.request, `#${q.request}`, `${where}q${q.id}`)}</span></div>
+      <div class="item-head">${idlink("quote", q.id, `Quote #${q.id}`, where)}${badge(q.state)}<span class="muted" style="font-size:13px">on request ${idlink("request", q.request, `#${q.request}`, `${where}q${q.id}`)}${tag ? ` · ${esc(tag)}` : ""}</span></div>
       <div class="item-facts">${facts.join("")}</div>
     </div>`;
 }
@@ -1190,14 +1273,14 @@ function quoteItem(a, q) {
 
 function renderContract() {
   const el = document.getElementById("contract");
-  const { shown, more } = newest(V.M.contracts, CONTRACT_CAP, "contracts");
-  setHtml(el, shown.length ? [...shown].sort((a, b) => b.id - a.id).map(contractCard).join("") + more
-    : `<article class="panel contract"><div class="contract-main"><p class="empty">${V.n ? "No contract listed in these batches." : "No batches yet. Pick a scenario and press Run: the operator lists the run's contract during setup."}</p></div></article>`);
+  const { shown, more } = newest(V.M.contracts, CONTRACT_CAP, "contracts", newerContract);
+  setHtml(el, shown.length ? [...shown].sort(newerContract).map(contractCard).join("") + more
+    : `<article class="panel contract"><div class="contract-main"><p class="empty">${V.n ? "No contract listed in these batches." : "No batches yet. Pick a scenario and press Run: the operator lists the run's contract (or markets) during setup."}</p></div></article>`);
 }
 
 function timeline(c) {
   if (c.trading_close == null || c.resolution_deadline == null) return "";
-  const base = c.id; // a run's contract id is its t0
+  const base = c.id; // a run's contract id is its t0 (a multi-leg run's markets have no timeline: see `contractCard`)
   const now = V.M.now ?? base;
   const span = Math.max(1, c.resolution_deadline - base);
   const rel = (t) => `t+${((t - base) / 1000).toFixed(3)} s`;
@@ -1224,8 +1307,14 @@ function timeline(c) {
 
 function contractCard(c) {
   const st = variant(c.state);
+  // A market of a multi-leg run (one of its `t0 * 10 + k`, or a contract with a leg of such a request on it): a compact
+  // card. Its deadlines are one click away in the inspector; the single contract's timeline, which counts from its id
+  // (the run's t0), and its settlement notes stay on the full-width card.
+  const market = contractRun(c.id) !== c.id || V.idx.legsOn.has(c.id);
   const meta = [badge(st), idlink("contract", c.id, `Contract #${c.id}`, "cc")];
-  if (c.oracle != null) meta.push(`<span>Oracle: ${esc(name(c.oracle))}</span>`);
+  // A market of a multi-leg request: which leg of it this contract is.
+  for (const l of V.idx.legsOn.get(c.id) ?? []) meta.push(`<span>Leg ${l.leg + 1} of ${l.of} of ${idlink("request", l.request, `request #${l.request}`, `cc${c.id}`)}</span>`);
+  if (c.oracle != null && !market) meta.push(`<span>Oracle: ${esc(name(c.oracle))}</span>`);
   if (st === "Proposed") meta.push(`<span>Proposed <b>${esc(outcomeName(c.state.Proposed.outcome))}</b>, dispute until ${esc(fmtT(c.state.Proposed.dispute_until))}</span>`);
   if (st === "Disputed") meta.push(`<span>Proposed <b>${esc(outcomeName(c.state.Disputed.proposed))}</b>, disputed by ${esc(name(c.dispute?.disputer))}</span>`);
   if (st === "Final") meta.push(`<span>Outcome <b>${esc(outcomeName(c.state.Final))}</b>${c.ruling ? ` (ruled by the arbiter, bond ${c.ruling.bond_returned ? "returned" : "forfeited"})` : ""}</span>`);
@@ -1237,14 +1326,14 @@ function contractCard(c) {
     ? `<h2 class="contract-q" id="contract-q-${c.id}">${esc(c.description)}</h2>`
     : `<h2 class="contract-q" id="contract-q-${c.id}">Contract #${esc(c.id)}</h2><p class="muted" style="font-size:13px">${why}</p>`;
   const windowS = c.dispute_window != null ? (c.dispute_window / 1000).toLocaleString("en-US", { maximumFractionDigits: 3 }) : null;
-  return `<article class="panel contract">
+  return `<article class="panel contract${market ? " market" : ""}">
       <div class="contract-main">
         <div>
           <div class="contract-meta" style="margin-bottom:6px">${meta.join("")}</div>
           ${terms}
         </div>
-        ${timeline(c)}
-        ${known ? `<p class="muted" style="font-size:13px">After close the oracle proposes; anyone can dispute for ${windowS} s with a bond. If the oracle never proposes by the hard deadline, it ends INVALID and each side gets its lock back. The scenario script plays the oracle, the disputer and the arbiter.</p>` : ""}
+        ${market ? "" : timeline(c)}
+        ${known && !market ? `<p class="muted" style="font-size:13px">After close the oracle proposes; anyone can dispute for ${windowS} s with a bond. If the oracle never proposes by the hard deadline, it ends INVALID and each side gets its lock back. The scenario script plays the oracle, the disputer and the arbiter.</p>` : ""}
       </div>
       <div class="contract-side">
         ${toastFor(c.oracle)}
@@ -1370,7 +1459,7 @@ function renderRuns() {
       <tbody>${rows}</tbody>
     </table></div>${page.runs.length > shown.length ? `<p class="runs-empty">… and ${page.runs.length - shown.length} earlier runs (pick them in the timeline).</p>` : ""}
     <p class="runs-empty">Latency is the gateway's <code class="mono">latency_us</code>: from receiving a command to receiving its batch. A command that waited out an outage is not a sample.</p>`
-    : '<p class="runs-empty">No runs yet. Each run plays its scenario as every participant through the gateway, with its own accounts (<code class="mono">t0 × 100 + id</code>) and contract (<code class="mono">t0</code>).</p>');
+    : '<p class="runs-empty">No runs yet. Each run plays its scenario as every participant through the gateway, with its own accounts (<code class="mono">t0 × 100 + id</code>) and contract (<code class="mono">t0</code>, or markets <code class="mono">t0 × 10 + k</code> for a multi-leg run).</p>');
 
   const run = V.run ?? page.runs.at(-1);
   const log = document.getElementById("runlog");
@@ -1464,6 +1553,12 @@ const audienceText = (ev) => (ev.audience === "Public" ? "Public" : `→ ${name(
 const audBadge = (ev) => `<span class="aud${ev.audience === "Public" ? "" : " aud-acct"}">${esc(audienceText(ev))}</span>`;
 const plainRef = (kind, id) => `#${esc(id)}`;
 
+/** `["leg 2 of 3"]` for a leg of a multi-leg request, else nothing: a part of a row's summary. */
+const legParts = (request, leg) => {
+  const tag = legTag(request, leg);
+  return tag ? [esc(tag)] : [];
+};
+
 function partsOr(fn, data) {
   try {
     return fn();
@@ -1479,11 +1574,11 @@ function actionParts(kind, a) {
       case "Deposit": return [`${fmtUsd(a.amount)} to ${esc(name(a.to))}`];
       case "Withdraw": return [fmtUsd(a.amount)];
       case "ListContract": return [`#${esc(a.id)}`, `closes ${esc(fmtT(a.trading_close))}`, `hard deadline ${esc(fmtT(a.resolution_deadline))}`];
-      case "SubmitRequest": return [...a.legs.map((l) => `Buy ${sideName(l.side)} × ${esc(qty(l.qty))} · limit ${fmtPrice(l.limit_price)}`), `due ${esc(fmtT(a.response_deadline))}`];
+      case "SubmitRequest": return [...a.legs.map((l, i) => `${a.legs.length > 1 ? `leg ${i + 1}: ` : ""}Buy ${sideName(l.side)} × ${esc(qty(l.qty))} · limit ${fmtPrice(l.limit_price)}`), `due ${esc(fmtT(a.response_deadline))}`];
       case "CancelRequest": case "Reject": return [`req #${esc(a.request)}`];
-      case "SubmitQuote": return [`req #${esc(a.request)}`, `${fmtPrice(a.price)} × ${esc(qty(a.size))}`, `exp ${esc(fmtT(a.expires_at))}`];
+      case "SubmitQuote": return [`req #${esc(a.request)}`, ...legParts(a.request, a.leg), `${fmtPrice(a.price)} × ${esc(qty(a.size))}`, `exp ${esc(fmtT(a.expires_at))}`];
       case "CancelQuote": return [`quote #${esc(a.quote)}`];
-      case "Accept": return [`req #${esc(a.request)}`, ...a.picks.map((p) => `#${esc(p.quote)} at ${fmtPrice(p.price)}`)];
+      case "Accept": return [`req #${esc(a.request)}`, ...a.picks.map((p) => `${a.picks.length > 1 ? `leg ${p.leg + 1}: ` : ""}#${esc(p.quote)} at ${fmtPrice(p.price)}`)];
       case "ProposeOutcome": case "Rule": return [`#${esc(a.contract)}`, esc(outcomeName(a.outcome))];
       case "Dispute": return [`#${esc(a.contract)}`];
       default: throw new Error("unknown action");
@@ -1500,11 +1595,12 @@ function eventParts(ev, ref) {
       case "Deposited": return [`${fmtUsd(d.amount)} to ${esc(name(d.account))}`];
       case "Withdrawn": return [`${fmtUsd(d.amount)} from ${esc(name(d.account))}`];
       case "ContractListed": case "ContractClosed": return [ref("contract", d.contract)];
-      case "RequestOpened": return [ref("request", d.request), `Buy ${sideName(d.side)} × ${esc(qty(d.qty))} on ${ref("contract", d.contract)}`, `due ${esc(fmtT(d.response_deadline))}`];
-      case "RequestCancelled": case "RequestExpired": return [ref("request", d.request)];
-      case "RequestPresented": return [ref("request", d.request), ...d.picks.map((p) => `pick ${ref("quote", p.quote)} at ${fmtPrice(p.price)}`), `accept by ${esc(fmtT(d.accept_by))}`];
+      case "RequestOpened": return [ref("request", d.request), ...legParts(d.request, d.leg), `Buy ${sideName(d.side)} × ${esc(qty(d.qty))} on ${ref("contract", d.contract)}`, `due ${esc(fmtT(d.response_deadline))}`];
+      case "RequestCancelled": return [ref("request", d.request)];
+      case "RequestExpired": return [ref("request", d.request), ...(legCount(d.request) > 1 ? [`none of its ${legCount(d.request)} legs filled, every hold released`] : [])];
+      case "RequestPresented": return [ref("request", d.request), ...d.picks.map((p) => `${legTag(d.request, p.leg) ? `${legTag(d.request, p.leg)}: ` : ""}pick ${ref("quote", p.quote)} at ${fmtPrice(p.price)}`), `accept by ${esc(fmtT(d.accept_by))}`];
       case "RequestRejected": return [ref("request", d.request), esc(d.cause)];
-      case "RequestFilled": return [ref("request", d.request), `position ${d.positions.map((p) => `#${esc(p)}`).join(", ")}`];
+      case "RequestFilled": return [ref("request", d.request), `${d.positions.length === 1 ? "position" : "positions"} ${d.positions.map((p) => `#${esc(p)}`).join(", ")}`];
       case "QuoteSubmitted": return [ref("quote", d.quote), `on ${ref("request", d.request)} at ${fmtPrice(d.price)}`, `expires ${esc(fmtT(d.expires_at))}`];
       case "QuoteReplaced": return [`${ref("quote", d.old)} → ${ref("quote", d.new)}`];
       case "QuoteCancelled": case "QuoteExpired": case "QuoteLost": case "QuoteSelected": case "QuoteReleased": return [ref("quote", d.quote)];
@@ -1522,6 +1618,15 @@ function eventParts(ev, ref) {
 
 const SYSTEM_KIND = { tick: "Tick", resume: "Resume", genesis: "Genesis" };
 
+/**
+ * A line for a batch that expired a multi-leg request: it expires as a whole, so no leg was filled, and the
+ * same command released every hold. From the batch's events; the balances under the row are the release.
+ */
+function expiredWholeNote(e) {
+  const ids = e.events.filter((ev) => evName(ev) === "RequestExpired").map((ev) => evData(ev).request).filter((id) => legCount(id) > 1);
+  return ids.length ? `<span class="row-note is-release">${ids.map((id) => `request #${esc(id)}`).join(", ")} expired as a whole: no leg filled, every hold released</span>` : "";
+}
+
 /** The row's one-line summary: who, what, and the command's fields (or, for a hidden or system batch, its events). */
 function rowSummary(e) {
   const user = e.command?.User;
@@ -1532,7 +1637,7 @@ function rowSummary(e) {
   if (SYSTEM_KIND[e.kind]) {
     const names = [...new Set(e.events.map(evName))];
     const note = e.kind === "resume" ? '<span class="row-note">engine restarted or stalled</span>' : "";
-    return `<b>${SYSTEM_KIND[e.kind]}</b> · ${names.length ? esc(names.join(", ")) : "no events"}${note}`;
+    return `<b>${SYSTEM_KIND[e.kind]}</b> · ${names.length ? esc(names.join(", ")) : "no events"}${note}${expiredWholeNote(e)}`;
   }
   const first = e.events[0];
   if (e.kind === "user") {
@@ -1675,14 +1780,15 @@ function inspectorFacts(sel) {
     const r = V.M.requests.find((x) => x.id === sel.id);
     if (!r) return { badge: "", facts: "<span>Not in these batches.</span>" };
     const facts = [`<span>Requester ${r.requester != null ? `<b>${esc(name(r.requester))}</b>` : sealed}</span>`];
-    for (const leg of r.legs) {
-      if (!leg) continue;
-      facts.push(`<span>Buy <b>${sideName(leg.side)}</b> × <b>${esc(qty(leg.qty))}</b> on ${idlink("contract", leg.contract, `#${leg.contract}`, where)}</span>`);
+    const legs = legsOf(r);
+    for (const [leg, i] of legs) {
+      const tag = legs.length > 1 ? `<b>Leg ${i + 1} of ${legs.length}</b>: ` : "";
+      facts.push(`<span>${tag}Buy <b>${sideName(leg.side)}</b> × <b>${esc(qty(leg.qty))}</b> on ${idlink("contract", leg.contract, `#${leg.contract}`, where)}</span>`);
       facts.push(`<span>Limit ${leg.limit_price != null ? `<b>${fmtPrice(leg.limit_price)}</b>` : sealed}</span>`);
     }
     facts.push(`<span>Quotes due <b>${esc(fmtT(r.response_deadline))}</b></span>`);
     if (r.state?.Presented) facts.push(`<span>Accept by <b>${esc(fmtT(r.state.Presented.accept_by))}</b></span>`);
-    for (const p of r.picks) facts.push(`<span>Pick ${idlink("quote", p.quote, `#${p.quote}`, where)} at <b>${fmtPrice(p.price)}</b></span>`);
+    for (const p of r.picks) facts.push(`<span>${legs.length > 1 ? `<b>Leg ${p.leg + 1} of ${legs.length}</b>: ` : ""}Pick ${idlink("quote", p.quote, `#${p.quote}`, where)} at <b>${fmtPrice(p.price)}</b></span>`);
     if (r.state?.Rejected) facts.push(`<span>Cause <b>${esc(r.state.Rejected)}</b></span>`);
     return { badge: badge(variant(r.state)), facts: facts.join("") };
   }
@@ -1691,7 +1797,7 @@ function inspectorFacts(sel) {
     if (!q) return { badge: "", facts: sealedMark("sealed: only its market maker and admin see this quote") };
     return {
       badge: badge(q.state),
-      facts: `<span>Market maker <b>${esc(name(q.mm))}</b></span><span>On ${idlink("request", q.request, `request #${q.request}`, where)}</span>`
+      facts: `<span>Market maker <b>${esc(name(q.mm))}</b></span><span>On ${idlink("request", q.request, `request #${q.request}`, where)}${legTag(q.request, q.leg) ? `, ${esc(legTag(q.request, q.leg))}` : ""}</span>`
         + `<span>Sells at <b>${fmtPrice(q.price)}</b> × <b>${esc(qty(q.size))}</b></span><span>${q.state === "Selected" ? "Firm until" : "Expires"} <b>${esc(fmtT(q.expires_at))}</b></span>`,
     };
   }
@@ -1926,11 +2032,17 @@ function d1Panel() {
 // ---- Deliverables: multi-leg, D3, D4, D5 -------------------------------------------------------
 
 function multiLegPanel() {
-  return `<p style="margin-bottom:10px"><span class="not-built">Designed, not built (P6)</span> <span class="muted">The engine rejects more than one leg today: a request with two or more legs is CommandRejected (Unsupported). This is the design for "leg 2 of 3 fails after leg 1 matched".</span></p>
+  // A button per scenario, shown only if the scenario is in the catalogue (like the Run cells of D3 and D4).
+  const run = (name, where) => runButton(name, where) ?? '<span class="muted">not in the catalogue</span>';
+  return `<p style="margin-bottom:10px"><span class="built">Built</span> <span class="muted">A request has up to 8 legs and is all or nothing (engine.md §8). Both stories below run live through the gateway; Run plays one and fills the request cards, the markets, the ledger and the trace above.</span></p>
+    <div class="seam" style="margin-bottom:12px">
+      <div class="item"><div class="item-head"><span class="id">multi_leg_leg2_fails</span>${run("multi_leg_leg2_fails", "ml-leg2")}</div><p style="font-size:13px">Leg 2 of 3 fails: legs 1 and 3 are quoted, leg 2 is not. This is steps 1 and 2 below, with MM-A as MM1 and MM-C as MM2.</p></div>
+      <div class="item"><div class="item-head"><span class="id">multi_leg_happy</span>${run("multi_leg_happy", "ml-happy")}</div><p style="font-size:13px">Every leg is quoted: three picks, then one Accept fills all three legs in one command and opens three positions.</p></div>
+    </div>
     <div class="steps3">
-      <div class="item"><div class="item-head"><span class="id">1. Before the deadline</span></div><p style="font-size:13px">Leg 1: MM-A's quote is Active and holds. Leg 2: no quote. Leg 3: MM-C's quote is Active and holds. The request is Open. Nothing provisional is escrowed.</p></div>
-      <div class="item"><div class="item-head"><span class="id">2. The deadline fires</span></div><p style="font-size:13px">Leg 2 has no eligible quote, so the whole request is Expired. MM-A's, MM-C's and the requester's holds are all released in that one command.</p></div>
-      <div class="item"><div class="item-head"><span class="id">3. Alternative path</span></div><p style="font-size:13px">Every leg has an eligible quote and the request is Presented. MM-B's cancel on leg 2 is rejected (InvalidState) because selected quotes are firm. Accept fills all three legs in one command; Reject or a lapse releases all of them.</p></div>
+      <div class="item"><div class="item-head"><span class="id">1. Before the deadline</span></div><p style="font-size:13px">Leg 1: MM-A's quote is Active and holds. Leg 2: no quote. Leg 3: MM-C's quote is Active and holds. The request is Open. Nothing provisional is escrowed. <span class="muted">Scenario multi_leg_leg2_fails.</span></p></div>
+      <div class="item"><div class="item-head"><span class="id">2. The deadline fires</span></div><p style="font-size:13px">Leg 2 has no eligible quote, so the whole request is Expired. MM-A's, MM-C's and the requester's holds are all released in that one command. <span class="muted">Scenario multi_leg_leg2_fails.</span></p></div>
+      <div class="item"><div class="item-head"><span class="id">3. Alternative path</span></div><p style="font-size:13px">Every leg has an eligible quote and the request is Presented. MM-B's cancel on leg 2 is rejected (InvalidState) because selected quotes are firm. Accept fills all three legs in one command; Reject or a lapse releases all of them. <span class="muted">The cancel is pinned by the engine test <code>a_selected_leg_cannot_be_withdrawn</code>; no scenario plays it. multi_leg_happy shows the Accept.</span></p></div>
     </div>
     <ol class="rules">
       <li>One hold per request covers all legs, and one hold per quote: no per-leg partial commitment.</li>
@@ -2040,7 +2152,7 @@ function d5Panel() {
 
 const TABS = [
   ["d1", "D1 State machines", d1Panel],
-  ["ml", "Multi-leg <small>— Designed, not built (P6)</small>", multiLegPanel],
+  ["ml", "Multi-leg <small>— Built</small>", multiLegPanel],
   ["d3", "D3 Failure modes", d3Panel],
   ["d4", "D4 Resolution", d4Panel],
   ["d5", "D5 Quote lifetime", d5Panel],

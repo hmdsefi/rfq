@@ -1,5 +1,6 @@
-//! Steppable scripts: the six brief scenarios from `rfq_testkit::scenarios` (the same scripts the
-//! tests and the Aeron demo run, untouched), six attacks, and the sandbox setup.
+//! Steppable scripts: the eight brief scenarios from `rfq_testkit::scenarios` (the same scripts the
+//! tests and the Aeron demo run, untouched: the six single-leg ones and the two multi-leg ones), six
+//! attacks, and the sandbox setup.
 use serde::Serialize;
 
 use rfq_domain::*;
@@ -200,6 +201,12 @@ fn brief_summary(name: &str) -> &'static str {
         }
         "oracle_silent_hard_deadline" => {
             "The oracle never proposes: at the hard deadline the contract resolves INVALID and refunds everyone."
+        }
+        "multi_leg_happy" => {
+            "Alice asks for 400 YES in each of three markets in one request; MM1 quotes legs 1 and 3, MM2 leg 2. One accept fills all three legs."
+        }
+        "multi_leg_leg2_fails" => {
+            "Leg 2 of 3 is never quoted: at the deadline the whole request expires, no leg fills, and every hold is released in that one command."
         }
         _ => "Scenario from rfq-testkit.",
     }
@@ -449,7 +456,7 @@ mod tests {
     }
 
     #[test]
-    fn catalogue_has_six_brief_and_six_attack_presets() {
+    fn catalogue_has_eight_brief_and_six_attack_presets() {
         let all = all();
         let brief: Vec<&str> = all
             .iter()
@@ -466,6 +473,8 @@ mod tests {
                 "requester_lapses",
                 "disputed_ruled_invalid",
                 "oracle_silent_hard_deadline",
+                "multi_leg_happy",
+                "multi_leg_leg2_fails",
             ]
         );
         assert_eq!(attack, 6);

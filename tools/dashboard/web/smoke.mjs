@@ -14,9 +14,14 @@ const fail = (msg) => { console.log(`FAIL ${msg}`); failed++; };
 const { presets } = call({ op: "presets" });
 const scripted = presets.filter((p) => p.kind !== "sandbox");
 const sandboxes = presets.filter((p) => p.kind === "sandbox");
-// The catalogue size is pinned: a dropped or renamed preset must not turn the gate green.
-if (scripted.length !== 12 || sandboxes.length !== 1) {
-  fail(`catalogue has ${scripted.length} presets and ${sandboxes.length} sandbox, expected 12 and 1`);
+// The catalogue size is pinned: a dropped or renamed preset must not turn the gate green. Fourteen
+// scripted presets: the testkit's eight (six single-leg, two multi-leg) and six attacks.
+const kinds = (kind) => scripted.filter((p) => p.kind === kind).length;
+if (scripted.length !== 14 || kinds("brief") !== 8 || kinds("attack") !== 6 || sandboxes.length !== 1) {
+  fail(`catalogue has ${kinds("brief")} brief and ${kinds("attack")} attack presets and ${sandboxes.length} sandbox, expected 8, 6 and 1`);
+}
+for (const name of ["multi_leg_happy", "multi_leg_leg2_fails"]) {
+  if (!scripted.some((p) => p.name === name)) fail(`catalogue has no ${name}`);
 }
 for (const p of scripted) {
   // A failed reset leaves the previous session loaded, so its old verdict must never count here.

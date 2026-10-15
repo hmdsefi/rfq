@@ -1,14 +1,14 @@
 #!/usr/bin/env node
-// Runs the dashboard's 12 scenarios against the live stack, as their participants, through the real
+// Runs the dashboard's 14 scenarios against the live stack, as their participants, through the real
 // path: this script -> WebSocket -> rfq-gateway -> Aeron -> rfq-node (Docker) and back.
 //
 //   docker compose up -d aeron engine gateway
 //   node tools/dashboard/web/live-smoke.mjs [ws://127.0.0.1:18080] [--runs 20] [--concurrency 4] [--mix N] [--verbose]
 //
-// First all 12 scenarios once, one after the other, each judged PASS or FAIL against its expected
+// First all 14 scenarios once, one after the other, each judged PASS or FAIL against its expected
 // events with its latency percentiles; then `happy_path` x20 at concurrency 4 (every run scoped to
 // its own accounts and contract, so none sees another's events), with the aggregate numbers. Exits 0
-// only if every run passed. `--mix N` adds a third part: all 12 scenarios N times each, at the same
+// only if every run passed. `--mix N` adds a third part: all 14 scenarios N times each, at the same
 // concurrency, so that runs of different scenarios overlap on one engine. `--verbose` prints every
 // run's log. Needs Node 22 or later (the global WebSocket).
 import { createRequire } from "node:module";
