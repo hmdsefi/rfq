@@ -653,6 +653,40 @@ await test("run sets: a run that would start while the engine is down waits for 
   gw.close();
 });
 
+await test("run sets: an `engine unavailable` answer is a sign of down even before the status frame", async () => {
+  // The gateway answers the commands it can no longer send before it broadcasts `status down`; in a
+  // browser the failed run's promise chain runs between the two frames. The next run must not start
+  // on the stale "up", or its first command is refused too.
+  let engine = "up";
+  let n = 0;
+  const answer = answering();
+  const server = fakeServer((msg, s) => {
+    if (engine !== "up") {
+      s.deliver({ type: "error", id: msg.id, error: "engine unavailable" });
+      return;
+    }
+    if (++n === 2) {
+      engine = "down";
+      s.deliver({ type: "error", id: msg.id, error: "engine unavailable" });
+      setTimeout(() => s.deliver(status("down")), 30);
+      setTimeout(() => {
+        engine = "up";
+        s.deliver(status("up"));
+      }, 150);
+      return;
+    }
+    answer(msg, s);
+  });
+  const gw = G.connect("ws://fake", { WebSocket: server.Socket, connectTimeoutMs: 2_000 });
+  await gw.ready;
+  const driver = S.createDriver(gw, { startMarginMs: 0, graceMs: 30, engineWaitMs: 2_000 });
+  const out = await driver.runMany([funding()], 3, 1);
+  assert.deepEqual(out.runs.map((r) => r.pass), [true, false, true], out.runs.map((r) => r.detail).join("; "));
+  assert.match(out.runs[1].detail, /engine unavailable/, "the run in flight fails, as before");
+  assert.match(out.runs[2].log[0], /^the engine was down: waited \d+ ms for it before starting$/);
+  gw.close();
+});
+
 await test("run sets: the wait is bounded; past it the runs fail without sending anything, and the set ends", async () => {
   const { server, gw, driver } = await outageAfterFirstRun({ backAfterMs: null, engineWaitMs: 100 });
   const started = Date.now();

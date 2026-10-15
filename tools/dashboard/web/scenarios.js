@@ -435,6 +435,11 @@ const RfqScenarios = (() => {
     let runNumber = 0;
     let disposed = false;
     let measuring = null; // the clock measurement in progress
+    // The frame number of an answer that shows the engine down (`engine unavailable` or `outcome
+    // unknown`) and no `up` since. The gateway sends those answers before its `status down`, and in a
+    // browser the failed run ends between the two frames: a run set must not start the next run on
+    // the stale "up".
+    let downSince = null;
     // A Stop ends a generation: runs and run sets of an older one stop at their next await.
     let generation = 0;
     let stopSignal = signal();
@@ -456,6 +461,15 @@ const RfqScenarios = (() => {
       }),
       gateway.on("batch", (frame) => {
         for (const run of active) run.onBatch(frame);
+      }),
+      gateway.on("error", (frame, meta) => {
+        if (frame.error === "engine unavailable" || frame.error?.startsWith("outcome unknown:")) downSince ??= meta.n;
+      }),
+      gateway.on("status", (frame) => {
+        if (frame.engine === "up") downSince = null;
+      }),
+      gateway.on("welcome", (frame) => {
+        if (frame.engine === "up") downSince = null;
       }),
       // A result (a late one too, after an unknown outcome) names the batch its command made.
       gateway.on("result", (frame) => {
@@ -832,14 +846,14 @@ const RfqScenarios = (() => {
       // out, the runs after it fail at once while the engine stays down, so the set still ends.
       let gaveUp = null;
       const engineBack = async () => {
-        if (gateway.engine === "up") {
+        if (gateway.engine === "up" && downSince == null) {
           gaveUp = null;
           return {};
         }
         if (gaveUp) return { blocked: gaveUp };
         const since = Date.now();
         try {
-          await orStopped(at, gateway.untilEngineUp({ timeoutMs: engineWait }));
+          await orStopped(at, gateway.untilEngineUp({ after: downSince ?? undefined, timeoutMs: engineWait }));
         } catch (e) {
           if (e instanceof Stopped) throw e;
           gaveUp ??= new Error(`not started: ${e.message}`);
