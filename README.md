@@ -73,6 +73,21 @@ docker compose logs -f gateway engine         # every command, result and status
 
 To publish it on another host port, set `RFQ_GATEWAY_PORT` (for example `RFQ_GATEWAY_PORT=19000 docker compose up -d gateway`) and pass the URL: `node scripts/gateway-smoke.mjs ws://127.0.0.1:19000` (or set `RFQ_GATEWAY_URL`).
 
+### Live dashboard
+
+A single-page demo that drives the real stack through the gateway: every command goes through Aeron to the engine, and every number on screen comes back from it ([DESIGN §11](tools/dashboard/DESIGN.md), [gateway.md](docs/specs/gateway.md)).
+
+```bash
+docker compose up -d aeron engine gateway     # the gateway listens on ws://127.0.0.1:18080
+tools/dashboard/build.sh                      # builds the page and runs its test suites
+open tools/dashboard/dist/rfq-dashboard.html  # the status bar says "Connected", "engine up"
+```
+
+- **Scenarios.** Pick one of the 12 (six brief scenarios, six attacks) and press **Run**, **Run ×N** or **Run all**. The page acts as every participant through the gateway and judges PASS or FAIL against the expected events. Panels: lanes, contract, ledger, trace, a timeline scrubber, latency, and **View as** (what one account receives). `node tools/dashboard/web/live-smoke.mjs` runs the 12 and `happy_path` ×20 from a terminal.
+- **Engine crash:** `docker compose kill engine` during a run, then `docker compose start engine`. The status goes "engine down", the command in flight reports `outcome unknown … nonce N`, then `Resume`, "engine up" and a retry with the same nonce; `docker compose logs engine` shows `replayed seq=… hash=…`. Runs that start while it is down fail at once (`engine unavailable`).
+- **Stall:** `docker compose pause engine; sleep 2; docker compose unpause engine`. A `Resume` batch follows and open dispute windows are extended, so a run inside a window can fail on timing.
+- **Driver crash:** `docker compose kill aeron`. The engine and gateway exit 1 and the page shows "Reconnecting". A `kill` is a manual stop, so Docker does not restart anything: run `docker compose up -d aeron engine gateway`; the page reconnects without a reload and the engine replays to the hash it had ([architecture §5](docs/architecture/overview.md) says what restarts by itself).
+
 ## Layout
 
 Code is split into hexagonal layers, and dependencies point inward only: crate boundaries enforce it ([architecture §0](docs/architecture/overview.md)).
@@ -113,7 +128,7 @@ Also: the product and technical decisions in [rfc/0001-rfq-engine.md](docs/rfc/0
 
 ## Not built
 
-Multi-leg execution is designed but not built (the data model is `Vec<Leg>`, and the engine rejects any request with `legs.len() != 1`, see [engine.md §8](docs/specs/engine.md)). Also designed only: snapshots and pruning, Aeron Cluster for HA, on-chain escrow and effect workers, gateways and authentication. The brief puts auth, real chain integration and pricing out of scope.
+Multi-leg execution is designed but not built (the data model is `Vec<Leg>`, and the engine rejects any request with `legs.len() != 1`, see [engine.md §8](docs/specs/engine.md)). Also designed only: snapshots and pruning, Aeron Cluster for HA, on-chain escrow and effect workers, and authentication. (The gateway is built, but it trusts the `actor` a client names: [gateway.md §7](docs/specs/gateway.md).) The brief puts auth, real chain integration and pricing out of scope.
 
 ## License
 

@@ -8,6 +8,7 @@ The project uses a flat `crates/` workspace with a virtual root manifest, as des
 flowchart LR
   NODE[rfq-node<br/>bin: composition root] --> INFRA
   DEMO[rfq-demo<br/>bin: scenario client] --> INFRA
+  GATEWAY[rfq-gateway<br/>lib: protocol, view filter, nonce book, hub<br/>bin: Aeron + WebSocket] --> INFRA
   INFRA[rfq-infra<br/>adapters: codec, file/mem journal,<br/>Aeron transport + Archive journal] --> APP
   APP[rfq-app<br/>use case: sequence → persist → apply → publish<br/>ports: Journal, Transport<br/>protocol: ClientCommand, EventBatch] --> DOMAIN
   DOMAIN[rfq-domain<br/>pure: types, ledger, model,<br/>commands, events, Engine state machine]
@@ -19,14 +20,14 @@ flowchart LR
 | Domain | `rfq-domain` | Value objects (`Amount`, `Price`, ids), `Ledger`, entities (`Request`, `Quote`, `Contract`, `Position`), `Command`/`Event`, `Engine` (the deterministic state machine and its invariants) | Any I/O, async, clock, transport or serialization *format*. `serde` derives only; `bincode` is used solely for `state_hash` |
 | Application | `rfq-app` | **Ports** (`Journal`, `Transport` traits), **protocol DTOs** (`ClientCommand`, `EventBatch`), `Sequencer`, `Node` service (write-ahead loop), `NodeError` (`thiserror`) | Concrete adapters, bincode, Aeron |
 | Infrastructure | `rfq-infra` | **Adapters**: `codec` (versioned bincode), `FileJournal`, `MemJournal`, `MemTransport`, and (feature `aeron`) `AeronTransport` and `ArchiveJournal`. Also the Aeron-path pieces that need no Aeron and so are always built and tested: fragment `Reassembler`, egress `split_batch` | Binaries |
-| Interface / composition | `rfq-node`, `rfq-demo` | `main`: config from env, wire adapters into `Node`, run. `anyhow` lives only here | — |
+| Interface / composition | `rfq-node`, `rfq-demo`, `rfq-gateway` | `main`: config from env, wire adapters, run. `anyhow` lives only here. `rfq-gateway` also has a pure library (protocol, per-viewer filter, nonce book, hub) | — |
 | Test support | `rfq-testkit` | `Harness`, well-known accounts, scripted scenarios and `demo_config()`. A dev-dependency of the domain and infra tests; `rfq-node` and `rfq-demo` depend on it normally, for the demo genesis and the scenarios | — |
 
 Rules:
 - **Ports carry typed values, not bytes.** `Transport` yields `ClientCommand` and accepts `EventBatch`; decoding and malformed-message handling belong to the adapter. Because the application can't even express a client-sent `Tick` or `Genesis`, injecting one is impossible by construction.
 - **Errors:** library crates use `thiserror` enums. Ports return `Result<_, BoxError>`, where `BoxError = Box<dyn Error + Send + Sync>`, so the application isn't generic over adapter error types. Binaries use `anyhow`.
 - **The risky dependency is isolated:** `rusteron` is behind `rfq-infra`'s `aeron` feature, so `cargo test` for domain/app/infra never builds Aeron.
-- **Workspace hygiene:** `[workspace.package]` (edition 2024, version, `rust-version`, license), `[workspace.dependencies]`, `rust-toolchain.toml`, `rustfmt.toml`, `clippy.toml`, `deny.toml`, `.github/workflows/ci.yml`, `LICENSE` (MIT). Every crate is `publish = false`.
+- **Workspace hygiene:** `[workspace.package]` (edition 2024, version, `rust-version`, license), `[workspace.dependencies]`, `rust-toolchain.toml`, `rustfmt.toml`, `clippy.toml`, `deny.toml`, `.github/workflows/ci.yml`, `LICENSE` (MPL-2.0). Every crate is `publish = false`.
 
 ## 1. Shape
 
@@ -60,7 +61,12 @@ flowchart TB
       E["Engine.apply(seq, time, cmd)<br/>Ledger · state machines · timers · invariants I1–I5"]
     end
   end
-  R & M & O & OP -->|publish| ING
+  subgraph GWP["rfq-gateway process (client edge)"]
+    GW["Hub (pure): filter per view · nonce book · engine status<br/>WebSocket server · Aeron adapter"]
+  end
+  R & M & O & OP <-->|"WebSocket JSON"| GW
+  GW -->|"ClientCommand (publish)"| ING
+  EGR -->|"EventBatch (best-effort)"| GW
   ING --> AT
   AT -->|"Transport::poll → ClientCommand"| N
   N --- S
@@ -71,10 +77,11 @@ flowchart TB
   N -->|"apply (whole batch)"| E
   N -->|"Transport::publish(EventBatch)"| AT
   AT --> EGR
-  EGR -->|best-effort| R & M & O & OP
   ARC -. "startup: every recording, in id order" .-> RPL
   RPL -.-> AJ
 ```
+
+Clients reach the venue through the gateway, which holds no business state: it sends each command with the actor's next nonce and filters every egress batch for the connection's view ([gateway.md](../specs/gateway.md)). `rfq-demo` is a venue-internal client and talks to Aeron directly.
 
 Ports (`Journal`, `Transport`) are typed traits in `rfq-app`; `rfq-infra` implements them (Aeron behind the `aeron` feature, plus `FileJournal`, `MemJournal`, `MemTransport` for tests and the fallback). The engine never sees bytes, Aeron or time other than what the `SequencedCommand` carries.
 
@@ -88,6 +95,7 @@ Ports (`Journal`, `Transport`) are typed traits in `rfq-app`; `rfq-infra` implem
 | **Journal adapters** | `rfq-infra::journal`, `rfq-infra::aeron` | `ArchiveJournal` = Aeron Archive recordings of stream 1002; `FileJournal`; `MemJournal` | Aeron Archive client (`aeron` feature) |
 | **Transport adapters** | `rfq-infra::transport`, `rfq-infra::aeron` | `AeronTransport` = ingress 1001, egress 1003; `MemTransport` | Aeron client (`aeron` feature) |
 | **Composition root** | `rfq-node` | Reads `AERON_DIR`, `RFQ_JOURNAL`, `RFQ_HASH_EVERY_BATCH`; wires an Aeron transport and a journal into `Node`; runs the loop. | all of the above |
+| **Gateway** | `rfq-gateway` | The client edge: JSON over WebSocket in, `ClientCommand` onto ingress; every `EventBatch` back, filtered per view, with a `result` per command and an engine `status`. No business state. | codec, Aeron client (binary) |
 | **Demo client** | `rfq-demo` | Runs the scripted scenarios over Aeron as an ordinary client and checks the events it gets back. | codec, Aeron client, testkit |
 
 ## 2. The engine boundary (the one interface that matters)
@@ -130,8 +138,8 @@ sequenceDiagram
   participant E as Engine (rfq-domain)
   C->>T: ClientCommand bytes (possibly fragmented)
   N->>T: poll(256)
-  T-->>N: ClientCommands (reassembled; malformed or > 64 KiB dropped)
-  Note over N: prepend Resume after a restart or a poll gap > 1 s;<br/>add Tick only if idle and a timer is due
+  T-->>N: ClientCommands (reassembled, malformed or > 64 KiB dropped)
+  Note over N: prepend Resume after a restart or a poll gap > 1 s,<br/>add Tick only if idle and a timer is due
   N->>N: Sequencer stamps seq n..n+k, time = max(last, wall)
   N->>J: append(SequencedCommand) for each
   J->>A: exclusive-publication offer → recorded
@@ -140,7 +148,7 @@ sequenceDiagram
   J-->>N: durable
   N->>E: apply(seq, time, cmd) for the whole batch
   E-->>N: Vec<Emitted> per command
-  N->>T: publish(EventBatch{seq, origin, events}) per command
+  N->>T: publish(EventBatch{seq, time, kind, origin, events, balances}) per command
   T-->>C: chunks via split_batch (dropped if no subscriber)
   Note over N,J: any port Err ⇒ NodeError, Halted latch, process exits 1 ⇒ Compose restart ⇒ replay
 ```
@@ -154,7 +162,7 @@ sequenceDiagram
   participant A as Archive
   participant E as Engine
   J->>A: stop any recording of 1002 still active (a crashed node's)
-  J->>A: list recordings of 1002; replay each [start, stop) on 1004 in id order
+  J->>A: list recordings of 1002, replay each [start, stop) on 1004 in id order
   A-->>J: SequencedCommands (fragments reassembled)
   J-->>N: replay callback
   N->>N: require seq == last + 1 (else SequenceError: refuse to start)
@@ -180,19 +188,24 @@ flowchart LR
     subgraph SHM["shared IPC namespace /dev/shm/aeron (ipc: shareable / service:aeron)"]
       AE["aeron<br/>eclipse-temurin 21 JRE + aeron-all 1.53.3 (sha256-checked)<br/>ArchivingMediaDriver, fsync on · restart on failure (capped)"]
       EN["engine<br/>rfq-node --features aeron · init: true<br/>restart on failure (capped)"]
+      GWS["gateway<br/>rfq-gateway --features aeron · init: true<br/>restart on failure (capped)"]
       DE["demo (profile: demo)<br/>rfq-demo: 6 scenarios"]
     end
     VOL[("named volume: archive<br/>/data/archive")]
   end
   AE --- VOL
   EN <-->|"aeron:ipc 1001–1004"| AE
+  GWS <-->|"aeron:ipc 1001 / 1003"| AE
+  CLI["clients on the host<br/>dashboard page, scripts"] <-->|"WebSocket<br/>127.0.0.1:18080 (loopback only)"| GWS
   DE <-->|"aeron:ipc 1001 / 1003"| AE
   SCRIPT["scripts/demo.sh<br/>build → down -v → up → demo → SIGKILL engine → start → compare seq + hash"] -.-> PROJ
 ```
 
 - `aeron`: `eclipse-temurin:21-jre` and the `aeron-all` 1.53.3 jar, checked against its sha256; runs the media driver and the Archive with fsync on (`file.sync.level=2`); `ipc: shareable`, `shm_size: 512m`.
-- `engine`, `demo`: Rust images from `docker/rust.Dockerfile` (`--features aeron`, `--locked`); `ipc: "service:aeron"` so all share `/dev/shm/aeron`; `init: true`. Every container runs as the same non-root uid 10001, because the driver's files in `/dev/shm/aeron` are `0644` and owned by it. All channels are `aeron:ipc`. The `demo` service sits in compose profile `demo` and runs on demand (`docker compose run --rm demo [scenario]`).
-- `aeron` and `engine` have `restart: "on-failure:3"`: a halted node exits with status 1 and comes back to replay, and a driver that exits non-zero comes back with its Archive volume ([transport-aeron.md](../specs/transport-aeron.md#docker-compose)). Retries are capped at 3: after that the container stays down, and `docker compose logs engine` shows why. A manual stop, such as the `SIGKILL` in `scripts/demo.sh`, is not restarted.
+- `engine`, `gateway`, `demo`: Rust images from `docker/rust.Dockerfile` (`--features aeron`, `--locked`); `ipc: "service:aeron"` so all share `/dev/shm/aeron`; `init: true`. Every container runs as the same non-root uid 10001, because the driver's files in `/dev/shm/aeron` are `0644` and owned by it. All channels are `aeron:ipc`. The `demo` service sits in compose profile `demo` and runs on demand (`docker compose run --rm demo [scenario]`).
+- `gateway`: the WebSocket client edge. It listens on `0.0.0.0:18080` inside the container and is published on the host as `127.0.0.1:${RFQ_GATEWAY_PORT:-18080}`, loopback only ([gateway.md §7](../specs/gateway.md)). It may start before the engine: its clients see `status: down` until the engine is there. A dead engine is not fatal for it; a dead media driver is (it exits 1).
+- `aeron`, `engine` and `gateway` have `restart: "on-failure:3"`: a halted node exits with status 1 and comes back to replay ([transport-aeron.md](../specs/transport-aeron.md#docker-compose)). Retries are capped at 3: after that the container stays down, and `docker compose logs engine` shows why. A manual stop, such as the `SIGKILL` in `scripts/demo.sh` or `docker compose kill`, is not restarted.
+- **A dead driver heals only when it exits cleanly.** A `SIGTERM` to its JVM (exit 143) is restarted, and the engine and gateway follow within a second and replay to the same hash. A hard JVM crash (`kill -SEGV 1` in the container) is not: the three restarts come within a second and each is refused with `active mark file detected` (the Archive's mark file stays active for about 10 s), and the engine and gateway, which exit 1 after the driver's 10 s keep-alive timeout, cannot rejoin the dead driver's IPC namespace. Recover with `docker compose up -d aeron engine gateway`; the engine replays its journal.
 - Archive data is on the named volume `archive`, so it survives the engine being killed and restarted. `./scripts/demo.sh` does exactly that: it runs the six scenarios, `SIGKILL`s the engine, restarts it, and checks that the replayed state hash equals the last hash the engine logged before the kill (`RECOVERY OK`).
 
 ## 6. Production path (not built)

@@ -24,6 +24,8 @@ The brief (the exercise PDF) is not in the repository. How to build, test and ru
 | [specs/resolution.md](specs/resolution.md) | How funds unlock; disputes, delays, ambiguity |
 | [specs/quote-lifetime.md](specs/quote-lifetime.md) | Seconds vs days: what's invariant, what isn't, what is built vs designed |
 | [specs/transport-aeron.md](specs/transport-aeron.md) | Aeron + Archive wiring, journal, replay, Docker Compose, the verified `rusteron` API |
+| [specs/gateway.md](specs/gateway.md) | The client edge: the WebSocket protocol, what each view (admin, one account) may see, nonces, engine status and `outcome unknown`, the trust boundary |
 | [reviews/spec-review.md](reviews/spec-review.md) | Adversarial review of the spec before coding: 25 findings and how each was ruled |
 | [plans/2026-10-13-rfq-engine-plan.md](plans/2026-10-13-rfq-engine-plan.md) | Implementation roadmap: constraints, layers, execution order, task index |
-| [plans/tasks/](plans/tasks/) | One file per task (Setup, Gate A, Tasks 0–14) |
+| [plans/2026-10-15-live-gateway-plan.md](plans/2026-10-15-live-gateway-plan.md) | The live plan: the gateway and the dashboard driving the real stack (tasks L1–L7) |
+| [plans/tasks/](plans/tasks/) | One file per task (Setup, Gate A, Tasks 0–14, L1–L7) |
