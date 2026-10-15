@@ -336,7 +336,7 @@ const RfqScenarios = (() => {
       expect: ["RequestFilled", "ContractClosed", "ContractFinalized", "PositionSettled"],
     },
     // Rust: `rfq_testkit::scenarios::all()`, `multi_leg_happy` (engine.md §8). Three markets, one request, a
-    // quote on every leg, and one accept fills all three legs. MM1 backs legs 0 and 2, MM2 backs leg 1.
+    // quote on every leg, and one accept fills all three legs. MM1 backs leg indices 0 and 2, MM2 index 1.
     // `markets`: how many extra markets the run lists (`ctx.contractN(1..=markets)`); a script without it
     // lists the run's one contract, `t0`.
     {

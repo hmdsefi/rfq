@@ -88,7 +88,7 @@ fn quote(w: &mut World, mm: AccountId, leg: u32, bps: u16) -> QuoteId {
     id
 }
 
-/// MM1 quotes legs 0 and 2 (0.62, 0.64), MM2 quotes leg 1 (0.60): the shape of `multi_leg_happy`.
+/// MM1 quotes leg indices 0 and 2 (0.62, 0.64), MM2 index 1 (0.60): the shape of `multi_leg_happy`.
 fn quote_every_leg(w: &mut World) -> [QuoteId; 3] {
     [
         quote(w, MM1, 0, 6_200),
@@ -189,7 +189,7 @@ fn a_request_holds_the_total_once_and_announces_every_leg() {
 fn three_legs_fill_in_one_accept() {
     let mut w = world();
     let q = quote_every_leg(&mut w);
-    // MM1's two quotes (legs 0 and 2) are both live: a quote replaces only the same MM's quote on the same leg.
+    // MM1's two quotes (leg indices 0 and 2) are both live: a quote replaces only the same MM's quote on the same leg.
     assert_eq!(reserved(&w.h, MM1), seller(6_200) + seller(6_400));
     assert_eq!(reserved(&w.h, MM2), seller(6_000));
 

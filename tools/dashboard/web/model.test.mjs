@@ -269,7 +269,7 @@ test("a journal reset: batches of two epochs with the same seq are two trace ent
 
 /**
  * A 3-leg request on three markets (101 Paris, 102 London, 103 Rome), as the engine and gateway send it:
- * Alice (10) buys YES 400 on each at a sealed 0.70 limit; MM1 (20) quotes legs 0 and 2, MM2 (21) quotes leg 1.
+ * Alice (10) buys YES 400 on each at a sealed 0.70 limit; MM1 (20) quotes leg indices 0 and 2, MM2 (21) index 1.
  * `fill` ends it with Alice's accept, else the timer expires it (`quoteLeg2`: whether anyone quotes leg 1).
  * Returns the frames each connection got, the page's commands by seq, and the ids.
  */

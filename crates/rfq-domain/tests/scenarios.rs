@@ -105,7 +105,7 @@ fn the_scenarios_are_the_six_brief_ones_then_the_two_multi_leg_ones() {
 }
 
 // Three markets and one request for 400 YES on each: Alice's $840 hold pays $248 + $240 + $256
-// for the three picks (0.62, 0.60, 0.64) and the rest goes back; MM1 backs legs 0 and 2, MM2 leg 1.
+// for the three picks (0.62, 0.60, 0.64) and the rest goes back; MM1 backs leg indices 0 and 2, MM2 index 1.
 #[test]
 fn multi_leg_happy() {
     let (h, events) = run("multi_leg_happy");

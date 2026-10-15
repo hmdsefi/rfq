@@ -20,7 +20,7 @@ cargo test --workspace
 The toolchain is pinned to Rust 1.99.0 in `rust-toolchain.toml`, so `rustup` installs it on first use. This never builds Aeron: the Aeron adapters sit behind the off-by-default cargo feature `aeron`. The tests are:
 
 - unit and behaviour tests for the ledger and every command, including the race and partial-failure cases ([failure-modes.md](docs/specs/failure-modes.md) names the test for each one) and the multi-leg atomicity rules ([`multi_leg.rs`](crates/rfq-domain/tests/multi_leg.rs));
-- the eight scripted scenarios of the demo (the six brief ones and two multi-leg ones), run in memory, and replay tests that rebuild the engine from its log and compare `state_hash`;
+- the eight scripted scenarios of the demo (six for the brief's lifecycle and failure cases, two for its multi-leg case), run in memory, and replay tests that rebuild the engine from its log and compare `state_hash`;
 - three property tests that run random command streams and check the invariants I1–I5 after every command (the third generates multi-leg requests, and also checks that a request fills all of its legs or none);
 - node tests over the in-memory and file journals: startup replay, write-ahead order, restart, `Resume` after a stall, failure latch.
 

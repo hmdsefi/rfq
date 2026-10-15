@@ -21,7 +21,7 @@ pub enum RejectReason {
     InvalidState,
     InvalidInput,
     /// No longer produced: it answered a multi-leg request before multi-leg was built (2026-10-16).
-    /// Kept, because enum variants are part of the journal's wire format and later ones keep their indices.
+    /// Kept, because events go out on the egress stream encoded by variant index: removing it would renumber the later ones.
     Unsupported,
     SelfTrade,
     InsufficientFunds,

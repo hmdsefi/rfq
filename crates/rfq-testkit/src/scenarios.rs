@@ -374,7 +374,7 @@ pub fn all() -> Vec<Scenario> {
         }
     };
     // Multi-leg (engine.md §8): three markets, one request, a quote on every leg, and one accept fills
-    // all three legs. MM1 backs legs 0 and 2, MM2 backs leg 1.
+    // all three legs. MM1 backs leg indices 0 and 2, MM2 backs index 1.
     let multi_leg_happy = {
         let mut s = three_markets();
         s.push(three_leg_request());
@@ -404,7 +404,7 @@ pub fn all() -> Vec<Scenario> {
             ],
         }
     };
-    // Leg 2 of 3 fails: legs 1 and 3 are quoted, leg 2 is not, so at the deadline the whole request
+    // Leg 2 of 3 fails: legs 1 and 3 (indices 0 and 2) are quoted, leg 2 is not, so at the deadline the whole request
     // expires and the requester's and both MMs' holds are all released in that one command.
     let multi_leg_leg2_fails = {
         let mut s = three_markets();
