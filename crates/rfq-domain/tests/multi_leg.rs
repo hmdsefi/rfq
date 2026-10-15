@@ -230,6 +230,7 @@ fn three_legs_fill_in_one_accept() {
         panic!("no RequestFilled")
     };
     assert_eq!(positions.len(), 3, "one position per leg");
+    // In leg order (engine.md §7): position i is on leg i's market. The dashboard relies on this.
     for (pid, c) in positions.iter().zip(MARKETS) {
         let p = w.h.engine.position(*pid).expect("exists");
         assert_eq!((p.contract, p.qty, p.yes_holder), (c, QTY, ALICE));
