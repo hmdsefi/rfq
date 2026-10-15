@@ -6,10 +6,12 @@
 //! so checking the expected order against all of egress could pass on another scenario's events.
 //!
 //! So each run gets objects of its own. Its contract is `ContractId(t0)` (from
-//! [`Ctx::contract`](rfq_testkit::scenarios::Ctx::contract)), and its accounts get ids derived
-//! from the same `t0` ([`Scope::account`]), so their strict nonces start at 1. Its requests and
-//! quotes are identified by the `seq` of the commands that created them. [`Scope::owns`] keeps
-//! exactly the events about those objects, and the order is checked against those alone.
+//! [`Ctx::contract`](rfq_testkit::scenarios::Ctx::contract)), and a multi-leg run's extra markets are
+//! `ContractId(t0 * 10 + k)` for k in 1..=9 ([`Ctx::contract_n`](rfq_testkit::scenarios::Ctx::contract_n)).
+//! Its accounts get ids derived from the same `t0` ([`Scope::account`]), so their strict nonces
+//! start at 1. Its requests and quotes are identified by the `seq` of the commands that created
+//! them. [`Scope::owns`] keeps exactly the events about those objects, and the order is checked
+//! against those alone.
 use std::collections::BTreeSet;
 
 use rfq_app::EventBatch;
@@ -69,6 +71,17 @@ impl Scope {
         self.origins.insert(origin);
     }
 
+    /// The run's own contract, or one of its extra markets: `t0 * 10 + k` for k in 1..=9 (the ids
+    /// `Ctx::contract_n` hands out; `k = 0` is not one, so it can't be mistaken for the run's own).
+    fn owns_contract(&self, c: ContractId) -> bool {
+        c.0 == self.key
+            || self
+                .key
+                .checked_mul(10)
+                .and_then(|base| c.0.checked_sub(base))
+                .is_some_and(|k| (1..=9).contains(&k))
+    }
+
     /// Whether event `e` of `batch` is about this run's objects. Call it for every event of every
     /// batch, in egress order: the batch of one of the run's commands adds its `seq`.
     pub fn owns(&mut self, batch: &EventBatch, e: &Emitted) -> bool {
@@ -76,7 +89,6 @@ impl Scope {
         if own_command {
             self.seqs.insert(batch.seq);
         }
-        let contract = ContractId(self.key);
         let account = |a: &AccountId| self.accounts.contains(a);
         let object = |id: u64| self.seqs.contains(&id);
         // No wildcard: a new event must be classified here.
@@ -91,7 +103,7 @@ impl Scope {
             | Event::Disputed { contract: c, .. }
             | Event::Ruled { contract: c, .. }
             | Event::DisputeBondReturned { contract: c, .. }
-            | Event::ContractFinalized { contract: c, .. } => *c == contract,
+            | Event::ContractFinalized { contract: c, .. } => self.owns_contract(*c),
             Event::RequestOpened { request, .. }
             | Event::RequestCancelled { request }
             | Event::RequestExpired { request }
@@ -253,6 +265,45 @@ mod tests {
         assert!(!scope.owns(&tick, &public(Event::Initialized)));
     }
 
+    // A multi-leg run lists extra markets `t0 * 10 + k`; their events belong to the run, and only to it.
+    #[test]
+    fn a_runs_extra_markets_are_owned_too() {
+        let mut scope = Scope::new(1_000);
+        let tick = EventBatch {
+            seq: 5,
+            time: 0,
+            kind: BatchKind::Tick,
+            origin: None,
+            events: vec![],
+            balances: vec![],
+        };
+        let finalized = |c| {
+            Emitted::public(Event::ContractFinalized {
+                contract: ContractId(c),
+                outcome: Outcome::Yes,
+            })
+        };
+        let listed = |c| {
+            Emitted::public(Event::ContractListed {
+                contract: ContractId(c),
+            })
+        };
+        assert!(scope.owns(&tick, &finalized(1_000)), "the run's own contract");
+        for k in 1..=9 {
+            // The ids `Ctx::contract_n(k)` gives a run with t0 = 1_000 (the partition test below ties them).
+            assert!(scope.owns(&tick, &finalized(10_000 + k)), "market {k}");
+            assert!(scope.owns(&tick, &listed(10_000 + k)), "market {k}");
+        }
+        assert!(!scope.owns(&tick, &finalized(10_000)), "t0 * 10 is not a market");
+        assert!(!scope.owns(&tick, &finalized(10_010)), "k = 10 is not a market");
+        assert!(!scope.owns(&tick, &finalized(20_001)), "another run's market");
+        assert!(!scope.owns(&tick, &finalized(999)));
+        assert!(
+            !Scope::new(u64::MAX).owns(&tick, &finalized(1)),
+            "a key whose times 10 overflows owns only its own contract"
+        );
+    }
+
     /// One scenario run on the shared engine.
     struct Run {
         ctx: Ctx,
@@ -260,7 +311,7 @@ mod tests {
         own: Vec<Emitted>,
     }
 
-    /// The demo's situation, in memory: all six scenarios on one engine, started 3 s apart so
+    /// The demo's situation, in memory: every scenario on one engine, started 3 s apart so
     /// that their timers interleave, with a `Tick` whenever a timer is due (as the node does).
     /// Every event must belong to exactly one run, and each run's own events must pass its check.
     #[test]
