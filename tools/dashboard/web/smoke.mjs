@@ -37,6 +37,18 @@ for (const p of scripted) {
   } else {
     fail(`${p.name} (loaded: ${out.preset?.name}) ${JSON.stringify(out.error ?? out.preset?.verdict)}`);
   }
+  // multi_leg_happy runs to its settlement: three markets Final YES, three positions settled, Alice (YES on every
+  // leg) paid 400 x $1 on each, and no hold or escrow left (the other scripts stop earlier or settle one market).
+  if (p.name === "multi_leg_happy") {
+    const { markets, positions, accounts } = out.snapshot;
+    const alice = accounts.find((a) => a.name === "Alice").balance;
+    const settled =
+      markets.length === 3 && markets.every((c) => c.state?.Final === "Yes") &&
+      positions.length === 3 && positions.every((x) => x.settled) &&
+      alice.free === 1_000_000_000 - 744_000_000 + 3 * 400_000_000 &&
+      accounts.every((a) => a.balance.reserved === 0 && a.balance.escrowed === 0);
+    if (!settled) fail(`multi_leg_happy did not end settled: ${JSON.stringify({ markets: markets.map((c) => c.state), settled: positions.map((x) => x.settled), alice })}`);
+  }
 }
 if (!call({ op: "fly" }).error) fail("unknown op did not return an error");
 if (!call({ op: "act", actor: 20, action: { SubmitQuote: { request: 1, leg: 0, price: 0, size: 1, expires_at: 1 } } }).error) {

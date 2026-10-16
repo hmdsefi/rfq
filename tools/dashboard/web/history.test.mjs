@@ -251,13 +251,33 @@ await test("own events, batches and labels are exactly what the driver recorded 
   }
 });
 
-await test("not vacuous: the history goes on after the runs (the markets close and finalize), and none of it is the runs'", () => {
-  const multi = liveOf("multi_leg_happy");
-  const market = multi.t0 * 10 + 1;
-  const after = history.filter((e) => e.events.some((x) => ["MarketClosed", "MarketFinalized"].includes(R.eventName(x)) && R.eventBody(x).market === market));
+await test("not vacuous: the history goes on after a run that ends at its fill (its market closes and finalizes), and none of it is the run's", () => {
+  const wrong = liveOf("attack_accept_wrong_price");
+  const after = history.filter((e) => e.events.some((x) => ["MarketClosed", "MarketFinalized"].includes(R.eventName(x)) && R.eventBody(x).market === wrong.t0));
   assert.equal(after.length, 2, "the market closed and finalized in the history");
-  const r = rebuilt.find((x) => x.t0 === multi.t0);
+  const r = rebuilt.find((x) => x.t0 === wrong.t0);
   for (const e of after) assert.ok(!r.batches.includes(e.seq), `seq ${e.seq} is not the run's`);
+});
+
+await test("multi_leg_happy runs to its settlement: each market's close, proposal and finalization are the run's own batches", () => {
+  const multi = liveOf("multi_leg_happy");
+  const markets = [1, 2, 3].map((k) => multi.t0 * 10 + k);
+  const r = rebuilt.find((x) => x.t0 === multi.t0);
+  assert.deepEqual([r.name, r.pass, r.incomplete, r.open], ["multi_leg_happy", true, false, false]);
+  // In the whole history, the three markets close, get a YES proposal and finalize YES; every one of those batches is the run's.
+  const named = (name) => history.filter((e) => e.events.some((x) => R.eventName(x) === name && markets.includes(R.eventBody(x).market)));
+  for (const name of ["MarketClosed", "OutcomeProposed", "MarketFinalized"]) {
+    const batches = named(name);
+    assert.ok(batches.length >= 1, `${name} in the history`);
+    for (const e of batches) assert.ok(r.batches.includes(e.seq), `${name} at seq ${e.seq} is the run's`);
+    const seen = batches.flatMap((e) => e.events.filter((x) => R.eventName(x) === name).map((x) => R.eventBody(x)));
+    assert.deepEqual(seen.map((b) => b.market).sort((a, b) => a - b), markets, `${name} on each of the three markets, once`);
+    if (name !== "MarketClosed") assert.ok(seen.every((b) => b.outcome === "Yes"), `${name}: YES`);
+  }
+  // Three positions settled in the run, each paying its whole pot to the YES holder (Alice): 400 x $1.
+  const settled = r.own.map((x) => R.eventBody(x)).filter((b) => b.position != null && b.yes_payout != null);
+  assert.deepEqual([...new Set(settled.map((b) => b.position))].length, 3);
+  assert.ok(settled.every((b) => b.yes_payout === 400_000_000 && b.no_payout === 0 && b.yes_holder === multi.accounts.alice), JSON.stringify(settled));
 });
 
 await test("a command that belongs to no run is in no run: the curl walk-through's accounts and market are below a run's ids", () => {
@@ -274,7 +294,7 @@ await test("a run that stopped where another script's commands end is checked ag
   // attack_accept_wrong_price stopped after its bad accept: the shape of oracle_silent_hard_deadline, whose accept takes the presented price.
   const multi = liveOf("multi_leg_happy");
   const wrong = liveOf("attack_accept_wrong_price");
-  const dropped = new Set([multi.labels.q3, multi.labels.accept, wrong.labels.accept]);
+  const dropped = new Set([multi.labels.q3, multi.labels.accept, multi.labels.propose_paris, multi.labels.propose_london, multi.labels.propose_rome, wrong.labels.accept]);
   const stopped = S.runsFromHistory(history.filter((e) => !dropped.has(e.seq)));
   for (const run of [multi, wrong]) {
     const r = stopped.find((x) => x.t0 === run.t0);

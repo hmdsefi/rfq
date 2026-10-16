@@ -159,8 +159,9 @@ function fakeGateway() {
     }
   };
   // A multi-leg engine, enough for the two multi-leg scenarios (`server.sim = true`): the holds, the
-  // selection at the deadline (all legs or none), the accept, and the batches with the balances.
-  const sim = { requests: new Map(), balances: new Map(), position: 0 };
+  // selection at the deadline (all legs or none), the accept, the market's close, the oracle's proposal
+  // and the finalization after its dispute window, and the batches with the balances.
+  const sim = { requests: new Map(), markets: new Map(), balances: new Map(), position: 0 };
   const bal = (a) => sim.balances.get(a) ?? { free: 0, reserved: 0, escrowed: 0 };
   const to = (account, event) => ({ audience: { Account: account }, event });
   const pub = (event) => ({ audience: "Public", event });
@@ -198,6 +199,29 @@ function fakeGateway() {
     }
     broadcast(batchOf(++server.seq, "Tick", null, events, touched));
   }
+  /** `trading_close` passes: the market closes on its own, in a batch of its own (a timer, like the deadline). */
+  function closeMarket(id) {
+    broadcast(batchOf(++server.seq, "Tick", null, [pub({ MarketClosed: { market: id } })], []));
+  }
+  /**
+   * The dispute window ends: the market finalizes as proposed and settles its positions in that batch. The
+   * YES holder takes the whole pot on YES, the NO holder on NO (the sim plays no INVALID); each holder is told.
+   */
+  function finalize(id, outcome) {
+    const m = sim.markets.get(id);
+    const events = [pub({ MarketFinalized: { market: id, outcome } })];
+    const touched = [];
+    for (const p of m.positions) {
+      const pot = p.yesLock + p.noLock;
+      const [yesPayout, noPayout] = outcome === "Yes" ? [pot, 0] : [0, pot];
+      touched.push(move(p.yes, { escrowed: -p.yesLock, free: yesPayout }), move(p.no, { escrowed: -p.noLock, free: noPayout }));
+      const settled = { PositionSettled: { position: p.id, yes_holder: p.yes, yes_payout: yesPayout, no_holder: p.no, no_payout: noPayout } };
+      events.push(to(p.yes, settled), to(p.no, settled));
+    }
+    broadcast(batchOf(++server.seq, "Tick", null, events, touched));
+  }
+  /** Runs `fn` at the engine time `at` (the page's clock here); it never keeps the process alive on its own. */
+  const atTime = (at, fn) => setTimeout(fn, Math.max(0, at - Date.now())).unref();
   function simulate(msg, socket) {
     const [kind, a] = Object.entries(msg.action)[0];
     const nonce = msg.nonce ?? (server.nonces.get(msg.actor) ?? 1) + 1;
@@ -213,6 +237,8 @@ function fakeGateway() {
         break;
       case "ListMarket":
         events.push(pub({ MarketListed: { market: a.id } }));
+        sim.markets.set(a.id, { window: a.dispute_window, positions: [] });
+        atTime(a.trading_close, () => closeMarket(a.id));
         break;
       case "SubmitRequest": {
         a.legs.forEach((l, leg) => events.push(pub({ RequestOpened: { request: seq, leg, market: l.market, side: l.side, qty: l.qty, response_deadline: a.response_deadline } })));
@@ -239,9 +265,16 @@ function fakeGateway() {
           total += r.legs[leg].qty * q.price * 100;
           events.push(to(q.mm, { QuoteFilled: { quote: q.id, position: sim.position } }));
           touched.push(move(q.mm, { reserved: -q.hold, escrowed: q.hold }));
+          sim.markets.get(r.legs[leg].market).positions.push({ id: sim.position, yes: r.requester, no: q.mm, yesLock: r.legs[leg].qty * q.price * 100, noLock: q.hold });
         });
         events.push(to(r.requester, { RequestFilled: { request: a.request, positions } }));
         touched.push(move(r.requester, { free: r.hold - total, reserved: -r.hold, escrowed: total }));
+        break;
+      }
+      case "ProposeOutcome": {
+        const dispute_until = Date.now() + sim.markets.get(a.market).window;
+        events.push(pub({ OutcomeProposed: { market: a.market, outcome: a.outcome, dispute_until } }));
+        atTime(dispute_until, () => finalize(a.market, a.outcome));
         break;
       }
       default:
@@ -529,7 +562,7 @@ await test("multi_leg_leg2_fails, admin: every leg and quote is listed, the requ
   }
 });
 
-await test("multi_leg_happy, admin: Presented lists a pick per leg, Filled a position per leg, and each market holds its own", async () => {
+await test("multi_leg_happy, admin: Presented lists a pick per leg, Filled a position per leg, each market holds its own, and each settles YES", async () => {
   const { run, val, document, stop } = await simPage();
   try {
     document.getElementById("scenario-pick").value = "multi_leg_happy";
@@ -549,18 +582,53 @@ await test("multi_leg_happy, admin: Presented lists a pick per leg, Filled a pos
     assert.equal(count(lane, "Best quote"), 3);
     assert.match(lane, /Accept by/);
     assert.equal(count(text(document, "mm-lane"), "Selected"), 3);
-    // The end: Filled, one position per leg, each on its own market.
-    run("ui.pos = null; render()");
+    // The fill: Filled, one position per leg, each on its own market, escrowed and not yet settled.
+    const filled = val("V.r.batches.findIndex((b) => b.events.some((e) => RfqModel.variant(e.event) === 'RequestFilled'))");
+    assert.ok(filled > presented);
+    run(`ui.pos = ${filled}; render()`);
     lane = text(document, "user-lane");
     assert.ok(lane.includes("Filled"), lane);
     for (const [leg, pos] of [[1, 1], [2, 2], [3, 3]]) assert.match(lane, new RegExp(`Leg ${leg} of 3[^]*?Position #${pos}`), `position of leg ${leg}`);
     assert.equal(count(lane, "Position #"), 3);
+    assert.equal(count(lane, "Escrowed \\(see the ledger\\)"), 3, "every position escrowed");
+    assert.ok(!lane.includes("Settled"), "nothing settled at the fill");
     assert.deepEqual(val("V.M.positions.map((p) => [p.id, p.leg, p.market])"), [1, 2, 3].map((k, i) => [k, i, result.t0 * 10 + k]));
-    const market = text(document, "market");
+    assert.deepEqual(val("V.M.markets.map((c) => c.state)"), ["Trading", "Trading", "Trading"]);
+    let market = text(document, "market");
     assert.equal(count(market, "400 shares"), 3, "a position in each market");
-    const mm = text(document, "mm-lane");
+    let mm = text(document, "mm-lane");
     for (const [q, leg] of [[q1, 1], [q2, 2], [q3, 3]]) assert.match(mm, new RegExp(`Quote #${q}[^]*?leg ${leg} of 3`, "i"), `quote ${q}`);
     assert.equal(count(mm, "Filled"), 3);
+    const balanceOf = (id) => val(`V.M.accounts.find((a) => a.id === ${id}).balance`);
+    const { alice, mm1, mm2, carol } = result.accounts;
+    assert.deepEqual(balanceOf(alice), { free: 256_000_000, reserved: 0, escrowed: 744_000_000 });
+    assert.deepEqual(balanceOf(mm1), { free: 704_000_000, reserved: 0, escrowed: 296_000_000 });
+    assert.deepEqual(balanceOf(mm2), { free: 840_000_000, reserved: 0, escrowed: 160_000_000 });
+
+    // The end: each market has closed, the oracle proposed YES on it, and it finalized YES in its own batch. Alice holds
+    // YES on every leg, so she is paid the whole pot of each (400 x $1), the MMs lose their locks, and nothing stays escrowed.
+    run("ui.pos = null; render()");
+    lane = text(document, "user-lane");
+    assert.ok(lane.includes("Filled"), lane);
+    assert.equal(count(lane, "Position #"), 3);
+    assert.equal(count(lane, "Settled"), 3, "every position settled");
+    assert.ok(!lane.includes("Escrowed (see the ledger)"), "no position left escrowed");
+    assert.deepEqual(val("V.M.markets.map((c) => c.state)"), [{ Final: "Yes" }, { Final: "Yes" }, { Final: "Yes" }]);
+    assert.deepEqual(val("V.M.positions.map((p) => [p.id, p.settled, p.yes_holder, p.yes_payout, p.no_payout])"), [1, 2, 3].map((id) => [id, true, alice, 400_000_000, 0]));
+    market = text(document, "market");
+    assert.equal(count(market, "Outcome YES"), 3, "each market's outcome");
+    assert.equal(count(market, "paid \\$400.00"), 3, "Alice is paid on each leg");
+    assert.equal(count(market, "paid \\$0.00"), 3, "the MMs are paid nothing");
+    assert.equal(count(market, "Settled"), 3);
+    mm = text(document, "mm-lane");
+    assert.equal(count(mm, "Filled"), 3);
+    assert.equal(count(mm, "Position #"), 3);
+    assert.equal(count(mm, "Settled"), 3);
+    assert.deepEqual(balanceOf(alice), { free: 1_456_000_000, reserved: 0, escrowed: 0 });
+    assert.deepEqual(balanceOf(mm1), { free: 704_000_000, reserved: 0, escrowed: 0 });
+    assert.deepEqual(balanceOf(mm2), { free: 840_000_000, reserved: 0, escrowed: 0 });
+    assert.deepEqual(balanceOf(carol), { free: 1_000_000_000, reserved: 0, escrowed: 0 });
+    assert.ok(text(document, "ledger-table").includes("$1,456.00"), "Alice's balance in the ledger");
   } finally {
     stop();
     run("driver.dispose(); closeViewConn(); gw.close();");
@@ -581,6 +649,10 @@ await test("view as MM2 during a multi-leg run: its own leg and balance, the pub
     await sleep(150);
     run("render()");
     assert.deepEqual(val("V.M.accounts.map((a) => a.id)"), [mm2]);
+    // At MM2's fill (its quote on leg 2 filled, $160 escrowed; no position is settled yet).
+    const filled = val("V.r.batches.findIndex((b) => b.events.some((e) => RfqModel.variant(e.event) === 'QuoteFilled'))");
+    assert.ok(filled >= 0);
+    run(`ui.pos = ${filled}; render()`);
     const out = rendered(document);
     // Not vacuous: MM2 sees the request's three public legs, its own quote on leg 2 and its own money.
     assert.ok(out.includes(`#${req}`), "the public request");
@@ -589,12 +661,30 @@ await test("view as MM2 during a multi-leg run: its own leg and balance, the pub
     assert.ok(showsPrice(out, "0.60"), "MM2's own price");
     assert.ok(out.includes("$840.00") && out.includes("$160.00"), "MM2's own balance");
     // Sealed: MM1's legs (0.62 and 0.64, its quotes and money), Alice (her limit, her request's owner, her money), and the markets' questions.
-    for (const needle of [String(alice), String(mm1), `Quote #${q1}`, `Quote #${q3}`, "Alice", "MM1", "Will it rain", "FAIL", "PASS", "multi_leg_happy ·", "latency"]) {
+    const sealedNeedles = [String(mm1), `Quote #${q1}`, `Quote #${q3}`, "Alice", "MM1", "Will it rain", "FAIL", "PASS", "multi_leg_happy ·", "latency"];
+    for (const needle of [String(alice), ...sealedNeedles]) {
       const at = out.indexOf(needle);
       assert.ok(at < 0, `"${needle}" in MM2's view:\n${out.slice(Math.max(0, at - 200), at + 200)}`);
     }
     for (const sealedPrice of ["0.62", "0.64", "0.70"]) assert.ok(!showsPrice(out, sealedPrice), `${sealedPrice} in MM2's view`);
     for (const money of ["$152.00", "$296.00", "$744.00", "$256.00", "$704.00", "$248.00"]) assert.ok(!out.includes(money), `${money} in MM2's view`);
+    // The end: the three markets are Final YES, and MM2 sees the settlement of its own position only. The engine sends a
+    // PositionSettled to both of its holders, so MM2 learns its counterparty on that leg (Alice, by account id: never her name,
+    // her limit, or anything of the other legs), and its escrow is gone.
+    run("ui.pos = null; render()");
+    const end = rendered(document);
+    assert.deepEqual(val("V.M.markets.map((c) => c.state)"), [{ Final: "Yes" }, { Final: "Yes" }, { Final: "Yes" }]);
+    assert.equal(count(text(document, "market"), "Outcome YES"), 3);
+    assert.deepEqual(val("V.M.positions.map((p) => [p.id, p.settled, p.yes_holder, p.yes_payout, p.no_payout])"), [[2, true, alice, 400_000_000, 0]]);
+    assert.equal(count(text(document, "market"), "Settled"), 1, "only MM2's own position");
+    assert.equal(count(end, String(alice)), 1, "Alice's id, once: the YES holder of MM2's own settled position");
+    assert.deepEqual(val("V.M.accounts[0].balance"), { free: 840_000_000, reserved: 0, escrowed: 0 });
+    for (const needle of sealedNeedles) {
+      const at = end.indexOf(needle);
+      assert.ok(at < 0, `"${needle}" in MM2's view after settlement:\n${end.slice(Math.max(0, at - 200), at + 200)}`);
+    }
+    for (const sealedPrice of ["0.62", "0.64", "0.70"]) assert.ok(!showsPrice(end, sealedPrice), `${sealedPrice} in MM2's view after settlement`);
+    for (const money of ["$152.00", "$296.00", "$744.00", "$256.00", "$704.00", "$248.00", "$1,456.00"]) assert.ok(!end.includes(money), `${money} in MM2's view after settlement`);
     // While the request was open, MM2 saw its three legs with each limit marked sealed.
     const opened = val("V.r.batches.findIndex((b) => b.events.some((e) => RfqModel.variant(e.event) === 'RequestOpened'))");
     assert.ok(opened >= 0);
