@@ -52,7 +52,7 @@ Every read response has `as_of_seq`: the last `seq` the replica has applied. Any
 | `GET /v1/status` | `{engine: "up"\|"down", engine_last_seq, replica: {state: "following"\|"catching_up"\|"unavailable", last_seq, state_hash}}`. `engine_last_seq` is the newest `seq` the gateway saw on egress. |
 | `GET /v1/accounts/{id}` | `{account, balance: {free, reserved, escrowed}, last_nonce}` |
 | `GET /v1/accounts/{id}/positions` | `{positions: [{id, contract, request, qty, side: "Yes"\|"No", stake, settled, payout}]}`: the account's side, its own locked amount, and once settled what it was paid. No counterparty. |
-| `GET /v1/accounts/{id}/requests` | The account's own requests: `{id, state, response_deadline, legs: [{contract, side, qty, limit_price, selected}]}`. `selected` is set only once presented; the live quote set is never shown (quotes are sealed until the deadline). |
+| `GET /v1/accounts/{id}/requests` | The account's own requests: `{id, state, response_deadline, legs: [{contract, side, qty, limit_price, selected}]}`. `selected` is `{quote, price}` once the request is presented (what `RequestPresented` tells the requester, and what `Accept` needs), else `null`; the live quote set is never shown (quotes are sealed until the deadline). |
 | `GET /v1/accounts/{id}/quotes` | The account's own quotes: `{id, request, leg, price, size, expires_at, state}` |
 | `GET /v1/requests?state=open` | Open requests with public fields only: `{id, response_deadline, legs: [{contract, side, qty}]}` (what `RequestOpened` already makes public: no requester, no limit). Optional `&contract=ID`. |
 | `GET /v1/contracts`, `GET /v1/contracts/{id}` | `{id, description, oracle, trading_close, resolution_deadline, dispute_window, state}` |
@@ -132,7 +132,7 @@ Lanes, contracts, positions, ledger and trace come back after a reload. The runs
 - The HTTP port binds `127.0.0.1` on the host (in Docker, `0.0.0.0:18081` inside, published on `127.0.0.1` only), like the WebSocket.
 - **Origin:** a request with an `Origin` header must pass the WebSocket's allowlist (`null`, `http://localhost[:port]`, `http://127.0.0.1[:port]`), else `403`. Allowed origins get `Access-Control-Allow-Origin` (that origin) and `Vary: Origin`; `OPTIONS` preflight answers `204`. Requests without `Origin` (curl) are not browsers and pass.
 - **No authentication** (out of the brief's scope): anyone who can reach the port can act as, or read, any account. Recorded in adversarial.md as an accepted residual; production fixes the account per authenticated session.
-- **Limits:** request body 64 KiB; at most 64 HTTP connections at once (more get `503`); a request's head must arrive within 10 s.
+- **Limits:** one request per connection (`Connection: close`); request body 64 KiB, with `Content-Length` (no chunked bodies); at most 64 HTTP connections at once (more get `503`); a request's head must arrive within 10 s. The server is the gateway's own, on `std::net` and `httparse` (already a dependency through `tungstenite`): no new HTTP framework.
 - **Sealing holds:** public endpoints show only what public events already show; an account's endpoints show only that account's data; a request's live quote set is never shown.
 
 ## 10. Testing
