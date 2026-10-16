@@ -268,6 +268,20 @@ await test("a command that belongs to no run is in no run: the curl walk-through
   assert.ok(![...S.runT0s(history)].some((t0) => t0 < 1_000), "no run of the walk-through's accounts");
 });
 
+await test("a run that stopped where another script's commands end is checked against that script's actions, not only its shape", () => {
+  // multi_leg_happy stopped after MM2's quote (on leg 1): the shape of multi_leg_leg2_fails, whose MM2 quotes leg 2.
+  // attack_accept_wrong_price stopped after its bad accept: the shape of oracle_silent_hard_deadline, whose accept takes the presented price.
+  const multi = liveOf("multi_leg_happy");
+  const wrong = liveOf("attack_accept_wrong_price");
+  const dropped = new Set([multi.labels.q3, multi.labels.accept, wrong.labels.accept]);
+  const stopped = S.runsFromHistory(history.filter((e) => !dropped.has(e.seq)));
+  for (const run of [multi, wrong]) {
+    const r = stopped.find((x) => x.t0 === run.t0);
+    assert.match(r.name, /^run \d\d:\d\d:\d\d$/, `${run.name} stopped early is not ${r.name}`);
+    assert.equal(r.pass, null);
+  }
+});
+
 await test("a history with nothing but one deposit of a run gets the neutral label, no verdict, and that one batch", () => {
   const t0 = 1_790_000_000_123;
   const alice = t0 * 100 + 10;

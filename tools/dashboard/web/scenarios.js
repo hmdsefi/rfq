@@ -1148,16 +1148,15 @@ const RfqScenarios = (() => {
 
   /**
    * The scenario whose script sent the run's commands (`steps`, retries left out): the one with the same
-   * actors (as script accounts or genesis roles) and actions, in the same order. Two scripts share that
-   * (the wrong-price accept and the double accept); then the one whose script, replayed, sends exactly
-   * these actions. Null when no single script matches: a run cut short, or one no script sent.
+   * actors (as script accounts or genesis roles) and action names in the same order, whose script, replayed,
+   * also sends exactly these actions. The shape alone says nothing of legs, prices or picks: a
+   * `multi_leg_happy` stopped after its second quote has `multi_leg_leg2_fails`'s shape, and the wrong-price
+   * and double accepts share one. Null when no single script matches: a run cut short, or one no script sent.
    */
   function scriptOf(t0, steps, batches) {
     const role = (a) => (R.GENESIS_ROLES.includes(a) ? a : a - t0 * PER_RUN);
     const shape = steps.map(({ cmd }) => `${role(cmd.actor)} ${actionName(cmd.action)}`).join(",");
-    const alike = scenarios.filter((s) => shapeOf(s).join(",") === shape);
-    if (alike.length < 2) return alike[0] ?? null;
-    const exact = alike.filter((s) => replays(s, t0, steps, batches));
+    const exact = scenarios.filter((s) => shapeOf(s).join(",") === shape && replays(s, t0, steps, batches));
     return exact.length === 1 ? exact[0] : null;
   }
 
