@@ -711,8 +711,9 @@ await test("on load the page fetches the status and the trace pages and shows th
     assert.equal(val("V.n"), HISTORY.length);
     assert.match(text(document, "tl-label"), /Batch 5 of 5/);
     assert.equal(document.getElementById("banners").innerHTML, "");
-    // The page's own record is untouched: no runs came back.
+    // The page's own record is untouched: the history's run is in the timeline's run list, not in the runs table.
     assert.equal(run("page.runs.length"), 0);
+    assert.deepEqual(val("page.historyRuns.map((r) => r.t0)"), [H_T0]);
   } finally {
     teardown(page);
   }
@@ -796,6 +797,7 @@ await test("a malformed 200 seeds nothing: every page and entry is checked befor
     ["a time that is not a number", fakeReadApi(bad(2, { time: "soon" }), { max: 3 }), trace],
     ["a kind that is not a name", fakeReadApi(bad(5, { kind: 7 }), { max: 3 }), trace],
     ["no events, on the second page", fakeReadApi(bad(5, { events: undefined }), { max: 3 }), trace],
+    ["a command that is not {actor, nonce, action}", fakeReadApi(bad(4, { command: { actor: 1, nonce: 4 } }), { max: 3 }), trace],
     ["a replica with no state", fakeReadApi(HISTORY, { state: null }), "unexpected response on /v1/status"],
   ];
   for (const [what, api, reason] of cases) {
@@ -942,6 +944,128 @@ await test("a reset while the history loads (a new epoch) seeds none of it: that
     assert.equal(run("page.historyT0.size"), 0, "no run of the old history is named either");
     run("render()");
     assert.equal(document.getElementById("banners").innerHTML, "", "nothing failed: there is just no history to show");
+  } finally {
+    teardown(page);
+  }
+});
+
+// ---- history: the runs a reload brings back into the timeline's run list ---------------------------------
+
+/**
+ * One scenario run as the admin trace holds it, from seq `seq`, with the operator's nonces from `nonce`: the
+ * setup (four deposits and the listing) and Alice's request, then `attack_self_trade`'s quote on her own
+ * request, or `no_quotes_expire`'s expiry at the deadline.
+ */
+function scriptedRun(t0, seq, nonce, last) {
+  const acct = (id) => t0 * 100 + id;
+  const alice = acct(10);
+  const entries = [];
+  const user = (actor, n, at, action, events, balances = []) =>
+    entries.push({ seq: seq++, time: t0 + at, kind: "User", origin: { actor, nonce: n }, events, balances, command: { actor, nonce: n, action } });
+  for (const to of [10, 20, 21, 30].map(acct)) user(1, nonce++, 0, { Deposit: { to, amount: 1e9 } }, [hTo(to, { Deposited: { account: to, amount: 1e9 } })], [hBal(to, 1e9)]);
+  user(1, nonce++, 0, { ListContract: { id: t0, description: "Will it rain in Paris on 2026-11-01?", oracle: acct(4), trading_close: t0 + 5_000, resolution_deadline: t0 + 15_000, dispute_window: 2_000 } }, [hPub({ ContractListed: { contract: t0 } })]);
+  const req = seq;
+  user(alice, 1, 100, { SubmitRequest: { legs: [{ contract: t0, side: "BuyYes", qty: 1000, limit_price: 7_000 }], response_deadline: t0 + 1_500 } },
+    [hPub({ RequestOpened: { request: req, leg: 0, contract: t0, side: "BuyYes", qty: 1000, response_deadline: t0 + 1_500 } })], [hBal(alice, 3e8, 7e8)]);
+  if (last === "self_quote") {
+    user(alice, 2, 300, { SubmitQuote: { request: req, leg: 0, price: 6_000, size: 1000, expires_at: t0 + 10_000 } }, [hTo(alice, { CommandRejected: { reason: "SelfTrade" } })]);
+  } else {
+    entries.push({ seq: seq++, time: t0 + 1_500, kind: "Tick", origin: null, events: [hPub({ RequestExpired: { request: req } })], balances: [hBal(alice, 1e9)], command: null });
+  }
+  return entries;
+}
+const RUN_A = 1_790_000_100_000; // attack_self_trade, seqs 2..8
+const RUN_B = 1_790_000_200_000; // no_quotes_expire, seqs 10..16
+/** Seq 9, between the runs: the README's curl walk-through funds account 10, which is no run's. */
+const CURL = { seq: 9, time: RUN_A + 400, kind: "User", origin: { actor: 1, nonce: 7 }, events: [hTo(10, { Deposited: { account: 10, amount: 1e9 } })], balances: [hBal(10, 1e9)], command: { actor: 1, nonce: 7, action: { Deposit: { to: 10, amount: 1e9 } } } };
+const TWO_RUNS = [...scriptedRun(RUN_A, 2, 2, "self_quote"), CURL, ...scriptedRun(RUN_B, 10, 8, "expire")];
+const seqs = (from, to) => Array.from({ length: to - from + 1 }, (_, i) => from + i);
+const tail = (t0) => String(t0).slice(-4);
+/** The timeline's run list: `[value, label]` per option, in order. */
+const runOptions = (document) => [...document.getElementById("tl-run").innerHTML.matchAll(/<option value="([^"]*)">([^<]*)<\/option>/g)].map(([, v, label]) => [v, label]);
+
+/** A page that reloaded onto `entries` as its history, connected and rendered. */
+async function reloaded(entries) {
+  const page = loadPage({ fetch: fakeReadApi(entries).fetch });
+  await page.run("historyLoaded");
+  await connected(page);
+  page.run("render()");
+  return page;
+}
+
+await test("after a reload whose history holds two runs, the run list has both, newest first, after the fixed options, labelled as history", async () => {
+  const page = await reloaded(TWO_RUNS);
+  const { run, document } = page;
+  try {
+    assert.deepEqual(runOptions(document), [
+      ["follow", "Follow the newest run"],
+      ["all", "All batches"],
+      [`h${RUN_B}`, `history · …${tail(RUN_B)} no_quotes_expire · PASS`],
+      [`h${RUN_A}`, `history · …${tail(RUN_A)} attack_self_trade · PASS`],
+    ]);
+    // The runs table stays the page's own record.
+    assert.equal(run("page.runs.length"), 0);
+    assert.match(text(document, "runs-table"), /No runs yet/);
+  } finally {
+    teardown(page);
+  }
+});
+
+await test("picking a history run shows its batches, its verdict and its log; All batches shows everything, the curl walk-through too", async () => {
+  const page = await reloaded(TWO_RUNS);
+  const { run, val, document } = page;
+  try {
+    run(`ui.sel = "h${RUN_A}"; ui.pos = null; render()`);
+    assert.deepEqual(val("V.r.batches.map((b) => b.seq)"), seqs(2, 8));
+    const label = text(document, "tl-label");
+    assert.match(label, /Batch 7 of 7/);
+    assert.ok(label.includes(`Over the batches of history · …${tail(RUN_A)} attack_self_trade.`), label);
+    const strip = text(document, "scenario");
+    assert.ok(strip.includes("attack_self_trade") && strip.includes("PASS") && strip.includes("Every expected event happened in order."), strip);
+    assert.ok(strip.includes("7 commands, from the history"), strip);
+    assert.ok(text(document, "runlog").includes(`history · …${tail(RUN_A)} attack_self_trade`), "the run's log");
+    run(`ui.sel = "h${RUN_B}"; render()`);
+    assert.deepEqual(val("V.r.batches.map((b) => b.seq)"), seqs(10, 16));
+    // All batches: both runs and the walk-through's deposit, which belongs to neither.
+    run('ui.sel = "all"; render()');
+    assert.deepEqual(val("V.r.batches.map((b) => b.seq)"), seqs(2, 16));
+    assert.equal(val("V.run"), null);
+    assert.match(text(document, "tl-label"), /Over every batch recorded\./);
+  } finally {
+    teardown(page);
+  }
+});
+
+await test("a history run no script matches has the neutral label and no verdict, and the strip says why", async () => {
+  // HISTORY is a run's setup, its request and one quote: the start of five scripts, the whole of none.
+  const page = await reloaded(HISTORY);
+  const { run, val, document } = page;
+  try {
+    const [, , [value, label]] = runOptions(document);
+    assert.equal(value, `h${H_T0}`);
+    assert.match(label, new RegExp(`^history · …${tail(H_T0)} run \\d\\d:\\d\\d:\\d\\d$`), label);
+    run(`ui.sel = "h${H_T0}"; render()`);
+    assert.equal(val("verdictOf(V.run)"), null);
+    const strip = text(document, "scenario");
+    assert.ok(strip.includes("its commands are not one scenario's script") && !/PASS|FAIL/.test(strip), strip);
+  } finally {
+    teardown(page);
+  }
+});
+
+await test("a new journal after the reload (a new epoch): the old history's runs leave the run list, and a pick of one goes back to following", async () => {
+  const page = await reloaded(TWO_RUNS);
+  const { run, val, document, server } = page;
+  try {
+    run(`ui.sel = "h${RUN_A}"; render()`);
+    assert.equal(val("V.run.id"), `h${RUN_A}`);
+    // `docker compose down -v`: the new journal's seq 3 is at or below the history's top, with another time.
+    server.sockets[0].onmessage({ data: JSON.stringify({ type: "batch", seq: 3, time: 9_003, kind: "Tick", origin: null, events: [hPub({ RequestExpired: { request: 3 } })], balances: [] }) });
+    assert.equal(run("rec.epoch"), 1);
+    run("render()");
+    assert.deepEqual(runOptions(document).map(([v]) => v), ["follow", "all"]);
+    assert.equal(val("ui.sel"), "follow");
+    assert.equal(val("V.run"), null);
   } finally {
     teardown(page);
   }

@@ -491,6 +491,8 @@ const VIEWS = [["admin", "Admin", null], ["alice", "Alice", 10], ["carol", "Caro
 const VIEW_ACCOUNT = Object.fromEntries(VIEWS.filter(([, , id]) => id != null).map(([k, , id]) => [k, id]));
 const viewLabel = (key) => VIEWS.find(([k]) => k === key)?.[1] ?? key;
 const TRACE_ROWS = 400;
+/** The timeline's run list holds this many runs at most. */
+const RUN_OPTIONS = 200;
 /** In an account view, what stands in for the driver's own record (verdicts, details, steps, timing). */
 const ADMIN_ONLY = "Run results and timing are shown in the Admin view.";
 /** "All batches" after many runs: the lanes, contracts and ledger show the newest this many. */
@@ -531,6 +533,7 @@ const page = {
   lastSet: null,
   errors: [URL_ERROR, HTTP_ERROR].filter(Boolean),
   historyT0: new Set(), // the runs (t0) the loaded history shows: their accounts are named like the page's own runs'
+  historyRuns: [], // those runs rebuilt from it (RfqScenarios.runsFromHistory), by t0, in the epoch it was seeded into; never the page's own
   view: "admin", // or a VIEWS key
   viewConn: null,
   viewOff: null,
@@ -598,7 +601,10 @@ const isEntry = (e) =>
   Number.isSafeInteger(e?.seq) && Number.isSafeInteger(e.time) && typeof e.kind === "string"
   && (e.origin == null || typeof e.origin === "object") && Array.isArray(e.events)
   && Array.isArray(e.balances) && e.balances.every((b) => b !== null && typeof b === "object")
-  && (e.command == null || typeof e.command === "object");
+  && (e.command == null || isCommand(e.command));
+/** `{ actor, nonce, action }`, the command of an admin trace entry: the model and the history's runs read all three. */
+const isCommand = (c) =>
+  typeof c === "object" && Number.isSafeInteger(c.actor) && Number.isSafeInteger(c.nonce) && c.action !== null && typeof c.action === "object";
 
 /**
  * Loads the history a reload would lose (read-api.md §8), once, alongside the live stream (which it never
@@ -629,16 +635,14 @@ async function loadHistory() {
       if (!Number.isSafeInteger(next) || next <= after) throw new HistoryError("unexpected response on /v1/trace");
       after = next;
     }
-    // The runs the history shows, by the scenarios' account ids, so their accounts get their names.
-    const t0s = new Set();
-    for (const e of entries) {
-      for (const id of [e.origin?.actor, ...e.balances.map((b) => b.account)]) {
-        if (id >= PER_RUN && SCENARIO_ACCOUNT[id % PER_RUN]) t0s.add(Math.floor(id / PER_RUN));
-      }
-    }
     if (rec.epoch !== epoch) return;
+    // The runs the history shows, by the scenarios' account ids: their accounts get their names, and the
+    // timeline's run list gets the runs, rebuilt as the driver records its own.
+    const runs = RfqScenarios.runsFromHistory(entries);
     rec.seedHistory(entries);
-    for (const t0 of t0s) page.historyT0.add(t0);
+    for (const t0 of RfqScenarios.runT0s(entries)) page.historyT0.add(t0);
+    for (const run of runs) run.epoch = epoch;
+    page.historyRuns = runs;
     if (replica.state !== "following") addError(`History may be incomplete: the read replica is ${replica.state.replace(/_/g, " ")}.`);
     schedule();
   } catch (e) {
@@ -730,10 +734,20 @@ const ui = {
 let selected = null; // { kind, id } the presenter clicked; D1 lights it (else the run's own objects)
 let V = null; // this render's { r, run, n, pos, M, T0 }
 
+/**
+ * The history's runs, while the recorder is on the journal the history was seeded into: after a reset (a new
+ * epoch) they are an old journal's, never the new one's runs.
+ */
+const historyRunsNow = () => page.historyRuns.filter((r) => r.epoch === rec.epoch);
+
 function selectedRun() {
   if (ui.sel === "all") return null;
   if (ui.sel === "follow") return page.runs.at(-1) ?? null;
-  return page.runsById.get(ui.sel) ?? null;
+  const run = page.runsById.get(ui.sel) ?? historyRunsNow().find((r) => r.id === ui.sel);
+  if (run) return run;
+  // A history run that a reset took out of the list: follow again.
+  ui.sel = "follow";
+  return selectedRun();
 }
 
 /**
@@ -864,8 +878,15 @@ const badge = (text, cls) => `<span class="badge ${cls ?? BADGE[text] ?? "b-gone
 const byIdDesc = (a, b) => b.id - a.id;
 const disabledIf = (off, why) => (off ? ` disabled${why ? ` title="${esc(why)}"` : ""}` : "");
 const isAdmin = () => page.view === "admin";
-const verdictOf = (run) => (!run.done ? "running" : run.stopped ? "STOPPED" : run.pass ? "PASS" : "FAIL");
-const runTag = (run) => `${run.id} · …${String(run.t0).slice(-4)}`;
+/** A run's verdict, or null for a history run that no scenario's script matches (it has none). */
+const verdictOf = (run) => (!run.done ? "running" : run.stopped ? "STOPPED" : run.pass == null ? null : run.pass ? "PASS" : "FAIL");
+/** `r12 · …6789` for the page's own run, `history · …6789` for one the history brought back. */
+const runTag = (run) => `${run.history ? "history" : run.id} · …${String(run.t0).slice(-4)}`;
+/** A run as the timeline's run list names it: its tag, its scenario and its verdict. */
+const runLabel = (run) => {
+  const v = verdictOf(run);
+  return `${runTag(run)} ${run.name}${v ? ` · ${v}` : ""}`;
+};
 
 /** An id that selects its object for the inspector and D1. `where` keeps the focus key unique. */
 const idlink = (kind, id, text, where) =>
@@ -1052,6 +1073,13 @@ function renderScenario() {
   const run = V.run;
   const name = run?.name ?? document.getElementById("scenario-pick").value;
   const s = RfqScenarios.byName(name);
+  // A history run that no scenario's script matches: no expected events, so no verdict.
+  if (!s && run) {
+    return setHtml(el, `<div>
+        <div class="scenario-title"><h2>${esc(run.name)}</h2><span class="muted" style="font-size:13px">${esc(runTag(run))}</span></div>
+        <p>From the history: its commands are not one scenario's script (a run cut short, or one no script sent), so it has no expected events and no verdict.</p>
+      </div>`);
+  }
   if (!s) return setHtml(el, '<p class="muted">Pick a scenario.</p>');
   const v = run ? verdictOf(run) : null;
   const title = [
@@ -1063,7 +1091,7 @@ function renderScenario() {
   let progress;
   if (!run) progress = "<div>Not run yet</div><div>Press <strong>Run</strong>: the page acts as every participant through the gateway.</div>";
   else if (!run.done) progress = `<div>Step <strong>${run.step}</strong> of ${run.steps}</div><div>${run.commands.length} command${run.commands.length === 1 ? "" : "s"} answered</div>`;
-  else progress = `<div>${v === "PASS" ? "Every expected event happened in order." : esc(run.detail ?? "")}</div><div>${run.commands.length} commands · ${(run.wall_ms / 1000).toFixed(1)} s</div>`;
+  else progress = `<div>${v === "PASS" ? "Every expected event happened in order." : esc(run.detail ?? "")}</div><div>${run.commands.length} commands${run.history ? ", from the history" : ` · ${(run.wall_ms / 1000).toFixed(1)} s`}</div>`;
   // The admin view lights the chips from the run's own events (the verdict's input) up to the position;
   // an account view from what that view received.
   const events = !run ? [] : isAdmin()
@@ -1119,10 +1147,13 @@ function renderTimeline() {
   const { n, pos } = V;
   const live = ui.pos == null;
   const sel = document.getElementById("tl-run");
-  // An account view's batches are its connection's, whole: the run list is the driver's record.
+  // An account view's batches are its connection's, whole: the run list is the driver's record. It lists the
+  // page's own runs, then the runs the history brought back, each newest first, RUN_OPTIONS at most.
+  const own = page.runs.slice().reverse().slice(0, RUN_OPTIONS);
+  const earlier = historyRunsNow().slice().reverse().slice(0, RUN_OPTIONS - own.length);
   const options = !isAdmin() ? `<option value="view">Everything the gateway sent ${esc(viewLabel(page.view))}</option>`
     : [`<option value="follow">Follow the newest run</option>`, `<option value="all">All batches</option>`,
-      ...page.runs.slice().reverse().slice(0, 200).map((r) => `<option value="${esc(r.id)}">${esc(`${runTag(r)} ${r.name}${r.done ? ` · ${verdictOf(r)}` : " · running"}`)}</option>`)].join("");
+      ...[...own, ...earlier].map((r) => `<option value="${esc(r.id)}">${esc(runLabel(r))}</option>`)].join("");
   if (document.activeElement !== sel) {
     if (sel.patched !== options) {
       sel.innerHTML = options;
