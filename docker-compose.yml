@@ -3,6 +3,7 @@
 #   aeron   the Java ArchivingMediaDriver: media driver + Archive (the engine's journal)
 #   engine  rfq-node: sequencer + engine, journaling to the Archive
 #   gateway rfq-gateway: the WebSocket client edge on ws://127.0.0.1:18080 (docs/specs/gateway.md)
+#           and the HTTP API on http://127.0.0.1:18081 (docs/specs/read-api.md)
 #   demo    rfq-demo: runs the scripted scenarios as an Aeron client (profile `demo`, run on demand:
 #           `docker compose run --rm demo [scenario]`)
 #
@@ -53,14 +54,18 @@ services:
     # others, so a gateway that keeps failing stays down and `docker compose logs gateway` says why.
     restart: "on-failure:3"
     environment:
-      # 0.0.0.0 inside the container, so the port mapping reaches it; on the host it is published
-      # on 127.0.0.1 only (gateway.md §7).
+      # 0.0.0.0 inside the container, so the port mappings reach it; on the host they are published
+      # on 127.0.0.1 only (gateway.md §7, read-api.md §9).
       RFQ_GATEWAY_ADDR: "0.0.0.0:18080"
+      RFQ_HTTP_ADDR: "0.0.0.0:18081"
       # One level for everything; `RUST_LOG=debug docker compose up -d gateway` also shows nonce
       # and liveness probes.
       RUST_LOG: "${RUST_LOG:-info}"
-    # Host port 18080 unless RFQ_GATEWAY_PORT says otherwise.
-    ports: ["127.0.0.1:${RFQ_GATEWAY_PORT:-18080}:18080"]
+    # Host ports 18080 (WebSocket) and 18081 (HTTP) unless RFQ_GATEWAY_PORT and RFQ_HTTP_PORT say
+    # otherwise.
+    ports:
+      - "127.0.0.1:${RFQ_GATEWAY_PORT:-18080}:18080"
+      - "127.0.0.1:${RFQ_HTTP_PORT:-18081}:18081"
     # It may start before the engine: its status is simply down until the engine is there.
     depends_on: [aeron]
 
