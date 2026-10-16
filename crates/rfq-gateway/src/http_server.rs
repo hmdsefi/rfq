@@ -10,6 +10,9 @@
 //! - **Bodies** only for `POST`, and only with a `Content-Length` (`411` without one, or with
 //!   `Transfer-Encoding`; `413` over the limit, before the body is read; `408` if it stalls for
 //!   `head_timeout`). `Expect: 100-continue` is honoured.
+//! - **Host** (read-api.md §9): a request whose `Host` fails [`host_allowed`] (a name other than
+//!   `localhost`, `127.0.0.1` or `[::1]`: DNS rebinding) gets `403` before anything else, and two
+//!   `Host` headers are a `400`.
 //! - **Origin** (read-api.md §9): a request whose `Origin` fails
 //!   [`origin_allowed`] gets `403` and never reaches the handler. Every other answer to a request
 //!   with an `Origin` carries `Access-Control-Allow-Origin` (that origin) and `Vary: Origin`, and
@@ -29,7 +32,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use rfq_gateway::origin::origin_allowed;
+use rfq_gateway::origin::{host_allowed, origin_allowed};
 use rfq_gateway::protocol::MAX_TEXT;
 use rfq_gateway::read_api::Reply;
 
@@ -319,6 +322,9 @@ fn serve(
         })
     };
 
+    if !host_allowed(head.host.as_deref()) {
+        return respond(stream, &Reply::error(403, "host not allowed"), Cors::None);
+    }
     if let Some(origin) = head.origin.as_deref()
         && !origin_allowed(Some(origin))
     {
@@ -367,6 +373,7 @@ struct Head {
     method: String,
     path: String,
     query: String,
+    host: Option<String>,
     origin: Option<String>,
     length: Length,
     /// A `Transfer-Encoding` header was given (chunked bodies are not supported).
@@ -433,6 +440,7 @@ fn parse_head(buf: &[u8]) -> Result<Option<Head>, Reply> {
         method: method.to_owned(),
         path: path.to_owned(),
         query: query.to_owned(),
+        host: None,
         origin: None,
         length: Length::Absent,
         chunked: false,
@@ -440,7 +448,13 @@ fn parse_head(buf: &[u8]) -> Result<Option<Head>, Reply> {
     };
     for header in req.headers.iter() {
         let name = header.name;
-        if name.eq_ignore_ascii_case("origin") {
+        if name.eq_ignore_ascii_case("host") {
+            if head.host.is_some() {
+                return Err(Reply::error(400, "bad request: more than one Host header"));
+            }
+            let value = std::str::from_utf8(header.value).unwrap_or("<not UTF-8>");
+            head.host = Some(value.trim().to_owned());
+        } else if name.eq_ignore_ascii_case("origin") {
             if head.origin.is_none() {
                 let value = std::str::from_utf8(header.value).unwrap_or("<not UTF-8>");
                 head.origin = Some(value.to_owned());
@@ -740,6 +754,68 @@ mod tests {
         );
         assert_eq!(r.status, 403);
         assert_eq!(calls.load(Ordering::Relaxed), 0);
+    }
+
+    /// DNS rebinding: a page whose name resolves to 127.0.0.1 sends same-origin `GET`s with no
+    /// `Origin`, but with its own name in `Host`.
+    #[test]
+    fn a_foreign_host_gets_403_before_anything_else_and_never_reaches_the_handler() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&calls);
+        let addr = start_with(
+            limits(),
+            Arc::new(move |r| {
+                counted.fetch_add(1, Ordering::Relaxed);
+                echo(r)
+            }),
+        );
+        let request = |method: &str, host: &str, extra: &str| {
+            format!("{method} /v1/trace?view=admin HTTP/1.1\r\nHost: {host}\r\n{extra}\r\n")
+        };
+        for (what, raw) in [
+            ("a GET", request("GET", "evil.example:18081", "")),
+            ("no port", request("GET", "evil.example", "")),
+            ("a lookalike", request("GET", "127.0.0.1.evil.example:18081", "")),
+            // Checked before the Origin rule: an allowed Origin does not let it through.
+            (
+                "an allowed Origin",
+                request("GET", "evil.example:18081", "Origin: http://localhost:18081\r\n"),
+            ),
+            (
+                "a preflight",
+                request("OPTIONS", "evil.example:18081", "Origin: null\r\n"),
+            ),
+            (
+                "a POST",
+                request("POST", "evil.example:18081", "Content-Length: 2\r\n"),
+            ),
+        ] {
+            let r = exchange(addr, &raw);
+            assert_eq!(r.status, 403, "{what}");
+            assert_eq!(r.json(), json!({"error": "host not allowed"}), "{what}");
+            assert!(r.header("access-control-allow-origin").is_none(), "{what}");
+        }
+        assert_eq!(calls.load(Ordering::Relaxed), 0, "no handler call");
+
+        // A local name with any port, and no Host at all (HTTP/1.0, a program), reach the handler.
+        for host in ["127.0.0.1:1234", "localhost", "[::1]:18081", "LOCALHOST:28081"] {
+            let r = exchange(addr, &request("GET", host, ""));
+            assert_eq!(r.status, 200, "{host}");
+        }
+        assert_eq!(exchange(addr, "GET /v1/status HTTP/1.0\r\n\r\n").status, 200);
+        assert_eq!(calls.load(Ordering::Relaxed), 5);
+
+        // Two Host headers are not a request.
+        let r = exchange(
+            addr,
+            "GET /v1/status HTTP/1.1\r\nHost: localhost\r\nHost: evil.example\r\n\r\n",
+        );
+        assert_eq!(r.status, 400);
+        assert_eq!(
+            r.json(),
+            json!({"error": "bad request: more than one Host header"})
+        );
+        assert_eq!(calls.load(Ordering::Relaxed), 5);
     }
 
     #[test]
