@@ -15,6 +15,7 @@
 //! the replica thread marks the replica `unavailable` when it dies, and reads go on serving what
 //! it had until the process exits (the binary's `read_side` ends it on such a panic).
 use std::fmt::Write as _;
+use std::io::{self, Write as _};
 use std::sync::{Arc, Condvar, Mutex, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant};
 
@@ -513,11 +514,15 @@ fn seen(view: View, entry: &TraceEntry) -> Option<Entry<'_>> {
 /// pages honest: a page that stops is never followed by an empty one, and a page is never empty
 /// while the view still has entries.
 ///
-/// Each entry is written straight into the body, and taken back out if it takes the array over
-/// `max_bytes`: no `Value` tree, and no page bigger than the budget held under the read lock.
+/// Each entry is written straight into the body, through a [`Capped`] that refuses the write that
+/// would take the array over `max_bytes` (once it holds an entry): no `Value` tree, and an entry
+/// that does not fit is never written whole. What is held under the read lock is the page: at
+/// most `max_bytes` of entries, or the first entry alone when that is more.
 fn trace(replica: &Replica, view: View, after_seq: u64, limit: usize, max_bytes: usize) -> Reply {
     let mut body = format!("{{\"as_of_seq\":{},\"entries\":[", replica.last_seq()).into_bytes();
     let array = body.len() - 1; // where the `[` is
+    // How long the body may grow, before the `]` that closes the array would take it over.
+    let room = array.saturating_add(max_bytes).saturating_sub(1);
     let (mut taken, mut last, mut next) = (0, None, None);
     for entry in replica.trace_after(after_seq) {
         let Some(entry) = seen(view, entry) else {
@@ -528,14 +533,22 @@ fn trace(replica: &Replica, view: View, after_seq: u64, limit: usize, max_bytes:
             break;
         }
         let before = body.len();
-        if taken > 0 {
-            body.push(b',');
+        // The first entry is always taken, however large.
+        let mut out = Capped {
+            out: &mut body,
+            limit: if taken == 0 { usize::MAX } else { room },
+        };
+        let mut fits = taken == 0 || out.write_all(b",").is_ok();
+        if fits {
+            match serde_json::to_writer(&mut out, &entry) {
+                Ok(()) => {}
+                // Only `Capped` fails with an I/O error: the entry does not fit.
+                Err(e) if e.is_io() => fits = false,
+                Err(e) => return internal(&e),
+            }
         }
-        if let Err(e) = serde_json::to_writer(&mut body, &entry) {
-            return internal(&e);
-        }
-        // The array as it would be if it closed here, `]` included.
-        if taken > 0 && body.len() + 1 - array > max_bytes {
+        if !fits {
+            // Back to the last whole entry: what was written of this one is not part of the page.
             body.truncate(before);
             next = last;
             break;
@@ -548,9 +561,32 @@ fn trace(replica: &Replica, view: View, after_seq: u64, limit: usize, max_bytes:
         return internal(&e);
     }
     body.push(b'}');
+    // Growing by doubling leaves room, and the reply is held until it is written.
+    body.shrink_to_fit();
     match String::from_utf8(body) {
         Ok(body) => Reply { status: 200, body },
         Err(e) => internal(&e),
+    }
+}
+
+/// A trace page's body as it is written: refuses a write that would take it past `limit` bytes,
+/// and leaves it as it was.
+struct Capped<'a> {
+    out: &'a mut Vec<u8>,
+    limit: usize,
+}
+
+impl io::Write for Capped<'_> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if buf.len() > self.limit.saturating_sub(self.out.len()) {
+            return Err(io::ErrorKind::StorageFull.into());
+        }
+        self.out.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }
 
@@ -1073,6 +1109,66 @@ mod tests {
         for page in &pages {
             assert!(entries_bytes(page) <= TRACE_MAX_BYTES);
         }
+    }
+
+    /// What a page holds is the page: the reply has no room left over from an entry that did not
+    /// fit (here a 60 KiB one, the second, which a page that writes it whole drops again).
+    #[test]
+    fn a_trace_reply_holds_no_room_for_the_entry_that_did_not_fit() {
+        let log = large_log(3);
+        let read = read_side(&log, log.len());
+        let first = read.read(|r, _| {
+            let entry = r.trace_after(0).find_map(|e| seen(View::Admin, e)).unwrap();
+            serde_json::to_string(&entry).unwrap().len()
+        });
+        // `[first]` exactly: the second entry does not fit.
+        let reply = read.read(|r, _| trace(r, View::Admin, 0, 1_000, first + 2));
+        assert_eq!(reply.status, 200, "{}", reply.body);
+        let page: Value = serde_json::from_str(&reply.body).unwrap();
+        assert_eq!(entry_seqs(&page), [1]);
+        assert_eq!(page["next_after_seq"], 1, "stopped early: more remain");
+        let room = reply.body.capacity() - reply.body.len();
+        assert!(
+            room < 1024,
+            "the reply holds {room} bytes of room beyond its {} bytes",
+            reply.body.len()
+        );
+    }
+
+    /// The body never passes its limit, a refused write leaves it as it was, and serde_json says
+    /// the refusal is an I/O error (which is how `trace` tells it from an encoding failure).
+    #[test]
+    fn a_capped_body_refuses_the_write_that_would_pass_its_limit() {
+        let mut body = b"[1234567".to_vec();
+        let mut capped = Capped {
+            out: &mut body,
+            limit: 10,
+        };
+        capped.write_all(b"8").unwrap();
+        capped.write_all(b"9").unwrap(); // exactly up to the limit
+        let refused = capped.write_all(b"0").unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::StorageFull);
+        let refused = serde_json::to_writer(&mut capped, &"abc").unwrap_err();
+        assert!(refused.is_io(), "{refused}");
+        assert_eq!(body, b"[123456789");
+
+        // Part of a value may be written before the write that does not fit: still within the limit.
+        let mut body = b"[1234567".to_vec();
+        let refused = serde_json::to_writer(
+            Capped {
+                out: &mut body,
+                limit: 10,
+            },
+            &"abc",
+        )
+        .unwrap_err();
+        assert!(refused.is_io(), "{refused}");
+        assert_eq!(body, b"[1234567\"");
+
+        // An encoding failure is not one.
+        let unencodable = std::collections::BTreeMap::from([((1, 2), 3)]);
+        let failure = serde_json::to_writer(Vec::new(), &unencodable).unwrap_err();
+        assert!(!failure.is_io(), "{failure}");
     }
 
     /// Every page of `view`'s trace at `limit` and a byte budget of `max_bytes`.
