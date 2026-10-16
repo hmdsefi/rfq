@@ -107,6 +107,13 @@ fn spawn_counting(
     handler: Handler,
     live: Arc<AtomicUsize>,
 ) -> io::Result<JoinHandle<()>> {
+    // What the compile-time check of `LIMITS` says, for the limits a caller passes in.
+    debug_assert!(
+        limits.max_writes < limits.max_connections,
+        "writes must leave room for reads: max_writes {} is not below max_connections {}",
+        limits.max_writes,
+        limits.max_connections
+    );
     std::thread::Builder::new()
         .name("http-accept".into())
         .spawn(move || accept(&listener, limits, &handler, &live))
@@ -1202,6 +1209,7 @@ mod tests {
     fn the_connection_over_the_limit_gets_503_and_a_slot_frees_when_a_client_leaves() {
         let addr = start(HttpLimits {
             max_connections: 2,
+            max_writes: 1,
             ..limits()
         });
         // Two idle connections fill the server.
@@ -1429,10 +1437,28 @@ mod tests {
         }
     }
 
+    /// `LIMITS` is checked at compile time; the limits a server is started with are checked when
+    /// it starts (in a debug build, as the tests are): writes that may take every connection
+    /// leave none for reads.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "writes must leave room for reads")]
+    fn limits_that_let_writes_take_every_connection_are_refused() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let limits = HttpLimits {
+            max_connections: 4,
+            max_writes: 4,
+            ..limits()
+        };
+        let _ = spawn(listener, limits, Arc::new(echo));
+    }
+
     #[test]
     fn a_finished_request_frees_its_slot() {
+        // One connection, for reads only: writes must leave room for reads.
         let addr = start(HttpLimits {
             max_connections: 1,
+            max_writes: 0,
             ..limits()
         });
         for _ in 0..20 {
@@ -1476,8 +1502,10 @@ mod tests {
 
     #[test]
     fn a_panicking_handler_is_a_500_and_the_server_goes_on() {
+        // One connection, for reads only: writes must leave room for reads.
         let addr = start(HttpLimits {
             max_connections: 1,
+            max_writes: 0,
             ..limits()
         });
         let r = exchange(addr, &get("/boom", ""));
