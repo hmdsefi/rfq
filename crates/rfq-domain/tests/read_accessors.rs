@@ -65,7 +65,8 @@ fn positions_lists_every_position_in_id_order() {
     assert!(p.settled, "happy_path runs to settlement");
     assert_eq!(h.engine.position(p.id), Some(p));
 
-    // Three legs fill into three positions, listed by ascending id.
+    // Three legs fill into three positions, listed by ascending id; the run then settles each of them
+    // (they stay listed after settlement).
     let multi = all()
         .into_iter()
         .find(|s| s.name == "multi_leg_happy")
@@ -73,4 +74,8 @@ fn positions_lists_every_position_in_id_order() {
     let (h, _) = run_in_memory(&multi, 1_000);
     let ids: Vec<PositionId> = h.engine.positions().map(|p| p.id).collect();
     assert_eq!(ids, vec![PositionId(1), PositionId(2), PositionId(3)]);
+    assert!(
+        h.engine.positions().all(|p| p.settled && p.yes_holder == ALICE),
+        "multi_leg_happy runs to settlement, with Alice holding YES on every leg"
+    );
 }

@@ -106,20 +106,26 @@ fn the_scenarios_are_the_six_brief_ones_then_the_two_multi_leg_ones() {
 
 // Three markets and one request for 400 YES on each: Alice's $840 hold pays $248 + $240 + $256
 // for the three picks (0.62, 0.60, 0.64) and the rest goes back; MM1 backs leg indices 0 and 2, MM2 index 1.
+// This is the script cut at the accept (+2 s): the three positions are escrowed and the markets still Trading.
 #[test]
-fn multi_leg_happy() {
-    let (h, events) = run("multi_leg_happy");
+fn multi_leg_happy_fills_all_three_legs_at_the_accept() {
+    let mut s = all().into_iter().find(|s| s.name == "multi_leg_happy").unwrap();
+    s.steps.retain(|step| step.at <= 2_000);
+    let (h, events) = run_in_memory(&s, T0);
+    contains_in_order(&events, &s.expect[..14]).expect("the steps up to the accept");
     assert_eq!(free(&h, ALICE), dollars(1_000 - 744));
     assert_eq!(h.engine.balance(ALICE).escrowed, dollars(744));
     assert_eq!(free(&h, MM1), dollars(1_000 - 152 - 144));
     assert_eq!(h.engine.balance(MM1).escrowed, dollars(152 + 144));
     assert_eq!(free(&h, MM2), dollars(1_000 - 160));
     assert_eq!(h.engine.balance(MM2).escrowed, dollars(160));
-    // One position per leg, each on its own market.
+    // One position per leg, each on its own market, which is still Trading.
     let ctx = Ctx::new(T0);
     for k in 1..=3 {
         let c = h.engine.market(ctx.market_n(k)).expect("listed");
         assert_eq!(c.positions.len(), 1, "market {k}");
+        assert_eq!(c.state, MarketState::Trading, "market {k}");
+        assert!(!h.engine.position(c.positions[0]).unwrap().settled, "market {k}");
     }
     assert_eq!(
         events
@@ -128,6 +134,47 @@ fn multi_leg_happy() {
             .count(),
         3,
         "one RequestOpened per leg"
+    );
+}
+
+// The whole script: the markets close, the oracle proposes YES on each and each finalizes. Alice holds YES
+// on all three legs, so every position pays her its whole pot (400 × $1) and the two MMs lose their locks.
+#[test]
+fn multi_leg_happy() {
+    let (h, events) = run("multi_leg_happy");
+    let ctx = Ctx::new(T0);
+    for k in 1..=3 {
+        let c = h.engine.market(ctx.market_n(k)).expect("listed");
+        assert_eq!(c.state, MarketState::Final(Outcome::Yes), "market {k}");
+        assert_eq!(c.positions.len(), 1, "market {k}");
+        assert!(h.engine.position(c.positions[0]).unwrap().settled, "market {k}");
+    }
+    assert_eq!(free(&h, ALICE), dollars(1_000 - 744 + 3 * 400));
+    assert_eq!(free(&h, MM1), dollars(1_000 - 152 - 144));
+    assert_eq!(free(&h, MM2), dollars(1_000 - 160));
+    assert_eq!(free(&h, CAROL), dollars(1_000));
+    // Every hold and escrow is back to zero (I1-I5).
+    for a in [ALICE, MM1, MM2, CAROL, TREASURY] {
+        let b = h.engine.balance(a);
+        assert_eq!((b.reserved, b.escrowed), (0, 0), "{a:?}");
+    }
+    // Each position's settlement is told to both holders, and pays the whole pot to the YES holder.
+    let payouts: Vec<_> = events
+        .iter()
+        .filter_map(|e| match &e.event {
+            Event::PositionSettled {
+                yes_holder,
+                yes_payout,
+                no_payout,
+                ..
+            } => Some((*yes_holder, *yes_payout, *no_payout)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(payouts.len(), 6, "three positions, one event per holder");
+    assert!(
+        payouts.iter().all(|p| *p == (ALICE, dollars(400), 0)),
+        "{payouts:?}"
     );
 }
 

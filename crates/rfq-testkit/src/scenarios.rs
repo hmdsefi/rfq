@@ -259,6 +259,14 @@ fn leg_quote(at: Duration, label: &'static str, mm: AccountId, leg: u32, bps: u1
     })
 }
 
+/// The oracle proposes YES on the run's `k`th extra market at `at` (its dispute window is 2 s).
+fn propose_yes(label: &'static str, at: Duration, k: u64) -> Step {
+    send(at, label, ORACLE, move |c| Action::ProposeOutcome {
+        market: c.market_n(k),
+        outcome: Outcome::Yes,
+    })
+}
+
 pub fn all() -> Vec<Scenario> {
     let happy = {
         let mut s = filled();
@@ -374,7 +382,8 @@ pub fn all() -> Vec<Scenario> {
         }
     };
     // Multi-leg (engine.md §8): three markets, one request, a quote on every leg, and one accept fills
-    // all three legs. MM1 backs leg indices 0 and 2, MM2 backs index 1.
+    // all three legs. MM1 backs leg indices 0 and 2, MM2 backs index 1. Then the markets close, the oracle
+    // proposes YES on each, and each finalizes and settles after its own 2 s window: Alice wins every leg.
     let multi_leg_happy = {
         let mut s = three_markets();
         s.push(three_leg_request());
@@ -383,6 +392,11 @@ pub fn all() -> Vec<Scenario> {
         s.push(leg_quote(500, "q3", MM1, 2, 6_400));
         s.push(tick(1_600));
         s.push(accept(2_000));
+        s.push(tick(5_100));
+        s.push(propose_yes("propose_paris", 5_200, 1));
+        s.push(propose_yes("propose_london", 5_300, 2));
+        s.push(propose_yes("propose_rome", 5_400, 3));
+        s.push(tick(7_500));
         Scenario {
             name: "multi_leg_happy",
             steps: s,
@@ -401,6 +415,18 @@ pub fn all() -> Vec<Scenario> {
                 "QuoteFilled",
                 "QuoteFilled",
                 "RequestFilled",
+                "MarketClosed",
+                "MarketClosed",
+                "MarketClosed",
+                "OutcomeProposed",
+                "OutcomeProposed",
+                "OutcomeProposed",
+                "MarketFinalized",
+                "PositionSettled",
+                "MarketFinalized",
+                "PositionSettled",
+                "MarketFinalized",
+                "PositionSettled",
             ],
         }
     };

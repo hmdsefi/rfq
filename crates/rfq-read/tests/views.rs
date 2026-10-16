@@ -215,7 +215,8 @@ fn positions_are_unsettled_with_no_payout_before_resolution() {
 
 #[test]
 fn a_multi_leg_fill_gives_one_position_per_leg_in_id_order() {
-    let e = engine_after("multi_leg_happy");
+    // At the accept: three positions, none settled yet.
+    let e = engine_through(scenario("multi_leg_happy"), |s| is_send(s, "accept"));
 
     // Alice buys YES on all three markets: MM1 backs legs 0 and 2, MM2 backs leg 1 (400 shares each).
     let alice = positions_of(&e, ALICE);
@@ -240,6 +241,38 @@ fn a_multi_leg_fill_gives_one_position_per_leg_in_id_order() {
     );
     assert!(mm1.iter().all(|p| p.side == Holding::No));
     assert_eq!(positions_of(&e, MM2).len(), 1);
+}
+
+#[test]
+fn a_settled_multi_leg_run_pays_alice_the_pot_of_every_leg() {
+    // After the whole script each market is Final(Yes): the stakes are as at the fill and every position is settled.
+    let e = engine_after("multi_leg_happy");
+
+    let alice = positions_of(&e, ALICE);
+    assert_eq!(alice.len(), 3);
+    assert!(alice.windows(2).all(|w| w[0].id < w[1].id), "id order");
+    assert_eq!(
+        alice.iter().map(|p| p.stake).collect::<Vec<_>>(),
+        [248_000_000, 240_000_000, 256_000_000]
+    );
+    assert!(
+        alice
+            .iter()
+            .all(|p| p.side == Holding::Yes && p.settled && p.payout == Some(dollars(400)))
+    );
+
+    let mm1 = positions_of(&e, MM1);
+    assert_eq!(
+        mm1.iter().map(|p| p.stake).collect::<Vec<_>>(),
+        [152_000_000, 144_000_000]
+    );
+    let mm2 = positions_of(&e, MM2);
+    assert_eq!(mm2.len(), 1);
+    assert!(
+        mm1.iter()
+            .chain(&mm2)
+            .all(|p| p.side == Holding::No && p.settled && p.payout == Some(0))
+    );
 }
 
 // ---- requests_of ----
@@ -588,7 +621,8 @@ fn account_shows_the_ledger_balance_and_the_last_nonce() {
 
 #[test]
 fn markets_and_market_show_terms_and_state() {
-    let e = engine_after("multi_leg_happy");
+    // At the accept the three markets are listed and still Trading.
+    let e = engine_through(scenario("multi_leg_happy"), |s| is_send(s, "accept"));
     let all = markets(&e);
     let ids: Vec<MarketId> = all.iter().map(|c| c.id).collect();
     assert_eq!(
@@ -640,6 +674,22 @@ fn markets_and_market_show_terms_and_state() {
     assert_eq!(
         market(&finalized, MarketId(T0)).unwrap().state,
         MarketState::Final(Outcome::Yes)
+    );
+    // After the whole multi-leg script every market has finalized YES, and its terms are unchanged.
+    let settled = engine_after("multi_leg_happy");
+    let after = markets(&settled);
+    assert_eq!(after.len(), 3);
+    assert!(
+        after.iter().all(|c| c.state == MarketState::Final(Outcome::Yes)),
+        "{after:?}"
+    );
+    assert_eq!(
+        after.iter().map(|c| c.id).collect::<Vec<_>>(),
+        all.iter().map(|c| c.id).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        serde_json::to_value(&after[0]).unwrap()["state"],
+        json!({"Final": "Yes"})
     );
     assert_eq!(markets(&Engine::new()), vec![]);
 }
