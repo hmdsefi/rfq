@@ -2,14 +2,9 @@
 //! connection. It knows nothing of the protocol beyond frame sizes: text goes to the hub loop's
 //! inbox, and what the hub sends comes back through the connection's outbox.
 //!
-//! - **Upgrade.** Only from `Origin: null` (a page opened from disk), `http://localhost[:port]`
-//!   or `http://127.0.0.1[:port]`; any other Origin gets HTTP 403. A request without an Origin
-//!   is accepted: browsers always send one on a WebSocket upgrade, so it comes from a program
-//!   (a Node script, `websocat`), which could send any Origin it liked. The check protects
-//!   against other web sites in the user's browser, which is all an Origin check can do. Note
-//!   that browsers also send `Origin: null` from a sandboxed iframe (and some other opaque
-//!   origins), so any site could reach the gateway that way: acceptable for a local demo with
-//!   no authentication (gateway.md §7), not for production.
+//! - **Upgrade.** Only from an Origin that [`origin_allowed`] accepts (`null`,
+//!   `http://localhost[:port]`, `http://127.0.0.1[:port]`, or none: see `rfq_gateway::origin` for
+//!   why each is safe enough); any other Origin gets HTTP 403. The HTTP API applies the same rule.
 //! - **Each connection's thread** alternates between writing its outbox and reading one frame,
 //!   with a socket timeout of [`POLL`], so a frame from the hub waits at most that long.
 //! - **Sizes.** A text frame over [`MAX_TEXT`] (64 KiB, the engine's ingress limit) is answered
@@ -33,6 +28,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use rfq_gateway::hub::ConnId;
+use rfq_gateway::origin::origin_allowed;
 use rfq_gateway::protocol::{MAX_TEXT, ServerMsg, encode_server, too_large};
 use tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tungstenite::http::StatusCode;
@@ -215,26 +211,6 @@ fn handshake(stream: TcpStream) -> Result<WebSocket<TcpStream>, String> {
         Err(HandshakeError::Interrupted(_)) => Err("no upgrade request in time".into()),
         Err(HandshakeError::Failure(e)) => Err(refused.unwrap_or_else(|| e.to_string())),
     }
-}
-
-/// Whether an upgrade with this `Origin` header (or none) is allowed (gateway.md §7). `null` is a
-/// page opened from disk, but also a sandboxed iframe on any site (see the module doc).
-pub fn origin_allowed(origin: Option<&str>) -> bool {
-    let Some(origin) = origin else {
-        return true; // not a browser
-    };
-    if origin == "null" {
-        return true;
-    }
-    ["http://localhost", "http://127.0.0.1"]
-        .iter()
-        .any(|host| match origin.strip_prefix(host) {
-            Some("") => true,
-            Some(rest) => rest.strip_prefix(':').is_some_and(|port| {
-                (1..=5).contains(&port.len()) && port.bytes().all(|b| b.is_ascii_digit())
-            }),
-            None => false,
-        })
 }
 
 /// Pumps one open connection until it closes; returns why it closed.
@@ -491,33 +467,6 @@ mod tests {
                     panic!("no {prefix:?} in the inbox")
                 }
             }
-        }
-    }
-
-    #[test]
-    fn only_local_origins_may_upgrade() {
-        for origin in [
-            None,
-            Some("null"),
-            Some("http://localhost"),
-            Some("http://localhost:1234"),
-            Some("http://127.0.0.1:5173"),
-        ] {
-            assert!(origin_allowed(origin), "{origin:?}");
-        }
-        for origin in [
-            "https://evil.example",
-            "http://localhost.evil.example",
-            "http://localhost:80@evil.example",
-            "http://127.0.0.1.nip.io",
-            "http://localhost:",
-            "http://localhost:123456",
-            "https://localhost:1234",
-            "http://192.168.1.2:8080",
-            "NULL",
-            "",
-        ] {
-            assert!(!origin_allowed(Some(origin)), "{origin:?}");
         }
     }
 

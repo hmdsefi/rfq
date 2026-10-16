@@ -17,5 +17,6 @@
 
 pub mod hub;
 pub mod nonce_book;
+pub mod origin;
 pub mod protocol;
 pub mod view;
