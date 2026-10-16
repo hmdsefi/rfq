@@ -77,7 +77,7 @@ The call returns once the command's batch is back, or the hub gives up on it:
 | `400` | not JSON, missing or bad fields, a `bad request: …` from the hub | `{error}` |
 | `413` | body over 64 KiB | `{error}` |
 | `429` | `ingress back-pressured, try again` | `{error}` |
-| `503` | `engine unavailable`, or `nonce sync failed for account N` | `{error}` |
+| `503` | `engine unavailable`, or `nonce sync failed for account N`; `too many connections` when the server, or its share for writes, is full (§9): nothing was sent, so a retry is safe | `{error}` |
 | `504` | `outcome unknown: …`, from the hub or from the gateway giving up after it sent the command (§4): resend with the nonce in the body to retry safely | `{error, nonce}` |
 
 Other statuses: `404` unknown route, `405` wrong method, `500` an internal failure (logged).
@@ -114,7 +114,7 @@ The command is what lets a reloaded dashboard recover its own limits and quote s
 
 The trace hides the gateway's own probe commands, as the WebSocket does (`Withdraw {amount: 0}`: the nonce probes and the liveness probe, gateway.md §5, §6): such a batch is shown without its `origin` and the probe's rejection, or not at all if nothing else is left, and its `command` is `null`. A client's own `Withdraw` of 0, which the engine always refuses, is hidden the same way.
 
-Paging: entries with `seq > after_seq` (default 0), ascending, at most `limit` (default 500, maximum 1,000). `next_after_seq` is the last returned `seq` when more remain, else `null`. An account view skips batches with nothing for it, as on the WebSocket.
+Paging: entries with `seq > after_seq` (default 0), ascending, at most `limit` (default 500, maximum 1,000) and at most 4 MiB of them (the `entries` array as JSON). The page stops before the entry that would take it over 4 MiB, except that it always holds the first one: a batch larger than that (a finalisation that settles very many positions) is a page of its own. `next_after_seq` is the last returned `seq` when more remain, for the page's count or its size, else `null`; a short page is not the end, `null` is. An account view skips batches with nothing for it, as on the WebSocket, and its pages are never empty while it has entries left. The page is written entry by entry as it is read, under the replica's read lock, so what a read holds is bounded by the budget, not by the size of the commands in the journal.
 
 ## 7. Consistency
 
@@ -137,7 +137,7 @@ Lanes, contracts, positions, ledger and trace come back after a reload. The runs
 - **Host:** a request with a `Host` header must name `localhost`, `127.0.0.1` or `[::1]`, with any port or none (any case), else `403 {"error":"host not allowed"}`, checked before the Origin rule and any handler (`OPTIONS` too). A same-origin `GET` carries no `Origin`, so this is what stops DNS rebinding: a page on another site whose name is made to resolve to 127.0.0.1 still sends its own name in `Host`. Two `Host` headers are a `400`; a request with none (a program) passes.
 - **Origin:** a request with an `Origin` header must pass the WebSocket's allowlist (`null`, `http://localhost[:port]`, `http://127.0.0.1[:port]`), else `403`. Allowed origins get `Access-Control-Allow-Origin` (that origin) and `Vary: Origin`; `OPTIONS` preflight answers `204`. Requests without `Origin` pass: programs such as curl, and a page's same-origin `GET`, which the Host rule covers.
 - **No authentication** (out of the brief's scope): anyone who can reach the port can act as, or read, any account. Recorded in adversarial.md as an accepted residual; production fixes the account per authenticated session.
-- **Limits:** one request per connection (`Connection: close`); request body 64 KiB, with `Content-Length` (no chunked bodies); at most 64 HTTP connections at once (more get `503`); a request's head must arrive within 10 s. The server is the gateway's own, on `std::net` and `httparse` (already a dependency through `tungstenite`): no new HTTP framework.
+- **Limits:** one request per connection (`Connection: close`); request body 64 KiB, with `Content-Length` (no chunked bodies); at most 64 HTTP connections at once (more get `503 {"error":"too many connections"}`), of which at most 48 `POST`s (the next `POST` gets the same `503`, before its body is read): a write may wait 75 s for its answer (§4), and writes that wait never take the 16 connections left to reads; a request's head must arrive within 10 s. The server is the gateway's own, on `std::net` and `httparse` (already a dependency through `tungstenite`): no new HTTP framework.
 - **Sealing holds:** public endpoints show only what public events already show; an account's endpoints show only that account's data; a request's live quote set is never shown.
 
 ## 10. Testing
