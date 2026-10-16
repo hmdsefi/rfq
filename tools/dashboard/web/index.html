@@ -593,25 +593,35 @@ async function getJson(path) {
   }
 }
 
+/** Whether `e` is a trace entry the recorder and the model can take: a batch (read-api.md §6) and its command. */
+const isEntry = (e) =>
+  Number.isSafeInteger(e?.seq) && Number.isSafeInteger(e.time) && typeof e.kind === "string"
+  && (e.origin == null || typeof e.origin === "object") && Array.isArray(e.events)
+  && Array.isArray(e.balances) && e.balances.every((b) => b !== null && typeof b === "object")
+  && (e.command == null || typeof e.command === "object");
+
 /**
  * Loads the history a reload would lose (read-api.md §8), once, alongside the live stream (which it never
  * waits for): the admin trace from the newest `HISTORY_SEQS` seqs of the replica, page by page, seeded into
  * the recorder as history. The live batches that arrived meanwhile stay where they are (`seedHistory`).
- * A reset seen during the fetches (the recorder's epoch moved on) makes it the old journal's history: none
- * of it is seeded. Any failure leaves no history, a banner, and the page as it is without one. Never rejects.
+ * Every page is checked before anything is seeded. A reset seen during the fetches (the recorder's epoch
+ * moved on) makes it the old journal's history: none of it is seeded. A replica that is not `following`
+ * still gives its history, with a banner that it may be incomplete. Any failure leaves no history, a
+ * banner, and the page as it is without one. Never rejects.
  */
 async function loadHistory() {
   const epoch = rec.epoch;
   try {
-    const last = (await getJson("/v1/status"))?.replica?.last_seq;
-    if (!Number.isSafeInteger(last) || last < 0) throw new HistoryError("unexpected response on /v1/status");
+    const replica = (await getJson("/v1/status"))?.replica;
+    const last = replica?.last_seq;
+    if (!Number.isSafeInteger(last) || last < 0 || typeof replica.state !== "string") {
+      throw new HistoryError("unexpected response on /v1/status");
+    }
     let after = Math.max(0, last - HISTORY_SEQS);
     const entries = [];
     for (;;) {
       const body = await getJson(`/v1/trace?view=admin&after_seq=${after}&limit=${HISTORY_PAGE}`);
-      if (!Array.isArray(body?.entries) || !body.entries.every((e) => Number.isSafeInteger(e?.seq) && Array.isArray(e.events))) {
-        throw new HistoryError("unexpected response on /v1/trace");
-      }
+      if (!Array.isArray(body?.entries) || !body.entries.every(isEntry)) throw new HistoryError("unexpected response on /v1/trace");
       for (const e of body.entries) entries.push(e);
       const next = body.next_after_seq;
       if (next == null) break;
@@ -619,14 +629,17 @@ async function loadHistory() {
       if (!Number.isSafeInteger(next) || next <= after) throw new HistoryError("unexpected response on /v1/trace");
       after = next;
     }
-    if (rec.epoch !== epoch) return;
-    rec.seedHistory(entries);
     // The runs the history shows, by the scenarios' account ids, so their accounts get their names.
+    const t0s = new Set();
     for (const e of entries) {
-      for (const id of [e.origin?.actor, ...(e.balances ?? []).map((b) => b.account)]) {
-        if (id >= PER_RUN && SCENARIO_ACCOUNT[id % PER_RUN]) page.historyT0.add(Math.floor(id / PER_RUN));
+      for (const id of [e.origin?.actor, ...e.balances.map((b) => b.account)]) {
+        if (id >= PER_RUN && SCENARIO_ACCOUNT[id % PER_RUN]) t0s.add(Math.floor(id / PER_RUN));
       }
     }
+    if (rec.epoch !== epoch) return;
+    rec.seedHistory(entries);
+    for (const t0 of t0s) page.historyT0.add(t0);
+    if (replica.state !== "following") addError(`History may be incomplete: the read replica is ${replica.state.replace(/_/g, " ")}.`);
     schedule();
   } catch (e) {
     addError(`History not loaded (${e instanceof HistoryError ? e.message : e?.message ?? e}): showing what happens from now on.`);

@@ -310,16 +310,16 @@ function fakeGateway() {
 /**
  * The read API as the page sees it (`GET /v1/status`, `GET /v1/trace`) over `entries`, in the gateway's shape.
  * A page holds at most `max` entries (the gateway's cap is 1,000, whatever `limit` asks), and `next_after_seq`
- * is the last seq when more remain. `calls` lists the URLs asked, in order.
+ * is the last seq when more remain; `state` is the replica's. `calls` lists the URLs asked, in order.
  */
-function fakeReadApi(entries = [], { lastSeq = entries.at(-1)?.seq ?? 0, max = 1000 } = {}) {
+function fakeReadApi(entries = [], { lastSeq = entries.at(-1)?.seq ?? 0, max = 1000, state = "following" } = {}) {
   const calls = [];
   const reply = (status, body) => ({ ok: status === 200, status, json: async () => body });
   const fetch = async (url) => {
     calls.push(String(url));
     const u = new URL(url);
     if (u.pathname === "/v1/status") {
-      return reply(200, { engine: "up", engine_last_seq: lastSeq, replica: { state: "following", last_seq: lastSeq, state_hash: "00" } });
+      return reply(200, { engine: "up", engine_last_seq: lastSeq, replica: { state, last_seq: lastSeq, state_hash: "00" } });
     }
     if (u.pathname === "/v1/trace" && u.searchParams.get("view") === "admin") {
       const after = Number(u.searchParams.get("after_seq") ?? 0);
@@ -762,6 +762,52 @@ await test("history that cannot load: a dismissible banner with the reason, no h
       // Dismissed: the banner goes.
       run("page.errors.length = 0; render()");
       assert.equal(document.getElementById("banners").innerHTML, "", `${what}: dismissed`);
+    } finally {
+      teardown(page);
+    }
+  }
+});
+
+await test("a replica that is not following: the history still loads, with a dismissible banner that it may be incomplete", async () => {
+  for (const [state, words] of [["catching_up", "catching up"], ["unavailable", "unavailable"]]) {
+    const page = loadPage({ fetch: fakeReadApi(HISTORY, { state }).fetch });
+    const { run, val, document } = page;
+    try {
+      await run("historyLoaded");
+      assert.deepEqual(val("rec.allBatches().map((b) => [b.seq, b.history === true])"), HISTORY.map((e) => [e.seq, true]), state);
+      run("render()");
+      const banners = text(document, "banners");
+      assert.ok(banners.includes(`History may be incomplete: the read replica is ${words}.`), `${state}:\n${banners}`);
+      assert.ok(!banners.includes("History not loaded"), banners);
+      assert.match(document.getElementById("banners").innerHTML, /data-action="dismiss-error"/, "dismissible");
+    } finally {
+      teardown(page);
+    }
+  }
+});
+
+await test("a malformed 200 seeds nothing: every page and entry is checked before the recorder sees any, with the reason in the banner", async () => {
+  const bad = (seq, change) => HISTORY.map((e) => (e.seq === seq ? { ...e, ...change } : e));
+  const trace = "unexpected response on /v1/trace";
+  // Pages of 3 entries: seqs 2..4, then 5 and 6.
+  const cases = [
+    ["balances that are not a list", fakeReadApi(bad(6, { balances: 5 }), { max: 3 }), trace],
+    ["a balance that is not an object", fakeReadApi(bad(3, { balances: [null] }), { max: 3 }), trace],
+    ["a time that is not a number", fakeReadApi(bad(2, { time: "soon" }), { max: 3 }), trace],
+    ["a kind that is not a name", fakeReadApi(bad(5, { kind: 7 }), { max: 3 }), trace],
+    ["no events, on the second page", fakeReadApi(bad(5, { events: undefined }), { max: 3 }), trace],
+    ["a replica with no state", fakeReadApi(HISTORY, { state: null }), "unexpected response on /v1/status"],
+  ];
+  for (const [what, api, reason] of cases) {
+    const page = loadPage({ fetch: api.fetch });
+    const { run, val, document } = page;
+    try {
+      await run("historyLoaded");
+      run("render()");
+      const banners = text(document, "banners");
+      assert.ok(banners.includes(`History not loaded (${reason}): showing what happens from now on.`), `${what}:\n${banners}`);
+      assert.deepEqual(val("rec.allBatches()"), [], `${what}: nothing seeded`);
+      assert.equal(run("page.historyT0.size"), 0, `${what}: no run named`);
     } finally {
       teardown(page);
     }

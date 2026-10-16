@@ -129,7 +129,7 @@ On page load the dashboard fetches the history it missed, alongside its live str
 2. The recorder seeds those batches as history: in `seq` order, before the first live batch of the current epoch, skipping any `seq` the live stream already delivered. The live WebSocket starts at page load as today, so nothing is lost while the history loads.
 3. The model uses an entry's `command` where the page has no command of its own for that batch.
 
-Lanes, contracts, positions, ledger and trace come back after a reload. The runs table does not: it is the page's own record of the runs it drove. If the history fetch fails (an older gateway, port closed), the page works as today, live only, and says so in a banner. The HTTP base URL is `http://127.0.0.1:18081`, or `?http=…` on the page URL.
+Lanes, contracts, positions, ledger and trace come back after a reload. The runs table does not: it is the page's own record of the runs it drove. If the history fetch fails (an older gateway, port closed, a malformed response), the page works as today, live only, and says so in a banner; if the replica is not `following`, it shows the history with a banner that it may be incomplete. The HTTP base URL is `http://127.0.0.1:18081`, or `?http=…` on the page URL.
 
 ## 9. Security
 
