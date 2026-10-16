@@ -516,8 +516,9 @@ fn seen(view: View, entry: &TraceEntry) -> Option<Entry<'_>> {
 ///
 /// Each entry is written straight into the body, through a [`Capped`] that refuses the write that
 /// would take the array over `max_bytes` (once it holds an entry): no `Value` tree, and an entry
-/// that does not fit is never written whole. What is held under the read lock is the page: at
-/// most `max_bytes` of entries, or the first entry alone when that is more.
+/// that does not fit is never written whole. What is held under the read lock is the page text
+/// (at most `max_bytes` of entries, or the first entry alone when that is more) plus the one
+/// entry being filtered for the view: the next entry's batch is built before it is measured.
 fn trace(replica: &Replica, view: View, after_seq: u64, limit: usize, max_bytes: usize) -> Reply {
     let mut body = format!("{{\"as_of_seq\":{},\"entries\":[", replica.last_seq()).into_bytes();
     let array = body.len() - 1; // where the `[` is
