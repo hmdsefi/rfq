@@ -1,9 +1,11 @@
 //! The Aeron adapters against a real `ArchivingMediaDriver`. Ignored by default: they need the
 //! driver's directory in `AERON_DIR` (default `/dev/shm/aeron`), and an archive no node uses,
 //! because they record the log stream. The follower tests start by purging every recording of the
-//! log, so each begins with no recording: that destroys the journal of whatever Archive they run
-//! against, so they refuse to run unless `RFQ_LIVE_TEST_MAY_PURGE=1` says the Archive is a
-//! throwaway one (never the compose stack's). In Docker, from the repository root:
+//! log, so each begins with no recording, and
+//! `archive_journal_replays_every_recording_across_restarts_and_crashes` appends test commands to
+//! the log and leaves a crashed recording in it: either wrecks the journal of whatever Archive
+//! they run against, so they refuse to run unless `RFQ_LIVE_TEST_MAY_PURGE=1` says the Archive is
+//! a throwaway one (never the compose stack's). In Docker, from the repository root:
 //!
 //! ```sh
 //! docker build -t rfq-aeron docker/aeron
@@ -203,6 +205,7 @@ fn append_durably(journal: &mut ArchiveJournal, commands: &[SequencedCommand]) {
 #[test]
 #[ignore = "needs a running ArchivingMediaDriver with a fresh archive"]
 fn archive_journal_replays_every_recording_across_restarts_and_crashes() {
+    throwaway_archive_only("appends test commands to the log (stream 1002) and crash-seals a recording");
     let aeron = client();
     let mut first = ArchiveJournal::new(&aeron).unwrap();
     let mut log = replay_all(&mut first);
@@ -267,6 +270,17 @@ fn archive(aeron: &Aeron) -> AeronArchive {
         .unwrap()
 }
 
+/// Refuses to go on unless `RFQ_LIVE_TEST_MAY_PURGE=1` says the Archive is a throwaway one: what
+/// the test does to the log (`what`) would wreck the journal of the Archive it runs against.
+fn throwaway_archive_only(what: &str) {
+    assert!(
+        std::env::var("RFQ_LIVE_TEST_MAY_PURGE").is_ok_and(|v| v == "1"),
+        "this test {what} on the Archive it runs against, which wrecks that journal. Set \
+         RFQ_LIVE_TEST_MAY_PURGE=1 only when the driver is a throwaway one that no node uses (see \
+         the header of this file), never the compose stack's"
+    );
+}
+
 /// Empties the log: stops any recording of stream 1002 that is still active (a journal dropped a
 /// moment ago may not have stopped yet) and purges every recording. Each follower test starts
 /// from "no recording yet", whatever ran before it on this Archive.
@@ -274,12 +288,7 @@ fn archive(aeron: &Aeron) -> AeronArchive {
 /// This destroys the journal of the Archive it runs against, so it runs only when
 /// `RFQ_LIVE_TEST_MAY_PURGE=1` says that Archive is a throwaway one.
 fn empty_log(aeron: &Aeron) {
-    assert!(
-        std::env::var("RFQ_LIVE_TEST_MAY_PURGE").is_ok_and(|v| v == "1"),
-        "this test purges every recording of the log (stream 1002) on the Archive it runs against, \
-         which destroys that journal. Set RFQ_LIVE_TEST_MAY_PURGE=1 only when the driver is a \
-         throwaway one that no node uses (see the header of this file), never the compose stack's"
-    );
+    throwaway_archive_only("purges every recording of the log (stream 1002)");
     let archive = archive(aeron);
     let start = Instant::now();
     loop {
