@@ -18,6 +18,7 @@ The repository is private (`hmdsefi/rfq`), so you need access first. Then: `git 
   - [Run the end-to-end demo (Docker)](#run-the-end-to-end-demo-docker)
   - [Gateway (WebSocket)](#gateway-websocket)
   - [Live dashboard](#live-dashboard)
+  - [Demo: five recorded runs (GIFs)](docs/demo.md)
   - [HTTP API](#http-api)
 - [Layout](#layout): the crates and their layers
 - [Where each deliverable is](#where-each-deliverable-is): D1–D5
@@ -102,7 +103,9 @@ tools/dashboard/build.sh                      # builds the page and runs its tes
 open tools/dashboard/dist/rfq-dashboard.html  # the status bar says "Connected", "engine up"
 ```
 
-Recorded runs of five scenarios (the happy path, a dispute, a silent oracle, no quotes, a lapsed request), each with the engine's events and the engine and gateway logs side by side: [docs/demo.md](docs/demo.md).
+Recorded runs of five scenarios (the happy path, a dispute, a silent oracle, no quotes, a lapsed request), each with the engine's events and the engine and gateway logs side by side: [docs/demo.md](docs/demo.md). One of them, `happy_path`: the stack starts, two market makers quote, the best price is presented, Alice accepts, the oracle proposes YES and the market settles.
+
+![happy_path on the live stack: the dashboard, the engine's events and the engine and gateway logs, step by step](docs/media/happy_path.gif)
 
 - **Scenarios.** Pick one of the 14 (eight brief scenarios, six attacks) and press **Run**, **Run ×N** or **Run all**. The page acts as every participant through the gateway and judges PASS or FAIL against the expected events. Panels: lanes, market, ledger, trace, a timeline scrubber, the runs table with each run's latency, and **View as** (what one account receives). The failure drills below are listed at the bottom of the page. `node tools/dashboard/web/live-smoke.mjs` runs the 14 and `happy_path` ×20 from a terminal.
 - **Reload.** The page keeps nothing across a reload, so on load it asks the gateway's [HTTP API](#http-api) for the newest 5,000 `seq`s of history: lanes, markets, positions, ledger and trace come back, and so do the earlier scenario runs, in the timeline's run list, marked as history with their PASS or FAIL. A run whose commands are no one scenario's has no verdict. So does a run the reload cut while it was sending its commands: it is marked incomplete. A run that had sent them all is judged at load if the engine had finished it by then. Otherwise it gets its verdict from the live stream once the engine has finished it, provided the stream holds every batch after the history and the page stays connected; if it may have missed some, the run stays incomplete. The page then shows the newest run, not every batch; **All batches** shows everything. The runs table does not come back: it is the page's own record, with its timing. `?http=URL` on the page's address points it at another HTTP base. If the load fails (an older gateway, the port closed), a banner says so and the page stays live ([DESIGN §11.2](tools/dashboard/DESIGN.md)).
