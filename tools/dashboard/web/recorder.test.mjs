@@ -207,6 +207,54 @@ test("a live frame whose seq is already history is ignored: no duplicate, no new
   assert.equal(rec.epoch, 0);
 });
 
+const seededHistory = () => {
+  const rec = R.createRecorder();
+  rec.seedHistory([entry(1, [pub(ev("Initialized"))], { kind: "Genesis" }), entry(2, [dep(10, 2)]), entry(3, [dep(10, 3)], { kind: "Tick" })]);
+  return rec;
+};
+
+test("a live frame with a history batch's seq, time and kind is that batch again: ignored, before and after the first live batch", () => {
+  const seeded = seededHistory;
+  const same = seeded();
+  assert.equal(same.onFrame(batch(2, [dep(10, 2)])), null);
+  assert.equal(same.onFrame(batch(3, [dep(10, 3)], { kind: "Tick" })), null);
+  assert.equal(same.epoch, 0);
+  same.onFrame(batch(4, [dep(10, 4)]));
+  assert.equal(same.onFrame(batch(2, [dep(10, 2)])), null, "a late duplicate after the first live batch");
+  assert.equal(same.epoch, 0);
+  assert.deepEqual(same.allBatches().map((b) => [b.epoch, b.seq, b.history === true]), [[0, 1, true], [0, 2, true], [0, 3, true], [0, 4, false]]);
+});
+
+test("a journal reset before the first live batch: a history seq with another time is the new journal's batch, in a new epoch", () => {
+  const seeded = seededHistory;
+  // `docker compose down -v` after the history loaded, before any live batch. The new journal's batch is
+  // its epoch's first, the old history stays as epoch 0, and the driver's lookup by seq finds the new batch.
+  const reset = seeded();
+  const fresh = reset.onFrame(batch(2, [dep(99, 5)], { time: 9_002, balances: [bal(99, 5)] }));
+  assert.equal(reset.epoch, 1);
+  assert.deepEqual([fresh.epoch, fresh.seq, fresh.history, fresh.events], [1, 2, undefined, [dep(99, 5)]]);
+  assert.equal(reset.batches.get(2), fresh);
+  assert.deepEqual(reset.order, [2]);
+  assert.deepEqual(reset.batchList().map((b) => b.history), [undefined]);
+  assert.deepEqual(reset.allBatches().map((b) => [b.epoch, b.seq, b.history === true]), [[0, 1, true], [0, 2, true], [0, 3, true], [1, 2, false]]);
+  // The new journal goes on in its own epoch, a chunk merging with it and its seqs below the old history's top kept apart from it.
+  reset.onFrame(batch(2, [dep(99, 6)], { time: 9_002 }));
+  assert.equal(reset.batches.get(2).chunks, 2);
+  const next = reset.onFrame(batch(3, [dep(99, 7)], { time: 9_003 }));
+  assert.deepEqual([reset.epoch, next.epoch, next.history], [1, 1, undefined]);
+  assert.deepEqual(reset.order, [2, 3]);
+});
+
+test("another kind alone is another batch too, and the new journal's first batch may be the Genesis at seq 1", () => {
+  const seeded = seededHistory;
+  const kind = seeded();
+  kind.onFrame(batch(2, [dep(10, 2)], { kind: "Tick" }));
+  assert.equal(kind.epoch, 1);
+  const genesis = seeded();
+  genesis.onFrame(batch(1, [pub(ev("Initialized"))], { kind: "Genesis", time: 0 }));
+  assert.deepEqual([genesis.epoch, genesis.order], [1, [1]]);
+});
+
 test("history never sets the newest batch: a live chunk after seeding merges with its live batch; a seq going back is still a new epoch", () => {
   const rec = R.createRecorder();
   rec.seedHistory([entry(1, [dep(10, 1)]), entry(2, [dep(10, 2)])]);
@@ -220,8 +268,8 @@ test("history never sets the newest batch: a live chunk after seeding merges wit
   // Seeding after that adds the seqs below the live batch (3, 4), not the live one's own.
   assert.equal(rec.seedHistory([entry(3, [dep(10, 3)]), entry(4, [dep(10, 4)]), entry(5, [dep(10, 5)])]), 2);
   assert.deepEqual(rec.allBatches().map((x) => [x.seq, x.history === true]), [[1, true], [2, true], [3, true], [4, true], [5, false]]);
-  // A seq below the newest live one that history also has is the journal starting again, as it always was.
-  rec.onFrame(batch(2, [dep(99, 5)]));
+  // A seq below the newest live one that history also has, as another batch, is the journal starting again.
+  rec.onFrame(batch(2, [dep(99, 5)], { time: 9_002 }));
   assert.equal(rec.epoch, 1);
   assert.deepEqual(rec.allBatches().map((x) => [x.epoch, x.seq]), [[0, 1], [0, 2], [0, 3], [0, 4], [0, 5], [1, 2]]);
   assert.deepEqual(rec.order, [2]);

@@ -846,14 +846,34 @@ await test("a batch that arrives while the history loads stays; history fills on
   try {
     await connected(early);
     await early.run("historyLoaded");
-    const live = (seq, events) => early.server.sockets[0].onmessage({ data: JSON.stringify({ type: "batch", seq, time: 5_000 + seq, kind: "Tick", origin: null, events, balances: [] }) });
-    live(5, [hPub({ RequestExpired: { request: 99 } })]);
-    live(6, [hPub({ RequestExpired: { request: 99 } })]);
-    live(7, [hPub({ RequestExpired: { request: 98 } })]);
+    const send = (frame) => early.server.sockets[0].onmessage({ data: JSON.stringify({ type: "batch", ...frame }) });
+    const again = (seq) => {
+      const { command, ...batch } = HISTORY.find((e) => e.seq === seq);
+      send(batch); // the stream's copy of a batch the history has: the same seq, time and kind
+    };
+    again(5);
+    again(6);
+    send({ seq: 7, time: 5_007, kind: "Tick", origin: null, events: [hPub({ RequestExpired: { request: 98 } })], balances: [] });
     assert.deepEqual(early.val("rec.allBatches().map((b) => [b.epoch, b.seq, b.history === true])"), [2, 3, 4, 5, 6].map((s) => [0, s, true]).concat([[0, 7, false]]));
     assert.equal(early.val("rec.batches.get(6).kind"), "User", "the history batch, not the frame");
   } finally {
     teardown(early);
+  }
+  // A new journal after the history loaded and before any live batch (`docker compose down -v`): its batches
+  // have the history's seqs but not its times, so they are a new epoch's, never taken for the history again.
+  const reset = loadPage({ fetch: fakeReadApi(HISTORY).fetch });
+  try {
+    await connected(reset);
+    await reset.run("historyLoaded");
+    const send = (seq, time, kind = "User") => reset.server.sockets[0].onmessage({ data: JSON.stringify({ type: "batch", seq, time, kind, origin: null, events: [hPub({ RequestExpired: { request: seq } })], balances: [] }) });
+    send(2, 9_002);
+    send(3, 9_003);
+    send(7, 9_007);
+    assert.equal(reset.run("rec.epoch"), 1);
+    assert.deepEqual(reset.val("rec.allBatches().map((b) => [b.epoch, b.seq, b.history === true])"), [2, 3, 4, 5, 6].map((s) => [0, s, true]).concat([[1, 2, false], [1, 3, false], [1, 7, false]]));
+    assert.deepEqual(reset.val("rec.batches.get(2).events"), [hPub({ RequestExpired: { request: 2 } })], "the new journal's batch, not the old one");
+  } finally {
+    teardown(reset);
   }
 });
 
