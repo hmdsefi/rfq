@@ -2261,7 +2261,7 @@ function multiLegPanel() {
   return `<p style="margin-bottom:10px"><span class="built">Built</span> <span class="muted">A request has up to 8 legs and is all or nothing (engine.md §8). Both stories below run live through the gateway; Run plays one and fills the request cards, the markets, the ledger and the trace above.</span></p>
     <div class="seam" style="margin-bottom:12px">
       <div class="item"><div class="item-head"><span class="id">multi_leg_leg2_fails</span>${run("multi_leg_leg2_fails", "ml-leg2")}</div><p style="font-size:13px">Leg 2 of 3 fails: legs 1 and 3 are quoted, leg 2 is not. This is steps 1 and 2 below, with MM-A as MM1 and MM-C as MM2.</p></div>
-      <div class="item"><div class="item-head"><span class="id">multi_leg_happy</span>${run("multi_leg_happy", "ml-happy")}</div><p style="font-size:13px">Every leg is quoted: three picks, then one Accept fills all three legs in one command and opens three positions.</p></div>
+      <div class="item"><div class="item-head"><span class="id">multi_leg_happy</span>${run("multi_leg_happy", "ml-happy")}</div><p style="font-size:13px">Every leg is quoted: three picks, then one Accept fills all three legs in one command and opens three positions, then each market settles YES.</p></div>
     </div>
     <div class="steps3">
       <div class="item"><div class="item-head"><span class="id">1. Before the deadline</span></div><p style="font-size:13px">Leg 1: MM-A's quote is Active and holds. Leg 2: no quote. Leg 3: MM-C's quote is Active and holds. The request is Open. Nothing provisional is escrowed. <span class="muted">Scenario multi_leg_leg2_fails.</span></p></div>

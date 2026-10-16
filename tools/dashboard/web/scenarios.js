@@ -260,6 +260,9 @@ const RfqScenarios = (() => {
   /** The oracle proposes YES. Rust: the `propose` step of `scenarios::all` (happy, disputed). */
   const propose = (at) => send(at, "propose", ORACLE, (c) => ({ ProposeOutcome: { market: c.market(), outcome: "Yes" } }));
 
+  /** The oracle proposes YES on the run's `k`th extra market. Rust: `scenarios::propose_yes` (`multi_leg_happy`). */
+  const proposeYes = (at, label, k) => send(at, label, ORACLE, (c) => ({ ProposeOutcome: { market: c.marketN(k), outcome: "Yes" } }));
+
   const BRIEF_SUMMARY = {
     happy_path: "Two MMs quote, the best price is presented, Alice accepts, the oracle proposes YES and the market settles.",
     mm_cannot_withdraw_after_selection:
@@ -270,7 +273,7 @@ const RfqScenarios = (() => {
       "Carol disputes the proposed outcome with a bond; the arbiter rules INVALID and the positions are refunded.",
     oracle_silent_hard_deadline: "The oracle never proposes: at the hard deadline the market resolves INVALID and refunds everyone.",
     multi_leg_happy:
-      "Alice asks for 400 YES in each of three markets in one request; MM1 quotes legs 1 and 3, MM2 leg 2. One accept fills all three legs.",
+      "Alice asks for 400 YES in each of three markets in one request; MM1 quotes legs 1 and 3, MM2 leg 2. One accept fills all three legs, then each market settles YES.",
     multi_leg_leg2_fails:
       "Leg 2 of 3 is never quoted: at the deadline the whole request expires, no leg fills, and every hold is released in that one command.",
   };
@@ -343,6 +346,8 @@ const RfqScenarios = (() => {
     },
     // Rust: `rfq_testkit::scenarios::all()`, `multi_leg_happy` (engine.md §8). Three markets, one request, a
     // quote on every leg, and one accept fills all three legs. MM1 backs leg indices 0 and 2, MM2 index 1.
+    // Then the markets close, the oracle proposes YES on each, and each finalizes and settles after its own
+    // 2 s window: Alice wins every leg.
     // `markets`: how many extra markets the run lists (`ctx.marketN(1..=markets)`); a script without it
     // lists the run's one market, `t0`.
     {
@@ -357,6 +362,11 @@ const RfqScenarios = (() => {
         legQuote(500, "q3", MM1, 2, 6_400),
         wait(1_600),
         accept(2_000),
+        wait(5_100),
+        proposeYes(5_200, "propose_paris", 1),
+        proposeYes(5_300, "propose_london", 2),
+        proposeYes(5_400, "propose_rome", 3),
+        wait(7_500),
       ],
       expect: [
         "RequestOpened",
@@ -373,6 +383,18 @@ const RfqScenarios = (() => {
         "QuoteFilled",
         "QuoteFilled",
         "RequestFilled",
+        "MarketClosed",
+        "MarketClosed",
+        "MarketClosed",
+        "OutcomeProposed",
+        "OutcomeProposed",
+        "OutcomeProposed",
+        "MarketFinalized",
+        "PositionSettled",
+        "MarketFinalized",
+        "PositionSettled",
+        "MarketFinalized",
+        "PositionSettled",
       ],
     },
     // Rust: `rfq_testkit::scenarios::all()`, `multi_leg_leg2_fails`. Leg 2 of 3 fails: legs 1 and 3 are

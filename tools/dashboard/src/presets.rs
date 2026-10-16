@@ -203,7 +203,7 @@ fn brief_summary(name: &str) -> &'static str {
             "The oracle never proposes: at the hard deadline the market resolves INVALID and refunds everyone."
         }
         "multi_leg_happy" => {
-            "Alice asks for 400 YES in each of three markets in one request; MM1 quotes legs 1 and 3, MM2 leg 2. One accept fills all three legs."
+            "Alice asks for 400 YES in each of three markets in one request; MM1 quotes legs 1 and 3, MM2 leg 2. One accept fills all three legs, then each market settles YES."
         }
         "multi_leg_leg2_fails" => {
             "Leg 2 of 3 is never quoted: at the deadline the whole request expires, no leg fills, and every hold is released in that one command."
