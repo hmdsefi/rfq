@@ -6,15 +6,15 @@ const HARD: Timestamp = 500_000;
 const WINDOW: Duration = 10_000;
 
 /// MM2's quote at 0.60 for ALICE's 1000 YES (limit 0.70) is presented; accept_by = 40_000.
-fn presented(cfg: Config) -> (Harness, ContractId, RequestId, QuoteId) {
+fn presented(cfg: Config) -> (Harness, MarketId, RequestId, QuoteId) {
     let mut h = Harness::new(cfg);
     for a in [ALICE, MM2, CAROL] {
         h.fund(a, 1_000);
     }
-    let c = ContractId(1);
+    let c = MarketId(1);
     h.user(
         OPERATOR,
-        Action::ListContract {
+        Action::ListMarket {
             id: c,
             description: "q".into(),
             oracle: ORACLE,
@@ -28,7 +28,7 @@ fn presented(cfg: Config) -> (Harness, ContractId, RequestId, QuoteId) {
         ALICE,
         Action::SubmitRequest {
             legs: vec![LegSpec {
-                contract: c,
+                market: c,
                 side: Side::BuyYes,
                 qty: 1_000,
                 limit_price: price(7_000),
@@ -51,8 +51,8 @@ fn presented(cfg: Config) -> (Harness, ContractId, RequestId, QuoteId) {
     (h, c, r, q)
 }
 
-/// ALICE holds 1000 YES bought at 0.60 from MM2; contract closed.
-fn filled_with(cfg: Config) -> (Harness, ContractId) {
+/// ALICE holds 1000 YES bought at 0.60 from MM2; market closed.
+fn filled_with(cfg: Config) -> (Harness, MarketId) {
     let (mut h, c, r, q) = presented(cfg);
     let out = h.user(
         ALICE,
@@ -70,7 +70,7 @@ fn filled_with(cfg: Config) -> (Harness, ContractId) {
     (h, c)
 }
 
-fn filled() -> (Harness, ContractId) {
+fn filled() -> (Harness, MarketId) {
     filled_with(Config::default())
 }
 
@@ -93,7 +93,7 @@ fn yes_pays_yes_holder_after_window() {
         rejection(&h.user(
             ORACLE,
             Action::ProposeOutcome {
-                contract: c,
+                market: c,
                 outcome: Outcome::Yes
             }
         )),
@@ -102,7 +102,7 @@ fn yes_pays_yes_holder_after_window() {
     let out = h.tick(CLOSE + WINDOW);
     assert_eq!(
         names(&out),
-        vec!["ContractFinalized", "PositionSettled", "PositionSettled"]
+        vec!["MarketFinalized", "PositionSettled", "PositionSettled"]
     );
     assert_eq!(free(&h, ALICE), dollars(1_400));
     assert_eq!(free(&h, MM2), dollars(600));
@@ -118,7 +118,7 @@ fn no_pays_no_holder() {
     h.user(
         ORACLE,
         Action::ProposeOutcome {
-            contract: c,
+            market: c,
             outcome: Outcome::No,
         },
     );
@@ -130,10 +130,10 @@ fn no_pays_no_holder() {
 #[test]
 fn propose_rules() {
     let mut h = Harness::new(Config::default());
-    let c = ContractId(1);
+    let c = MarketId(1);
     h.user(
         OPERATOR,
-        Action::ListContract {
+        Action::ListMarket {
             id: c,
             description: "q".into(),
             oracle: ORACLE,
@@ -145,7 +145,7 @@ fn propose_rules() {
     let out = h.user(
         ORACLE,
         Action::ProposeOutcome {
-            contract: c,
+            market: c,
             outcome: Outcome::Yes,
         },
     );
@@ -158,7 +158,7 @@ fn propose_rules() {
     let out = h.user(
         ALICE,
         Action::ProposeOutcome {
-            contract: c,
+            market: c,
             outcome: Outcome::Yes,
         },
     );
@@ -173,12 +173,12 @@ fn propose_too_late_rejected() {
     let out = h.user(
         ORACLE,
         Action::ProposeOutcome {
-            contract: c,
+            market: c,
             outcome: Outcome::Yes,
         },
     );
     assert_eq!(rejection(&out), Some(RejectReason::InvalidState));
-    assert_eq!(h.engine.contract(c).unwrap().state, ContractState::Closed);
+    assert_eq!(h.engine.market(c).unwrap().state, MarketState::Closed);
 
     let (mut h, c) = filled();
     h.set_time(HARD - WINDOW - 1);
@@ -186,7 +186,7 @@ fn propose_too_late_rejected() {
         rejection(&h.user(
             ORACLE,
             Action::ProposeOutcome {
-                contract: c,
+                market: c,
                 outcome: Outcome::Yes
             }
         )),
@@ -194,10 +194,10 @@ fn propose_too_late_rejected() {
         "last moment that fits"
     );
     let out = h.tick(HARD - 1);
-    assert_eq!(names(&out)[0], "ContractFinalized");
+    assert_eq!(names(&out)[0], "MarketFinalized");
     assert_eq!(
-        h.engine.contract(c).unwrap().state,
-        ContractState::Final(Outcome::Yes)
+        h.engine.market(c).unwrap().state,
+        MarketState::Final(Outcome::Yes)
     );
 }
 
@@ -207,16 +207,16 @@ fn dispute_upheld_forfeits_bond_to_treasury() {
     h.user(
         ORACLE,
         Action::ProposeOutcome {
-            contract: c,
+            market: c,
             outcome: Outcome::Yes,
         },
     );
-    assert_eq!(rejection(&h.user(CAROL, Action::Dispute { contract: c })), None);
+    assert_eq!(rejection(&h.user(CAROL, Action::Dispute { market: c })), None);
     assert_eq!(h.engine.balance(CAROL).reserved, dollars(100));
     let out = h.user(
         ARBITER,
         Action::Rule {
-            contract: c,
+            market: c,
             outcome: Outcome::Yes,
         },
     );
@@ -232,15 +232,15 @@ fn dispute_overturned_returns_bond_and_invalid_refunds() {
     h.user(
         ORACLE,
         Action::ProposeOutcome {
-            contract: c,
+            market: c,
             outcome: Outcome::Yes,
         },
     );
-    h.user(CAROL, Action::Dispute { contract: c });
+    h.user(CAROL, Action::Dispute { market: c });
     h.user(
         ARBITER,
         Action::Rule {
-            contract: c,
+            market: c,
             outcome: Outcome::Invalid,
         },
     );
@@ -253,28 +253,28 @@ fn dispute_overturned_returns_bond_and_invalid_refunds() {
 fn dispute_rules() {
     let (mut h, c) = filled();
     assert_eq!(
-        rejection(&h.user(CAROL, Action::Dispute { contract: c })),
+        rejection(&h.user(CAROL, Action::Dispute { market: c })),
         Some(RejectReason::InvalidState),
         "nothing proposed"
     );
     h.user(
         ORACLE,
         Action::ProposeOutcome {
-            contract: c,
+            market: c,
             outcome: Outcome::Yes,
         },
     );
-    h.user(CAROL, Action::Dispute { contract: c });
+    h.user(CAROL, Action::Dispute { market: c });
     assert_eq!(
-        rejection(&h.user(ALICE, Action::Dispute { contract: c })),
+        rejection(&h.user(ALICE, Action::Dispute { market: c })),
         Some(RejectReason::InvalidState),
-        "one dispute per contract"
+        "one dispute per market"
     );
     assert_eq!(
         rejection(&h.user(
             CAROL,
             Action::Rule {
-                contract: c,
+                market: c,
                 outcome: Outcome::No
             }
         )),
@@ -288,12 +288,12 @@ fn dispute_after_window_rejected() {
     h.user(
         ORACLE,
         Action::ProposeOutcome {
-            contract: c,
+            market: c,
             outcome: Outcome::Yes,
         },
     );
     h.set_time(CLOSE + WINDOW);
-    let out = h.user(CAROL, Action::Dispute { contract: c });
+    let out = h.user(CAROL, Action::Dispute { market: c });
     assert_eq!(rejection(&out), Some(RejectReason::InvalidState));
     assert_eq!(free(&h, CAROL), dollars(1_000));
 }
@@ -302,10 +302,10 @@ fn dispute_after_window_rejected() {
 fn oracle_silent_hard_deadline_refunds() {
     let (mut h, c) = filled();
     let out = h.tick(HARD);
-    assert_eq!(names(&out)[0], "ContractFinalized");
+    assert_eq!(names(&out)[0], "MarketFinalized");
     assert_eq!(
-        h.engine.contract(c).unwrap().state,
-        ContractState::Final(Outcome::Invalid)
+        h.engine.market(c).unwrap().state,
+        MarketState::Final(Outcome::Invalid)
     );
     assert_eq!(free(&h, ALICE), dollars(1_000));
     assert_eq!(free(&h, MM2), dollars(1_000));
@@ -317,17 +317,17 @@ fn arbiter_silent_hard_deadline_returns_bond() {
     h.user(
         ORACLE,
         Action::ProposeOutcome {
-            contract: c,
+            market: c,
             outcome: Outcome::Yes,
         },
     );
-    h.user(CAROL, Action::Dispute { contract: c });
+    h.user(CAROL, Action::Dispute { market: c });
     let out = h.tick(HARD);
-    assert_eq!(names(&out)[..2], ["DisputeBondReturned", "ContractFinalized"]);
+    assert_eq!(names(&out)[..2], ["DisputeBondReturned", "MarketFinalized"]);
     // A timeout never turns a proposal into Invalid: the proposal stands, the bond comes back.
     assert_eq!(
-        h.engine.contract(c).unwrap().state,
-        ContractState::Final(Outcome::Yes)
+        h.engine.market(c).unwrap().state,
+        MarketState::Final(Outcome::Yes)
     );
     assert_eq!(free(&h, ALICE), dollars(1_400));
     assert_eq!(free(&h, MM2), dollars(600));
@@ -342,11 +342,11 @@ fn hard_deadline_announces_the_returned_bond_to_the_disputer() {
     h.user(
         ORACLE,
         Action::ProposeOutcome {
-            contract: c,
+            market: c,
             outcome: Outcome::Yes,
         },
     );
-    h.user(CAROL, Action::Dispute { contract: c });
+    h.user(CAROL, Action::Dispute { market: c });
     assert_eq!(free(&h, CAROL), dollars(900), "bond held");
     let out = h.tick(HARD);
     let returned: Vec<_> = out
@@ -358,7 +358,7 @@ fn hard_deadline_announces_the_returned_bond_to_the_disputer() {
         [&Emitted::to(
             CAROL,
             Event::DisputeBondReturned {
-                contract: c,
+                market: c,
                 disputer: CAROL,
                 amount: dollars(100),
             }
@@ -377,7 +377,7 @@ fn resume_extends_open_dispute_window() {
     h.user(
         ORACLE,
         Action::ProposeOutcome {
-            contract: c,
+            market: c,
             outcome: Outcome::No,
         },
     );
@@ -387,21 +387,21 @@ fn resume_extends_open_dispute_window() {
     assert_eq!(
         out,
         vec![Emitted::public(Event::OutcomeProposed {
-            contract: c,
+            market: c,
             outcome: Outcome::No,
             dispute_until: until
         })],
         "re-announced; the old timer (CLOSE + WINDOW) fired as a stale no-op",
     );
     assert_eq!(
-        h.engine.contract(c).unwrap().state,
-        ContractState::Proposed {
+        h.engine.market(c).unwrap().state,
+        MarketState::Proposed {
             outcome: Outcome::No,
             dispute_until: until
         }
     );
     assert_eq!(
-        rejection(&h.user(ALICE, Action::Dispute { contract: c })),
+        rejection(&h.user(ALICE, Action::Dispute { market: c })),
         None,
         "holders still get a sequenced chance"
     );
@@ -411,7 +411,7 @@ fn resume_extends_open_dispute_window() {
     h.user(
         ORACLE,
         Action::ProposeOutcome {
-            contract: c,
+            market: c,
             outcome: Outcome::Yes,
         },
     );
@@ -420,13 +420,13 @@ fn resume_extends_open_dispute_window() {
     assert_eq!(
         out,
         vec![Emitted::public(Event::OutcomeProposed {
-            contract: c,
+            market: c,
             outcome: Outcome::Yes,
             dispute_until: HARD - 1
         })]
     );
     let out = h.tick(HARD - 1);
-    assert_eq!(names(&out)[0], "ContractFinalized");
+    assert_eq!(names(&out)[0], "MarketFinalized");
     assert_eq!(
         free(&h, ALICE),
         dollars(1_400),
@@ -450,16 +450,16 @@ fn resume_does_not_extend_accept_window() {
     assert_eq!(free(&h, MM2), dollars(1_000));
 }
 
-// Controller ruling R20: a contract whose dispute window cannot fit before the hard deadline could
+// Controller ruling R20: a market whose dispute window cannot fit before the hard deadline could
 // only ever finalize Invalid, so it is rejected at listing.
 #[test]
-fn list_contract_requires_room_to_resolve() {
+fn list_market_requires_room_to_resolve() {
     let mut h = Harness::new(Config::default());
     let mut list = |id: u64, window: Duration| {
         rejection(&h.user(
             OPERATOR,
-            Action::ListContract {
-                id: ContractId(id),
+            Action::ListMarket {
+                id: MarketId(id),
                 description: "q".into(),
                 oracle: ORACLE,
                 trading_close: CLOSE,
@@ -496,31 +496,31 @@ fn resume_never_shortens_a_window() {
     h.user(
         ORACLE,
         Action::ProposeOutcome {
-            contract: c,
+            market: c,
             outcome: Outcome::Yes,
         },
     );
     h.set_time(CLOSE + 1);
     assert_eq!(h.submit(Command::Resume), vec![]);
     assert_eq!(
-        h.engine.contract(c).unwrap().state,
-        ContractState::Proposed {
+        h.engine.market(c).unwrap().state,
+        MarketState::Proposed {
             outcome: Outcome::Yes,
             dispute_until: CLOSE + WINDOW
         }
     );
     let out = h.tick(CLOSE + WINDOW);
-    assert_eq!(names(&out)[0], "ContractFinalized");
+    assert_eq!(names(&out)[0], "MarketFinalized");
 }
 
 #[test]
 fn position_settled_goes_to_both_holders_with_their_payouts() {
     let (mut h, c) = filled();
-    let position = h.engine.contract(c).unwrap().positions[0];
+    let position = h.engine.market(c).unwrap().positions[0];
     h.user(
         ORACLE,
         Action::ProposeOutcome {
-            contract: c,
+            market: c,
             outcome: Outcome::Yes,
         },
     );
@@ -534,8 +534,8 @@ fn position_settled_goes_to_both_holders_with_their_payouts() {
     assert_eq!(
         h.tick(CLOSE + WINDOW),
         vec![
-            Emitted::public(Event::ContractFinalized {
-                contract: c,
+            Emitted::public(Event::MarketFinalized {
+                market: c,
                 outcome: Outcome::Yes
             }),
             Emitted::to(ALICE, settled(dollars(1_000), 0)),
@@ -549,8 +549,8 @@ fn position_settled_goes_to_both_holders_with_their_payouts() {
     assert_eq!(
         h.tick(HARD),
         vec![
-            Emitted::public(Event::ContractFinalized {
-                contract: c,
+            Emitted::public(Event::MarketFinalized {
+                market: c,
                 outcome: Outcome::Invalid
             }),
             Emitted::to(ALICE, settled(dollars(600), dollars(400))),
@@ -566,7 +566,7 @@ fn nothing_moves_after_final_or_twice() {
         h.user(
             ORACLE,
             Action::ProposeOutcome {
-                contract: c,
+                market: c,
                 outcome: Outcome::Yes,
             },
         )
@@ -575,13 +575,13 @@ fn nothing_moves_after_final_or_twice() {
     assert_eq!(
         rejection(&propose(&mut h)),
         Some(RejectReason::InvalidState),
-        "one proposal per contract"
+        "one proposal per market"
     );
     assert_eq!(
         rejection(&h.user(
             ARBITER,
             Action::Rule {
-                contract: c,
+                market: c,
                 outcome: Outcome::No
             }
         )),
@@ -591,20 +591,20 @@ fn nothing_moves_after_final_or_twice() {
     h.tick(CLOSE + WINDOW);
     assert_eq!(rejection(&propose(&mut h)), Some(RejectReason::InvalidState));
     assert_eq!(
-        rejection(&h.user(CAROL, Action::Dispute { contract: c })),
+        rejection(&h.user(CAROL, Action::Dispute { market: c })),
         Some(RejectReason::InvalidState)
     );
     assert_eq!(
         rejection(&h.user(
             ARBITER,
             Action::Rule {
-                contract: c,
+                market: c,
                 outcome: Outcome::No
             }
         )),
         Some(RejectReason::InvalidState)
     );
-    // The hard deadline later finds a final contract and does nothing.
+    // The hard deadline later finds a final market and does nothing.
     assert_eq!(h.tick(HARD), vec![]);
     assert_eq!(free(&h, ALICE), dollars(1_400));
     assert_eq!(free(&h, MM2), dollars(600));
@@ -613,40 +613,35 @@ fn nothing_moves_after_final_or_twice() {
 }
 
 #[test]
-fn dispute_needs_the_bond_and_unknown_contracts_are_unknown() {
+fn dispute_needs_the_bond_and_unknown_markets_are_unknown() {
     let (mut h, c) = filled();
     h.user(
         ORACLE,
         Action::ProposeOutcome {
-            contract: c,
+            market: c,
             outcome: Outcome::Yes,
         },
     );
     let pauper = AccountId(99);
     h.fund(pauper, 99); // one dollar short of the $100 bond
-    let out = h.user(pauper, Action::Dispute { contract: c });
+    let out = h.user(pauper, Action::Dispute { market: c });
     assert_eq!(rejection(&out), Some(RejectReason::InsufficientFunds));
-    let out = h.user(AccountId(98), Action::Dispute { contract: c });
+    let out = h.user(AccountId(98), Action::Dispute { market: c });
     assert_eq!(
         rejection(&out),
         Some(RejectReason::InsufficientFunds),
         "no account at all"
     );
     assert_eq!(
-        h.engine.contract(c).unwrap().state,
-        ContractState::Proposed {
+        h.engine.market(c).unwrap().state,
+        MarketState::Proposed {
             outcome: Outcome::Yes,
             dispute_until: CLOSE + WINDOW
         },
         "a failed dispute freezes nothing"
     );
     assert_eq!(h.engine.balance(pauper).free, dollars(99));
-    let out = h.user(
-        CAROL,
-        Action::Dispute {
-            contract: ContractId(77),
-        },
-    );
+    let out = h.user(CAROL, Action::Dispute { market: MarketId(77) });
     assert_eq!(rejection(&out), Some(RejectReason::UnknownObject));
 }
 
@@ -659,32 +654,29 @@ fn zero_bond_dispute_from_an_unknown_account_is_rejected_not_a_panic() {
     h.user(
         ORACLE,
         Action::ProposeOutcome {
-            contract: c,
+            market: c,
             outcome: Outcome::Yes,
         },
     );
-    let out = h.user(AccountId(98), Action::Dispute { contract: c });
+    let out = h.user(AccountId(98), Action::Dispute { market: c });
     assert_eq!(rejection(&out), Some(RejectReason::InsufficientFunds));
     // A known account can dispute for free, and the zero-value hold is released cleanly.
-    assert_eq!(rejection(&h.user(CAROL, Action::Dispute { contract: c })), None);
+    assert_eq!(rejection(&h.user(CAROL, Action::Dispute { market: c })), None);
     h.user(
         ARBITER,
         Action::Rule {
-            contract: c,
+            market: c,
             outcome: Outcome::No,
         },
     );
-    assert_eq!(
-        h.engine.contract(c).unwrap().state,
-        ContractState::Final(Outcome::No)
-    );
+    assert_eq!(h.engine.market(c).unwrap().state, MarketState::Final(Outcome::No));
 }
 
-fn list_second_contract(h: &mut Harness, id: u64, close: Timestamp, hard: Timestamp) -> ContractId {
-    let c = ContractId(id);
+fn list_second_market(h: &mut Harness, id: u64, close: Timestamp, hard: Timestamp) -> MarketId {
+    let c = MarketId(id);
     let out = h.user(
         OPERATOR,
-        Action::ListContract {
+        Action::ListMarket {
             id: c,
             description: "q".into(),
             oracle: ORACLE,
@@ -697,57 +689,51 @@ fn list_second_contract(h: &mut Harness, id: u64, close: Timestamp, hard: Timest
     c
 }
 
-// Controller ruling R22: `Resume` only touches open dispute windows. A disputed contract (its bond
+// Controller ruling R22: `Resume` only touches open dispute windows. A disputed market (its bond
 // held for the arbiter) and a closed one (nothing proposed yet) are left exactly as they were.
 #[test]
 fn resume_leaves_disputed_and_closed_untouched() {
     let (mut h, disputed) = filled_with(short_grace());
-    let closed = list_second_contract(&mut h, 2, CLOSE + 1_000, HARD);
+    let closed = list_second_market(&mut h, 2, CLOSE + 1_000, HARD);
     h.user(
         ORACLE,
         Action::ProposeOutcome {
-            contract: disputed,
+            market: disputed,
             outcome: Outcome::Yes,
         },
     );
     assert_eq!(
-        rejection(&h.user(CAROL, Action::Dispute { contract: disputed })),
+        rejection(&h.user(CAROL, Action::Dispute { market: disputed })),
         None
     );
     h.tick(CLOSE + 1_000);
-    assert_eq!(h.engine.contract(closed).unwrap().state, ContractState::Closed);
+    assert_eq!(h.engine.market(closed).unwrap().state, MarketState::Closed);
     let before = (
-        h.engine.contract(disputed).unwrap().clone(),
-        h.engine.contract(closed).unwrap().clone(),
+        h.engine.market(disputed).unwrap().clone(),
+        h.engine.market(closed).unwrap().clone(),
     );
 
     // Down from before the old window's end (CLOSE + WINDOW) until well after it.
     h.set_time(CLOSE + 50_000);
     let out = h.submit(Command::Resume);
-    assert_eq!(out, vec![], "no event for a disputed or a closed contract");
+    assert_eq!(out, vec![], "no event for a disputed or a closed market");
 
     assert_eq!(
         (
-            h.engine.contract(disputed).unwrap().clone(),
-            h.engine.contract(closed).unwrap().clone(),
+            h.engine.market(disputed).unwrap().clone(),
+            h.engine.market(closed).unwrap().clone(),
         ),
         before,
-        "neither contract changed"
+        "neither market changed"
     );
     assert_eq!(
-        h.engine.contract(disputed).unwrap().state,
-        ContractState::Disputed {
+        h.engine.market(disputed).unwrap().state,
+        MarketState::Disputed {
             proposed: Outcome::Yes
         }
     );
     assert!(
-        h.engine
-            .contract(disputed)
-            .unwrap()
-            .dispute
-            .unwrap()
-            .hold
-            .is_some(),
+        h.engine.market(disputed).unwrap().dispute.unwrap().hold.is_some(),
         "the bond is still held"
     );
     assert_eq!(h.engine.balance(CAROL).reserved, dollars(100));
@@ -757,7 +743,7 @@ fn resume_leaves_disputed_and_closed_untouched() {
     let out = h.user(
         ARBITER,
         Action::Rule {
-            contract: disputed,
+            market: disputed,
             outcome: Outcome::No,
         },
     );
@@ -765,25 +751,25 @@ fn resume_leaves_disputed_and_closed_untouched() {
     let out = h.tick(HARD);
     assert_eq!(
         out,
-        vec![Emitted::public(Event::ContractFinalized {
-            contract: closed,
+        vec![Emitted::public(Event::MarketFinalized {
+            market: closed,
             outcome: Outcome::Invalid
         })],
-        "an unresolved contract still ends Invalid at the hard deadline"
+        "an unresolved market still ends Invalid at the hard deadline"
     );
 }
 
 // Controller ruling R22: every open window is extended, not just the first, and the events come out
-// in contract-id order (the engine iterates a BTreeMap) regardless of listing or proposal order.
+// in market-id order (the engine iterates a BTreeMap) regardless of listing or proposal order.
 #[test]
-fn resume_extends_every_proposed_contract() {
+fn resume_extends_every_proposed_market() {
     let mut h = Harness::new(short_grace());
-    let (late, early) = (ContractId(7), ContractId(3));
+    let (late, early) = (MarketId(7), MarketId(3));
     // Listed 7 before 3 and proposed 7 before 3, so id order is not insertion order.
     for (id, hard) in [(late, HARD), (early, CLOSE + 30_000)] {
         h.user(
             OPERATOR,
-            Action::ListContract {
+            Action::ListMarket {
                 id,
                 description: "q".into(),
                 oracle: ORACLE,
@@ -795,13 +781,7 @@ fn resume_extends_every_proposed_contract() {
     }
     h.tick(CLOSE);
     for (id, outcome) in [(late, Outcome::Yes), (early, Outcome::No)] {
-        let out = h.user(
-            ORACLE,
-            Action::ProposeOutcome {
-                contract: id,
-                outcome,
-            },
-        );
+        let out = h.user(ORACLE, Action::ProposeOutcome { market: id, outcome });
         assert_eq!(rejection(&out), None);
     }
 
@@ -814,30 +794,30 @@ fn resume_extends_every_proposed_contract() {
         vec![
             // 3's hard deadline is CLOSE + 30_000 < now + grace, so its extension is capped just below it.
             Emitted::public(Event::OutcomeProposed {
-                contract: early,
+                market: early,
                 outcome: Outcome::No,
                 dispute_until: CLOSE + 30_000 - 1
             }),
             Emitted::public(Event::OutcomeProposed {
-                contract: late,
+                market: late,
                 outcome: Outcome::Yes,
                 dispute_until: resume_at + 20_000
             }),
         ]
     );
 
-    // Each window then closes at its own extended end, and each contract keeps its own proposal.
+    // Each window then closes at its own extended end, and each market keeps its own proposal.
     assert_eq!(
         h.tick(CLOSE + 30_000 - 1),
-        vec![Emitted::public(Event::ContractFinalized {
-            contract: early,
+        vec![Emitted::public(Event::MarketFinalized {
+            market: early,
             outcome: Outcome::No
         })]
     );
     assert_eq!(
         h.tick(resume_at + 20_000),
-        vec![Emitted::public(Event::ContractFinalized {
-            contract: late,
+        vec![Emitted::public(Event::MarketFinalized {
+            market: late,
             outcome: Outcome::Yes
         })]
     );
@@ -849,30 +829,27 @@ fn yes_proposed_no_ruled_pays_no_holder_and_returns_bond() {
     h.user(
         ORACLE,
         Action::ProposeOutcome {
-            contract: c,
+            market: c,
             outcome: Outcome::Yes,
         },
     );
-    h.user(CAROL, Action::Dispute { contract: c });
+    h.user(CAROL, Action::Dispute { market: c });
     let out = h.user(
         ARBITER,
         Action::Rule {
-            contract: c,
+            market: c,
             outcome: Outcome::No,
         },
     );
     assert_eq!(
         out[0],
         Emitted::public(Event::Ruled {
-            contract: c,
+            market: c,
             outcome: Outcome::No,
             bond_returned: true
         })
     );
-    assert_eq!(
-        h.engine.contract(c).unwrap().state,
-        ContractState::Final(Outcome::No)
-    );
+    assert_eq!(h.engine.market(c).unwrap().state, MarketState::Final(Outcome::No));
     // ALICE (YES, locked $600) loses it; MM2 (NO, locked $400) wins the whole $1000 pot.
     assert_eq!(free(&h, ALICE), dollars(400));
     assert_eq!(free(&h, MM2), dollars(1_600));

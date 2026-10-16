@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::types::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ContractState {
+pub enum MarketState {
     Trading,
     Closed,
     Proposed {
@@ -26,14 +26,14 @@ pub struct Dispute {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Contract {
-    pub id: ContractId,
+pub struct Market {
+    pub id: MarketId,
     pub description: String,
     pub oracle: AccountId,
     pub trading_close: Timestamp,
     pub resolution_deadline: Timestamp,
     pub dispute_window: Duration,
-    pub state: ContractState,
+    pub state: MarketState,
     pub dispute: Option<Dispute>,
     pub positions: Vec<PositionId>,
 }
@@ -63,7 +63,7 @@ impl RequestState {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Leg {
-    pub contract: ContractId,
+    pub market: MarketId,
     pub side: Side,
     pub qty: Qty,
     pub limit_price: Price,
@@ -117,7 +117,7 @@ pub struct Quote {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Position {
     pub id: PositionId,
-    pub contract: ContractId,
+    pub market: MarketId,
     pub request: RequestId,
     pub qty: Qty,
     pub yes_holder: AccountId,
@@ -133,7 +133,7 @@ pub enum TimerKey {
     QuoteExpiry(QuoteId),
     RequestDeadline(RequestId),
     AcceptBy(RequestId),
-    ContractClose(ContractId),
-    DisputeWindow(ContractId),
-    HardDeadline(ContractId),
+    MarketClose(MarketId),
+    DisputeWindow(MarketId),
+    HardDeadline(MarketId),
 }

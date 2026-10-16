@@ -6,7 +6,7 @@ const ACCEPT_BY: Timestamp = DEADLINE + 30_000;
 
 struct World {
     h: Harness,
-    c: ContractId,
+    c: MarketId,
     r: RequestId,
 }
 
@@ -15,10 +15,10 @@ fn world(side: Side) -> World {
     for a in [ALICE, MM1, MM2] {
         h.fund(a, 1_000);
     }
-    let c = ContractId(1);
+    let c = MarketId(1);
     h.user(
         OPERATOR,
-        Action::ListContract {
+        Action::ListMarket {
             id: c,
             description: "q".into(),
             oracle: ORACLE,
@@ -32,7 +32,7 @@ fn world(side: Side) -> World {
         ALICE,
         Action::SubmitRequest {
             legs: vec![LegSpec {
-                contract: c,
+                market: c,
                 side,
                 qty: 1_000,
                 limit_price: price(7_000),
@@ -193,7 +193,7 @@ fn accept_escrows_exact_amounts_buy_yes() {
         (p.yes_holder, p.yes_lock, p.no_holder, p.no_lock),
         (ALICE, dollars(600), MM2, dollars(400))
     );
-    assert_eq!(w.h.engine.contract(w.c).unwrap().positions, vec![PositionId(1)]);
+    assert_eq!(w.h.engine.market(w.c).unwrap().positions, vec![PositionId(1)]);
 }
 
 #[test]

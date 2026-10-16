@@ -484,11 +484,7 @@ mod tests {
                     );
                     r.read(|replica, _| {
                         assert_eq!(replica.engine().balance(ALICE).free, 50_000_000);
-                        assert_eq!(
-                            replica.engine().contracts().count(),
-                            0,
-                            "no row of the old journal"
-                        );
+                        assert_eq!(replica.engine().markets().count(), 0, "no row of the old journal");
                     });
                 }),
                 Step::Deliver(other[2..].to_vec()),
@@ -642,7 +638,7 @@ mod tests {
                         assert_eq!(r.last_seq(), 2);
                         r.read(|replica, _| {
                             assert_eq!(replica.engine().balance(ALICE).free, 50_000_000);
-                            assert_eq!(replica.engine().contracts().count(), 0);
+                            assert_eq!(replica.engine().markets().count(), 0);
                         });
                     }),
                     Step::Deliver(other[2..].to_vec()),

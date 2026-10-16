@@ -59,9 +59,9 @@ pub struct Snapshot {
     pub accounts: Vec<AccountView>,
     pub requests: Vec<RequestView>,
     pub quotes: Vec<QuoteView>,
-    /// Public, except each contract's `positions`: the engine announces fills only privately, so a
+    /// Public, except each market's `positions`: the engine announces fills only privately, so a
     /// non-admin viewer's list holds just the position ids they hold.
-    pub contracts: Vec<Contract>,
+    pub markets: Vec<Market>,
     pub positions: Vec<PositionView>,
 }
 
@@ -70,7 +70,7 @@ pub struct Snapshot {
 #[derive(Debug, Serialize)]
 pub struct PositionView {
     pub id: PositionId,
-    pub contract: ContractId,
+    pub market: MarketId,
     pub request: RequestId,
     pub qty: Qty,
     pub yes_holder: Option<AccountId>,
@@ -125,7 +125,7 @@ pub struct RequestView {
 
 #[derive(Debug, Serialize)]
 pub struct LegView {
-    pub contract: ContractId,
+    pub market: MarketId,
     pub side: Side,
     pub qty: Qty,
     /// The sealed limit: requester and admin only.
@@ -161,14 +161,14 @@ pub fn snapshot(s: &Session, viewer: Viewer) -> Snapshot {
         },
     };
     let positions = e
-        .contracts()
+        .markets()
         .flat_map(|c| c.positions.iter())
         .filter_map(|id| e.position(*id))
         .filter(|p| holds(viewer, p))
         .map(|p| position_view(p, viewer))
         .collect();
-    let contracts = e
-        .contracts()
+    let markets = e
+        .markets()
         .map(|c| {
             let mut c = c.clone();
             c.positions
@@ -207,7 +207,7 @@ pub fn snapshot(s: &Session, viewer: Viewer) -> Snapshot {
             .filter(|q| viewer.owns(q.mm))
             .map(|q| quote_view(e, q))
             .collect(),
-        contracts,
+        markets,
         positions,
     }
 }
@@ -263,7 +263,7 @@ fn position_view(p: &Position, viewer: Viewer) -> PositionView {
     let shown = |holder: AccountId| (p.settled || viewer.owns(holder)).then_some(holder);
     PositionView {
         id: p.id,
-        contract: p.contract,
+        market: p.market,
         request: p.request,
         qty: p.qty,
         yes_holder: shown(p.yes_holder),
@@ -309,7 +309,7 @@ fn request_view(e: &Engine, r: &Request, viewer: Viewer) -> RequestView {
         .legs
         .iter()
         .map(|leg| LegView {
-            contract: leg.contract,
+            market: leg.market,
             side: leg.side,
             qty: leg.qty,
             limit_price: mine.then_some(leg.limit_price),
@@ -356,7 +356,7 @@ fn kind(cmd: &Command) -> &'static str {
         Command::User { action, .. } => match action {
             Action::Deposit { .. } => "Deposit",
             Action::Withdraw { .. } => "Withdraw",
-            Action::ListContract { .. } => "ListContract",
+            Action::ListMarket { .. } => "ListMarket",
             Action::SubmitRequest { .. } => "SubmitRequest",
             Action::CancelRequest { .. } => "CancelRequest",
             Action::SubmitQuote { .. } => "SubmitQuote",

@@ -60,8 +60,8 @@ pub fn filter(view: View, b: &EventBatch) -> Option<OutBatch> {
 mod tests {
     use rfq_app::BatchKind;
     use rfq_domain::{
-        Balance, ContractId, Event, Outcome, PositionId, Price, QuoteId, RejectCause, RejectReason,
-        RequestId, Side,
+        Balance, Event, MarketId, Outcome, PositionId, Price, QuoteId, RejectCause, RejectReason, RequestId,
+        Side,
     };
 
     use super::*;
@@ -73,7 +73,7 @@ mod tests {
     /// One event of every kind. The `match` is a tripwire: a new `Event` variant does not compile
     /// here until it is added to the list.
     fn every_event() -> Vec<Event> {
-        let (a, c, r, q, p) = (ALICE, ContractId(1), RequestId(2), QuoteId(3), PositionId(4));
+        let (a, c, r, q, p) = (ALICE, MarketId(1), RequestId(2), QuoteId(3), PositionId(4));
         let price = Price::new(5_000).unwrap();
         let events = vec![
             Event::Initialized,
@@ -88,12 +88,12 @@ mod tests {
                 account: a,
                 amount: 1,
             },
-            Event::ContractListed { contract: c },
-            Event::ContractClosed { contract: c },
+            Event::MarketListed { market: c },
+            Event::MarketClosed { market: c },
             Event::RequestOpened {
                 request: r,
                 leg: 0,
-                contract: c,
+                market: c,
                 side: Side::BuyYes,
                 qty: 1,
                 response_deadline: 1,
@@ -130,21 +130,21 @@ mod tests {
                 position: p,
             },
             Event::OutcomeProposed {
-                contract: c,
+                market: c,
                 outcome: Outcome::Yes,
                 dispute_until: 1,
             },
             Event::Disputed {
-                contract: c,
+                market: c,
                 disputer: a,
             },
             Event::Ruled {
-                contract: c,
+                market: c,
                 outcome: Outcome::No,
                 bond_returned: true,
             },
-            Event::ContractFinalized {
-                contract: c,
+            Event::MarketFinalized {
+                market: c,
                 outcome: Outcome::Invalid,
             },
             Event::PositionSettled {
@@ -155,7 +155,7 @@ mod tests {
                 no_payout: 0,
             },
             Event::DisputeBondReturned {
-                contract: c,
+                market: c,
                 disputer: a,
                 amount: 1,
             },
@@ -166,8 +166,8 @@ mod tests {
                 | Event::CommandRejected { .. }
                 | Event::Deposited { .. }
                 | Event::Withdrawn { .. }
-                | Event::ContractListed { .. }
-                | Event::ContractClosed { .. }
+                | Event::MarketListed { .. }
+                | Event::MarketClosed { .. }
                 | Event::RequestOpened { .. }
                 | Event::RequestCancelled { .. }
                 | Event::RequestExpired { .. }
@@ -185,7 +185,7 @@ mod tests {
                 | Event::OutcomeProposed { .. }
                 | Event::Disputed { .. }
                 | Event::Ruled { .. }
-                | Event::ContractFinalized { .. }
+                | Event::MarketFinalized { .. }
                 | Event::PositionSettled { .. }
                 | Event::DisputeBondReturned { .. } => {}
             }

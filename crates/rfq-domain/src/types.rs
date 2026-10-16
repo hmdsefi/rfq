@@ -18,7 +18,7 @@ macro_rules! id_type {
         pub struct $name(pub u64);
     )*};
 }
-id_type!(AccountId, ContractId, RequestId, QuoteId, PositionId, HoldId);
+id_type!(AccountId, MarketId, RequestId, QuoteId, PositionId, HoldId);
 
 /// Price of the side the requester buys, in basis points of $1, strictly inside (0, 10_000).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

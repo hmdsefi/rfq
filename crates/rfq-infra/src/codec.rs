@@ -90,7 +90,7 @@ pub fn decode_ingress(bytes: &[u8]) -> Option<ClientCommand> {
 mod tests {
     use super::*;
     use rfq_app::{BatchKind, EventBatch};
-    use rfq_domain::{AccountId, Action, Balance, Command, Config, ContractId, Emitted, Event, Genesis};
+    use rfq_domain::{AccountId, Action, Balance, Command, Config, Emitted, Event, Genesis, MarketId};
 
     const ALICE: AccountId = AccountId(10);
 
@@ -158,8 +158,8 @@ mod tests {
         ClientCommand {
             actor: ALICE,
             nonce: 1,
-            action: Action::ListContract {
-                id: ContractId(1),
+            action: Action::ListMarket {
+                id: MarketId(1),
                 description: "x".repeat(100_000),
                 oracle: AccountId(4),
                 trading_close: 1,

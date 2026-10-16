@@ -5,7 +5,7 @@
 //! that account's data, the public one only what public events already show, and a request's live
 //! quote set appears nowhere. Every list is in id order (the engine's maps are `BTreeMap`s).
 use rfq_domain::{
-    AccountId, Amount, Balance, Contract, ContractId, ContractState, Duration, Engine, Outcome, Position,
+    AccountId, Amount, Balance, Duration, Engine, Market, MarketId, MarketState, Outcome, Position,
     PositionId, Price, Qty, QuoteId, QuoteState, RequestId, RequestState, Side, Timestamp,
 };
 use serde::Serialize;
@@ -28,7 +28,7 @@ pub enum Holding {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct PositionView {
     pub id: PositionId,
-    pub contract: ContractId,
+    pub market: MarketId,
     pub request: RequestId,
     pub qty: Qty,
     pub side: Holding,
@@ -49,7 +49,7 @@ pub struct Selected {
 /// A leg of a request, as the requester sees it. Never carries the leg's quote set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct OwnLegView {
-    pub contract: ContractId,
+    pub market: MarketId,
     pub side: Side,
     pub qty: Qty,
     pub limit_price: Price,
@@ -68,7 +68,7 @@ pub struct OwnRequestView {
 /// A leg as `RequestOpened` already shows it to everyone: no limit price.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct PublicLegView {
-    pub contract: ContractId,
+    pub market: MarketId,
     pub side: Side,
     pub qty: Qty,
 }
@@ -94,14 +94,14 @@ pub struct OwnQuoteView {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct ContractView {
-    pub id: ContractId,
+pub struct MarketView {
+    pub id: MarketId,
     pub description: String,
     pub oracle: AccountId,
     pub trading_close: Timestamp,
     pub resolution_deadline: Timestamp,
     pub dispute_window: Duration,
-    pub state: ContractState,
+    pub state: MarketState,
 }
 
 /// The ledger balance (zero for an account the engine never saw) and the nonce of the account's
@@ -132,7 +132,7 @@ fn position_view(e: &Engine, p: &Position, side: Holding) -> PositionView {
     };
     PositionView {
         id: p.id,
-        contract: p.contract,
+        market: p.market,
         request: p.request,
         qty: p.qty,
         side,
@@ -149,7 +149,7 @@ fn payout(e: &Engine, p: &Position, side: Holding) -> Option<Amount> {
     if !p.settled {
         return None;
     }
-    let ContractState::Final(outcome) = e.contract(p.contract)?.state else {
+    let MarketState::Final(outcome) = e.market(p.market)?.state else {
         return None;
     };
     let pot = p.yes_lock.checked_add(p.no_lock)?;
@@ -174,7 +174,7 @@ pub fn requests_of(e: &Engine, a: AccountId) -> Vec<OwnRequestView> {
                 .legs
                 .iter()
                 .map(|l| OwnLegView {
-                    contract: l.contract,
+                    market: l.market,
                     side: l.side,
                     qty: l.qty,
                     limit_price: l.limit_price,
@@ -206,12 +206,12 @@ pub fn quotes_of(e: &Engine, a: AccountId) -> Vec<OwnQuoteView> {
         .collect()
 }
 
-/// The requests still `Open`, in id order, with public fields only. With `contract`, those with a
+/// The requests still `Open`, in id order, with public fields only. With `market`, those with a
 /// leg on it.
-pub fn open_requests(e: &Engine, contract: Option<ContractId>) -> Vec<PublicRequestView> {
+pub fn open_requests(e: &Engine, market: Option<MarketId>) -> Vec<PublicRequestView> {
     e.requests()
         .filter(|r| r.state == RequestState::Open)
-        .filter(|r| contract.is_none_or(|c| r.legs.iter().any(|l| l.contract == c)))
+        .filter(|r| market.is_none_or(|c| r.legs.iter().any(|l| l.market == c)))
         .map(|r| PublicRequestView {
             id: r.id,
             response_deadline: r.response_deadline,
@@ -219,7 +219,7 @@ pub fn open_requests(e: &Engine, contract: Option<ContractId>) -> Vec<PublicRequ
                 .legs
                 .iter()
                 .map(|l| PublicLegView {
-                    contract: l.contract,
+                    market: l.market,
                     side: l.side,
                     qty: l.qty,
                 })
@@ -228,17 +228,17 @@ pub fn open_requests(e: &Engine, contract: Option<ContractId>) -> Vec<PublicRequ
         .collect()
 }
 
-/// Every listed contract, in id order.
-pub fn contracts(e: &Engine) -> Vec<ContractView> {
-    e.contracts().map(contract_view).collect()
+/// Every listed market, in id order.
+pub fn markets(e: &Engine) -> Vec<MarketView> {
+    e.markets().map(market_view).collect()
 }
 
-pub fn contract(e: &Engine, id: ContractId) -> Option<ContractView> {
-    e.contract(id).map(contract_view)
+pub fn market(e: &Engine, id: MarketId) -> Option<MarketView> {
+    e.market(id).map(market_view)
 }
 
-fn contract_view(c: &Contract) -> ContractView {
-    ContractView {
+fn market_view(c: &Market) -> MarketView {
+    MarketView {
         id: c.id,
         description: c.description.clone(),
         oracle: c.oracle,

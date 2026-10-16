@@ -38,20 +38,20 @@ impl Ctx {
     pub fn at(&self, offset: Duration) -> Timestamp {
         self.t0 + offset
     }
-    /// One contract per scenario run, keyed by its start time so reruns never collide.
-    pub fn contract(&self) -> ContractId {
-        ContractId(self.t0)
+    /// One market per scenario run, keyed by its start time so reruns never collide.
+    pub fn market(&self) -> MarketId {
+        MarketId(self.t0)
     }
-    /// The run's `k`th extra market (`k` in 1..=9), for a multi-leg scenario: `ContractId(t0 * 10 + k)`.
+    /// The run's `k`th extra market (`k` in 1..=9), for a multi-leg scenario: `MarketId(t0 * 10 + k)`.
     ///
     /// Distinct runs never collide: two start times that differ give `t0 * 10 + k` that differ (`k` is
-    /// below 10), and for real millisecond clocks it can't equal another run's own `ContractId(t0)`
+    /// below 10), and for real millisecond clocks it can't equal another run's own `MarketId(t0)`
     /// either (that would need two start times a factor of 10 apart). The value stays below 2^53
     /// (a millisecond timestamp is about 1.8e12, so about 1.8e13 here), so the dashboard page can
     /// hold it in a JavaScript number. The run's scope owns these ids too (`rfq-demo/src/scope.rs`).
-    pub fn contract_n(&self, k: u64) -> ContractId {
+    pub fn market_n(&self, k: u64) -> MarketId {
         assert!((1..=9).contains(&k), "a run has extra markets 1..=9, not {k}");
-        ContractId(self.t0 * 10 + k)
+        MarketId(self.t0 * 10 + k)
     }
     pub fn record_label(&mut self, label: &'static str, seq: u64) {
         self.labels.insert(label, seq);
@@ -147,8 +147,8 @@ fn fund() -> Vec<Step> {
 }
 
 /// The operator lists a market that closes at +5 s, with a hard deadline at +15 s.
-fn list(label: &'static str, id: fn(&Ctx) -> ContractId, description: &'static str) -> Step {
-    send(0, label, OPERATOR, move |c| Action::ListContract {
+fn list(label: &'static str, id: fn(&Ctx) -> MarketId, description: &'static str) -> Step {
+    send(0, label, OPERATOR, move |c| Action::ListMarket {
         id: id(c),
         description: description.into(),
         oracle: ORACLE,
@@ -158,12 +158,12 @@ fn list(label: &'static str, id: fn(&Ctx) -> ContractId, description: &'static s
     })
 }
 
-/// Funds everyone and lists the scenario's contract (closes at +5 s, hard deadline at +15 s).
+/// Funds everyone and lists the scenario's market (closes at +5 s, hard deadline at +15 s).
 fn setup() -> Vec<Step> {
     let mut steps = fund();
     steps.push(list(
         "list",
-        |c| c.contract(),
+        |c| c.market(),
         "Will it rain in Paris on 2026-11-01?",
     ));
     steps
@@ -174,17 +174,17 @@ fn three_markets() -> Vec<Step> {
     let mut steps = fund();
     steps.push(list(
         "list_paris",
-        |c| c.contract_n(1),
+        |c| c.market_n(1),
         "Will it rain in Paris on 2026-11-01?",
     ));
     steps.push(list(
         "list_london",
-        |c| c.contract_n(2),
+        |c| c.market_n(2),
         "Will it rain in London on 2026-11-01?",
     ));
     steps.push(list(
         "list_rome",
-        |c| c.contract_n(3),
+        |c| c.market_n(3),
         "Will it rain in Rome on 2026-11-01?",
     ));
     steps
@@ -195,7 +195,7 @@ fn quoted() -> Vec<Step> {
     let mut s = setup();
     s.push(send(100, "req", ALICE, |c| Action::SubmitRequest {
         legs: vec![LegSpec {
-            contract: c.contract(),
+            market: c.market(),
             side: Side::BuyYes,
             qty: 1_000,
             limit_price: price(7_000),
@@ -238,7 +238,7 @@ fn three_leg_request() -> Step {
     send(100, "req", ALICE, |c| Action::SubmitRequest {
         legs: (1..=3)
             .map(|k| LegSpec {
-                contract: c.contract_n(k),
+                market: c.market_n(k),
                 side: Side::BuyYes,
                 qty: 400,
                 limit_price: price(7_000),
@@ -264,7 +264,7 @@ pub fn all() -> Vec<Scenario> {
         let mut s = filled();
         s.push(tick(5_100));
         s.push(send(5_200, "propose", ORACLE, |c| Action::ProposeOutcome {
-            contract: c.contract(),
+            market: c.market(),
             outcome: Outcome::Yes,
         }));
         s.push(tick(7_300));
@@ -280,9 +280,9 @@ pub fn all() -> Vec<Scenario> {
                 "RequestPresented",
                 "QuoteFilled",
                 "RequestFilled",
-                "ContractClosed",
+                "MarketClosed",
                 "OutcomeProposed",
-                "ContractFinalized",
+                "MarketFinalized",
                 "PositionSettled",
             ],
         }
@@ -309,7 +309,7 @@ pub fn all() -> Vec<Scenario> {
         let mut s = setup();
         s.push(send(100, "req", ALICE, |c| Action::SubmitRequest {
             legs: vec![LegSpec {
-                contract: c.contract(),
+                market: c.market(),
                 side: Side::BuyYes,
                 qty: 1_000,
                 limit_price: price(7_000),
@@ -336,14 +336,14 @@ pub fn all() -> Vec<Scenario> {
         let mut s = filled();
         s.push(tick(5_100));
         s.push(send(5_200, "propose", ORACLE, |c| Action::ProposeOutcome {
-            contract: c.contract(),
+            market: c.market(),
             outcome: Outcome::Yes,
         }));
         s.push(send(5_500, "dispute", CAROL, |c| Action::Dispute {
-            contract: c.contract(),
+            market: c.market(),
         }));
         s.push(send(6_000, "rule", ARBITER, |c| Action::Rule {
-            contract: c.contract(),
+            market: c.market(),
             outcome: Outcome::Invalid,
         }));
         Scenario {
@@ -354,7 +354,7 @@ pub fn all() -> Vec<Scenario> {
                 "OutcomeProposed",
                 "Disputed",
                 "Ruled",
-                "ContractFinalized",
+                "MarketFinalized",
                 "PositionSettled",
             ],
         }
@@ -367,8 +367,8 @@ pub fn all() -> Vec<Scenario> {
             steps: s,
             expect: vec![
                 "RequestFilled",
-                "ContractClosed",
-                "ContractFinalized",
+                "MarketClosed",
+                "MarketFinalized",
                 "PositionSettled",
             ],
         }

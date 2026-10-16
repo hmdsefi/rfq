@@ -22,7 +22,7 @@ use std::ffi::CString;
 use std::time::{Duration, Instant};
 
 use rfq_app::{BatchKind, ClientCommand, EventBatch, Journal, Transport};
-use rfq_domain::{AccountId, Action, Balance, Command, ContractId, Emitted, Event, SequencedCommand};
+use rfq_domain::{AccountId, Action, Balance, Command, Emitted, Event, MarketId, SequencedCommand};
 use rfq_infra::aeron::{
     self, AeronTransport, ArchiveJournal, EGRESS, INGRESS, JournalFollower, LOG, frame_of,
 };
@@ -41,9 +41,9 @@ fn client() -> Aeron {
     aeron::connect(&dir).expect("a running media driver")
 }
 
-fn list_contract(description_len: usize) -> Action {
-    Action::ListContract {
-        id: ContractId(1),
+fn list_market(description_len: usize) -> Action {
+    Action::ListMarket {
+        id: MarketId(1),
         description: "x".repeat(description_len),
         oracle: AccountId(4),
         trading_close: 1,
@@ -89,12 +89,12 @@ fn transport_reassembles_ingress_and_splits_egress() {
     let big = ClientCommand {
         actor: AccountId(1),
         nonce: 2,
-        action: list_contract(20_000),
+        action: list_market(20_000),
     };
     let oversized = encode(&ClientCommand {
         actor: AccountId(1),
         nonce: 3,
-        action: list_contract(MAX_INGRESS + 1),
+        action: list_market(MAX_INGRESS + 1),
     });
     offer_until_ok(&ingress, &encode(&small(1)));
     offer_until_ok(&ingress, &encode(&big));
@@ -214,7 +214,7 @@ fn archive_journal_replays_every_recording_across_restarts_and_crashes() {
     // A record far over the MTU is fragmented in the log and must replay whole.
     let batch1 = vec![
         user(n + 1, Action::Withdraw { amount: 1 }),
-        user(n + 2, list_contract(50_000)),
+        user(n + 2, list_market(50_000)),
         user(n + 3, Action::Withdraw { amount: 3 }),
     ];
     append_durably(&mut first, &batch1);
@@ -327,7 +327,7 @@ fn empty_log(aeron: &Aeron) {
 fn commands(seqs: std::ops::RangeInclusive<u64>) -> Vec<SequencedCommand> {
     seqs.map(|seq| {
         let action = if seq % 10 == 0 {
-            list_contract(50_000)
+            list_market(50_000)
         } else {
             Action::Withdraw { amount: seq }
         };

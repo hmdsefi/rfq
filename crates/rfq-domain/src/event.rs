@@ -43,16 +43,16 @@ pub enum Event {
         account: AccountId,
         amount: Amount,
     },
-    ContractListed {
-        contract: ContractId,
+    MarketListed {
+        market: MarketId,
     },
-    ContractClosed {
-        contract: ContractId,
+    MarketClosed {
+        market: MarketId,
     },
     RequestOpened {
         request: RequestId,
         leg: u32,
-        contract: ContractId,
+        market: MarketId,
         side: Side,
         qty: Qty,
         response_deadline: Timestamp,
@@ -106,21 +106,21 @@ pub enum Event {
         position: PositionId,
     },
     OutcomeProposed {
-        contract: ContractId,
+        market: MarketId,
         outcome: Outcome,
         dispute_until: Timestamp,
     },
     Disputed {
-        contract: ContractId,
+        market: MarketId,
         disputer: AccountId,
     },
     Ruled {
-        contract: ContractId,
+        market: MarketId,
         outcome: Outcome,
         bond_returned: bool,
     },
-    ContractFinalized {
-        contract: ContractId,
+    MarketFinalized {
+        market: MarketId,
         outcome: Outcome,
     },
     PositionSettled {
@@ -134,7 +134,7 @@ pub enum Event {
     /// the disputer. Sent to the disputer only. Not a `Ruled`: nobody ruled, the proposal stands.
     /// (Last variant, so the earlier variants keep their wire discriminants.)
     DisputeBondReturned {
-        contract: ContractId,
+        market: MarketId,
         disputer: AccountId,
         amount: Amount,
     },
@@ -147,8 +147,8 @@ impl Event {
             Event::CommandRejected { .. } => "CommandRejected",
             Event::Deposited { .. } => "Deposited",
             Event::Withdrawn { .. } => "Withdrawn",
-            Event::ContractListed { .. } => "ContractListed",
-            Event::ContractClosed { .. } => "ContractClosed",
+            Event::MarketListed { .. } => "MarketListed",
+            Event::MarketClosed { .. } => "MarketClosed",
             Event::RequestOpened { .. } => "RequestOpened",
             Event::RequestCancelled { .. } => "RequestCancelled",
             Event::RequestExpired { .. } => "RequestExpired",
@@ -166,7 +166,7 @@ impl Event {
             Event::OutcomeProposed { .. } => "OutcomeProposed",
             Event::Disputed { .. } => "Disputed",
             Event::Ruled { .. } => "Ruled",
-            Event::ContractFinalized { .. } => "ContractFinalized",
+            Event::MarketFinalized { .. } => "MarketFinalized",
             Event::PositionSettled { .. } => "PositionSettled",
             Event::DisputeBondReturned { .. } => "DisputeBondReturned",
         }
@@ -203,13 +203,7 @@ mod tests {
     // scenario tests compare against these strings. Debug output of a variant starts with its name.
     #[test]
     fn name_is_the_variant_name() {
-        let (a, c, r, q, p) = (
-            AccountId(1),
-            ContractId(1),
-            RequestId(1),
-            QuoteId(1),
-            PositionId(1),
-        );
+        let (a, c, r, q, p) = (AccountId(1), MarketId(1), RequestId(1), QuoteId(1), PositionId(1));
         let price = Price::new(5_000).unwrap();
         let events = [
             Event::Initialized,
@@ -224,12 +218,12 @@ mod tests {
                 account: a,
                 amount: 1,
             },
-            Event::ContractListed { contract: c },
-            Event::ContractClosed { contract: c },
+            Event::MarketListed { market: c },
+            Event::MarketClosed { market: c },
             Event::RequestOpened {
                 request: r,
                 leg: 0,
-                contract: c,
+                market: c,
                 side: Side::BuyYes,
                 qty: 1,
                 response_deadline: 1,
@@ -266,21 +260,21 @@ mod tests {
                 position: p,
             },
             Event::OutcomeProposed {
-                contract: c,
+                market: c,
                 outcome: Outcome::Yes,
                 dispute_until: 1,
             },
             Event::Disputed {
-                contract: c,
+                market: c,
                 disputer: a,
             },
             Event::Ruled {
-                contract: c,
+                market: c,
                 outcome: Outcome::No,
                 bond_returned: true,
             },
-            Event::ContractFinalized {
-                contract: c,
+            Event::MarketFinalized {
+                market: c,
                 outcome: Outcome::Invalid,
             },
             Event::PositionSettled {
@@ -291,7 +285,7 @@ mod tests {
                 no_payout: 0,
             },
             Event::DisputeBondReturned {
-                contract: c,
+                market: c,
                 disputer: a,
                 amount: 1,
             },

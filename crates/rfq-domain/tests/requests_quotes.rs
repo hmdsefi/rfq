@@ -5,16 +5,16 @@ pub const CLOSE: Timestamp = 1_000_000;
 pub const HARD: Timestamp = 2_000_000;
 pub const DEADLINE: Timestamp = 10_000;
 
-/// Funded accounts and one listed contract.
-fn setup() -> (Harness, ContractId) {
+/// Funded accounts and one listed market.
+fn setup() -> (Harness, MarketId) {
     let mut h = Harness::new(Config::default());
     for a in [ALICE, MM1, MM2, CAROL] {
         h.fund(a, 1_000);
     }
-    let c = ContractId(1);
+    let c = MarketId(1);
     let out = h.user(
         OPERATOR,
-        Action::ListContract {
+        Action::ListMarket {
             id: c,
             description: "Will it rain in Paris on 2026-11-01?".into(),
             oracle: ORACLE,
@@ -27,16 +27,16 @@ fn setup() -> (Harness, ContractId) {
     (h, c)
 }
 
-fn leg(c: ContractId, qty: Qty, limit: u16) -> LegSpec {
+fn leg(c: MarketId, qty: Qty, limit: u16) -> LegSpec {
     LegSpec {
-        contract: c,
+        market: c,
         side: Side::BuyYes,
         qty,
         limit_price: price(limit),
     }
 }
 
-fn request(h: &mut Harness, c: ContractId) -> RequestId {
+fn request(h: &mut Harness, c: MarketId) -> RequestId {
     let id = RequestId(h.next_seq());
     let out = h.user(
         ALICE,
@@ -70,13 +70,13 @@ fn quote(h: &mut Harness, mm: AccountId, r: RequestId, bps: u16) -> QuoteId {
 }
 
 #[test]
-fn list_contract_requires_operator_and_valid_times() {
+fn list_market_requires_operator_and_valid_times() {
     let (mut h, _) = setup();
     let list = |h: &mut Harness, actor, id, oracle, close, hard| {
         h.user(
             actor,
-            Action::ListContract {
-                id: ContractId(id),
+            Action::ListMarket {
+                id: MarketId(id),
                 description: "x".into(),
                 oracle,
                 trading_close: close,
@@ -139,7 +139,7 @@ fn submit_request_validation() {
         "no legs"
     );
     assert_eq!(
-        submit(vec![leg(c, 10, 7_000), leg(ContractId(9), 10, 7_000)], DEADLINE),
+        submit(vec![leg(c, 10, 7_000), leg(MarketId(9), 10, 7_000)], DEADLINE),
         Some(RejectReason::UnknownObject),
         "every leg is validated, not only the first (multi-leg: tests/multi_leg.rs)"
     );
@@ -154,7 +154,7 @@ fn submit_request_validation() {
         "deadline + window after close"
     );
     assert_eq!(
-        submit(vec![leg(ContractId(9), 10, 7_000)], DEADLINE),
+        submit(vec![leg(MarketId(9), 10, 7_000)], DEADLINE),
         Some(RejectReason::UnknownObject)
     );
     assert_eq!(
@@ -512,11 +512,11 @@ fn withdraw_cannot_touch_reserved() {
 }
 
 #[test]
-fn contract_closes_at_trading_close() {
+fn market_closes_at_trading_close() {
     let (mut h, c) = setup();
     let out = h.tick(CLOSE);
-    assert_eq!(names(&out), vec!["ContractClosed"]);
-    assert_eq!(h.engine.contract(c).unwrap().state, ContractState::Closed);
+    assert_eq!(names(&out), vec!["MarketClosed"]);
+    assert_eq!(h.engine.market(c).unwrap().state, MarketState::Closed);
     let out = h.user(
         ALICE,
         Action::SubmitRequest {

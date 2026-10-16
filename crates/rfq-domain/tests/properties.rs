@@ -4,7 +4,7 @@
 //! - `invariants_hold_for_random_streams` (from the brief): uniformly random actors and objects. It
 //!   mostly probes guards (wrong actor, wrong state) and the early request/quote lifecycle.
 //! - `invariants_hold_for_directed_streams` (added): the same kind of stream, but owner-restricted
-//!   commands usually come from the rightful account, the arbiter acts, and the contract closes inside
+//!   commands usually come from the rightful account, the arbiter acts, and the market closes inside
 //!   the reachable time range, so streams reach fills, settlement, disputes, rulings and `Resume`
 //!   extensions. `directed_streams_reach_every_lifecycle_path` keeps it from silently going vacuous.
 use std::collections::{BTreeMap, BTreeSet};
@@ -56,7 +56,7 @@ fn replay_hash(h: &Harness) -> [u8; 32] {
     replayed.state_hash()
 }
 
-fn action(h: &Harness, o: &Op, c: ContractId) -> Option<Action> {
+fn action(h: &Harness, o: &Op, c: MarketId) -> Option<Action> {
     let now = h.now();
     let requests: Vec<RequestId> = h.engine.requests().map(|r| r.id).collect();
     let quotes: Vec<QuoteId> = h.engine.quotes().map(|q| q.id).collect();
@@ -64,7 +64,7 @@ fn action(h: &Harness, o: &Op, c: ContractId) -> Option<Action> {
     Some(match o.kind {
         0 => Action::SubmitRequest {
             legs: vec![LegSpec {
-                contract: c,
+                market: c,
                 side: if o.a.is_multiple_of(2) {
                     Side::BuyYes
                 } else {
@@ -109,12 +109,12 @@ fn action(h: &Harness, o: &Op, c: ContractId) -> Option<Action> {
             request: pick(&requests, o.a)?,
         },
         6 => Action::ProposeOutcome {
-            contract: c,
+            market: c,
             outcome: [Outcome::Yes, Outcome::No, Outcome::Invalid][o.a as usize % 3],
         },
-        7 => Action::Dispute { contract: c },
+        7 => Action::Dispute { market: c },
         8 => Action::Rule {
-            contract: c,
+            market: c,
             outcome: [Outcome::Yes, Outcome::No, Outcome::Invalid][o.a as usize % 3],
         },
         _ => Action::Withdraw {
@@ -129,8 +129,8 @@ proptest! {
     fn invariants_hold_for_random_streams(ops in prop::collection::vec(op(), 1..200)) {
         let mut h = Harness::new(Config::default());
         for a in ACTORS { h.fund(a, 10_000); }
-        let c = ContractId(1);
-        h.user(OPERATOR, Action::ListContract { id: c, description: "p".into(), oracle: ORACLE, trading_close: 2_000_000, resolution_deadline: 4_000_000, dispute_window: 5_000 });
+        let c = MarketId(1);
+        h.user(OPERATOR, Action::ListMarket { id: c, description: "p".into(), oracle: ORACLE, trading_close: 2_000_000, resolution_deadline: 4_000_000, dispute_window: 5_000 });
         let total: Amount = ACTORS.iter().map(|a| { let b = h.engine.balance(*a); b.free + b.reserved + b.escrowed }).sum();
         let mut withdrawn: Amount = 0;
         for o in &ops {
@@ -167,7 +167,7 @@ proptest! {
 const CLOSE: Timestamp = 40_000;
 const HARD: Timestamp = 90_000;
 const WINDOW: Duration = 5_000;
-const CONTRACT: ContractId = ContractId(1);
+const MARKET: MarketId = MarketId(1);
 const USERS: [AccountId; 4] = [ALICE, MM1, MM2, CAROL];
 const EVERYONE: [AccountId; 8] = [OPERATOR, ARBITER, TREASURY, ORACLE, ALICE, MM1, MM2, CAROL];
 const FUNDED_EACH: u64 = 10_000;
@@ -211,7 +211,7 @@ fn directed(h: &Harness, o: &Op) -> Option<(AccountId, Action)> {
                 user,
                 Action::SubmitRequest {
                     legs: vec![LegSpec {
-                        contract: CONTRACT,
+                        market: MARKET,
                         side: if o.a.is_multiple_of(2) {
                             Side::BuyYes
                         } else {
@@ -288,15 +288,15 @@ fn directed(h: &Harness, o: &Op) -> Option<(AccountId, Action)> {
         11 => Some((
             who(ORACLE),
             Action::ProposeOutcome {
-                contract: CONTRACT,
+                market: MARKET,
                 outcome: [Outcome::Yes, Outcome::No, Outcome::Invalid][usize::from(o.a) % 3],
             },
         )),
-        12 => Some((user, Action::Dispute { contract: CONTRACT })),
+        12 => Some((user, Action::Dispute { market: MARKET })),
         13 => Some((
             who(ARBITER),
             Action::Rule {
-                contract: CONTRACT,
+                market: MARKET,
                 outcome: [Outcome::Yes, Outcome::No, Outcome::Invalid][usize::from(o.a) % 3],
             },
         )),
@@ -323,8 +323,8 @@ fn run_directed(ops: &[Op]) -> Run {
     }
     let out = h.user(
         OPERATOR,
-        Action::ListContract {
-            id: CONTRACT,
+        Action::ListMarket {
+            id: MARKET,
             description: "p".into(),
             oracle: ORACLE,
             trading_close: CLOSE,
@@ -347,7 +347,7 @@ fn run_directed(ops: &[Op]) -> Run {
         assert_sealed(&h, &out);
         events.extend(out);
     }
-    let out = h.tick(h.now() + 200_000); // past the hard deadline: every contract is final
+    let out = h.tick(h.now() + 200_000); // past the hard deadline: every market is final
     assert_sealed(&h, &out);
     events.extend(out);
     Run { h, events }
@@ -377,22 +377,22 @@ fn check_run(run: &Run) -> Result<(), TestCaseError> {
     // No dead ends: nothing live is left anywhere once past the hard deadline.
     prop_assert!(h.engine.requests().all(|r| !r.state.is_live()));
     prop_assert!(h.engine.quotes().all(|q| !q.state.is_live()));
-    let contract = h.engine.contract(CONTRACT).expect("listed");
-    let ContractState::Final(outcome) = contract.state else {
+    let market = h.engine.market(MARKET).expect("listed");
+    let MarketState::Final(outcome) = market.state else {
         return Err(TestCaseError::fail(format!(
-            "contract not final: {:?}",
-            contract.state
+            "market not final: {:?}",
+            market.state
         )));
     };
     prop_assert!(
-        contract
+        market
             .positions
             .iter()
             .all(|p| h.engine.position(*p).expect("exists").settled)
     );
 
     // The resolution state machine, restated from the events alone: a ruling wins, else the oracle's
-    // proposal stands (even if the arbiter never ruled), else the contract is Invalid.
+    // proposal stands (even if the arbiter never ruled), else the market is Invalid.
     let proposed = events.iter().find_map(|e| match e.event {
         Event::OutcomeProposed { outcome, .. } => Some(outcome),
         _ => None,
@@ -459,7 +459,7 @@ fn check_run(run: &Run) -> Result<(), TestCaseError> {
             prop_assert_eq!((yes_payout, no_payout), want, "position {:?}", position);
         }
     }
-    prop_assert_eq!(settled, 2 * contract.positions.len());
+    prop_assert_eq!(settled, 2 * market.positions.len());
 
     // Who got what, from the events alone: each account ends with what it was funded, minus what it
     // withdrew and locked into positions, plus what its positions paid out, and the dispute bond moves
@@ -549,7 +549,7 @@ fn directed_streams_reach_every_lifecycle_path() {
                 Event::Ruled {
                     bond_returned: false, ..
                 } => upheld += 1,
-                Event::ContractFinalized { outcome, .. } => {
+                Event::MarketFinalized { outcome, .. } => {
                     finals.insert(outcome);
                 }
                 _ => {}
@@ -570,12 +570,12 @@ fn directed_streams_reach_every_lifecycle_path() {
         "QuoteReleased",
         "QuoteExpired",
         "QuoteCancelled",
-        "ContractClosed",
+        "MarketClosed",
         "OutcomeProposed",
         "Disputed",
         "Ruled",
         "DisputeBondReturned",
-        "ContractFinalized",
+        "MarketFinalized",
         "PositionSettled",
     ] {
         assert!(
@@ -591,6 +591,6 @@ fn directed_streams_reach_every_lifecycle_path() {
     assert_eq!(
         finals.len(),
         3,
-        "contracts should end Yes, No and Invalid across the sample: {finals:?}"
+        "markets should end Yes, No and Invalid across the sample: {finals:?}"
     );
 }

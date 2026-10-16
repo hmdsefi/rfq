@@ -918,7 +918,7 @@ fn action_name(action: &Action) -> &'static str {
     match action {
         Action::Deposit { .. } => "Deposit",
         Action::Withdraw { .. } => "Withdraw",
-        Action::ListContract { .. } => "ListContract",
+        Action::ListMarket { .. } => "ListMarket",
         Action::SubmitRequest { .. } => "SubmitRequest",
         Action::CancelRequest { .. } => "CancelRequest",
         Action::SubmitQuote { .. } => "SubmitQuote",

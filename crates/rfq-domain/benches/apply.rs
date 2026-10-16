@@ -53,11 +53,11 @@ fn build_log() -> Vec<SequencedCommand> {
             },
         );
     }
-    let c = ContractId(1);
+    let c = MarketId(1);
     b.user(
         0,
         OPERATOR,
-        Action::ListContract {
+        Action::ListMarket {
             id: c,
             description: "bench".into(),
             oracle: ORACLE,
@@ -75,7 +75,7 @@ fn build_log() -> Vec<SequencedCommand> {
             ALICE,
             Action::SubmitRequest {
                 legs: vec![LegSpec {
-                    contract: c,
+                    market: c,
                     side: Side::BuyYes,
                     qty: 10,
                     limit_price: price(7_000),

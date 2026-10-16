@@ -1,7 +1,7 @@
 //! Multi-leg requests (docs/specs/engine.md §8): the five atomicity rules, one behaviour per test.
 //! The harness checks I1–I5 after every command, so each test also proves the invariants hold.
 //!
-//! The setup: three markets (contracts 1, 2, 3) and Alice's request for 400 YES on each at a sealed
+//! The setup: three markets (ids 1, 2, 3) and Alice's request for 400 YES on each at a sealed
 //! limit of 0.70, so she holds 3 × 400 × 0.70 = $840. MM1 and MM2 quote the legs.
 use rfq_domain::*;
 use rfq_testkit::{accounts::*, *};
@@ -13,7 +13,7 @@ const DEADLINE: Timestamp = 10_000;
 const ACCEPT_BY: Timestamp = DEADLINE + 30_000;
 const QTY: Qty = 400;
 const LIMIT: u16 = 7_000;
-const MARKETS: [ContractId; 3] = [ContractId(1), ContractId(2), ContractId(3)];
+const MARKETS: [MarketId; 3] = [MarketId(1), MarketId(2), MarketId(3)];
 
 /// Funded accounts and the three listed markets, with no request yet.
 fn markets() -> Harness {
@@ -24,7 +24,7 @@ fn markets() -> Harness {
     for c in MARKETS {
         let out = h.user(
             OPERATOR,
-            Action::ListContract {
+            Action::ListMarket {
                 id: c,
                 description: format!("market {}", c.0),
                 oracle: ORACLE,
@@ -38,9 +38,9 @@ fn markets() -> Harness {
     h
 }
 
-fn leg(c: ContractId, side: Side, qty: Qty, limit: u16) -> LegSpec {
+fn leg(c: MarketId, side: Side, qty: Qty, limit: u16) -> LegSpec {
     LegSpec {
-        contract: c,
+        market: c,
         side,
         qty,
         limit_price: price(limit),
@@ -149,7 +149,7 @@ fn count(out: &[Emitted], name: &str) -> usize {
 }
 
 fn no_positions(w: &World) -> bool {
-    w.h.engine.contracts().all(|c| c.positions.is_empty()) && w.h.engine.position(PositionId(1)).is_none()
+    w.h.engine.markets().all(|c| c.positions.is_empty()) && w.h.engine.position(PositionId(1)).is_none()
 }
 
 // Rule 1: one hold covers the total, and every leg gets its own `RequestOpened` with its index.
@@ -172,7 +172,7 @@ fn a_request_holds_the_total_once_and_announces_every_leg() {
             Event::RequestOpened {
                 request: r,
                 leg: i as u32,
-                contract: c,
+                market: c,
                 side: Side::BuyYes,
                 qty: QTY,
                 response_deadline: DEADLINE,
@@ -233,7 +233,7 @@ fn three_legs_fill_in_one_accept() {
     // In leg order (engine.md §7): position i is on leg i's market. The dashboard relies on this.
     for (pid, c) in positions.iter().zip(MARKETS) {
         let p = w.h.engine.position(*pid).expect("exists");
-        assert_eq!((p.contract, p.qty, p.yes_holder), (c, QTY, ALICE));
+        assert_eq!((p.market, p.qty, p.yes_holder), (c, QTY, ALICE));
     }
     assert_eq!(state(&w), RequestState::Filled);
 
@@ -583,7 +583,7 @@ mod streams {
                 let n = 1 + usize::from(o.a) % (MAX_LEGS + 1);
                 let legs = (0..n)
                     .map(|i| LegSpec {
-                        contract: MARKETS[(usize::from(o.a >> 3) + i) % 3],
+                        market: MARKETS[(usize::from(o.a >> 3) + i) % 3],
                         side: if (o.b >> i) & 1 == 0 {
                             Side::BuyYes
                         } else {
@@ -670,7 +670,7 @@ mod streams {
         for c in MARKETS {
             let out = h.user(
                 OPERATOR,
-                Action::ListContract {
+                Action::ListMarket {
                     id: c,
                     description: "m".into(),
                     oracle: ORACLE,
@@ -712,7 +712,7 @@ mod streams {
         for r in h.engine.requests() {
             let positions = h
                 .engine
-                .contracts()
+                .markets()
                 .flat_map(|c| c.positions.iter())
                 .filter(|p| h.engine.position(**p).is_some_and(|p| p.request == r.id))
                 .count();

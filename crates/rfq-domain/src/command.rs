@@ -71,7 +71,7 @@ pub const MAX_LEGS: usize = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LegSpec {
-    pub contract: ContractId,
+    pub market: MarketId,
     pub side: Side,
     pub qty: Qty,
     pub limit_price: Price,
@@ -93,8 +93,8 @@ pub enum Action {
     Withdraw {
         amount: Amount,
     },
-    ListContract {
-        id: ContractId,
+    ListMarket {
+        id: MarketId,
         description: String,
         oracle: AccountId,
         trading_close: Timestamp,
@@ -126,14 +126,14 @@ pub enum Action {
         request: RequestId,
     },
     ProposeOutcome {
-        contract: ContractId,
+        market: MarketId,
         outcome: Outcome,
     },
     Dispute {
-        contract: ContractId,
+        market: MarketId,
     },
     Rule {
-        contract: ContractId,
+        market: MarketId,
         outcome: Outcome,
     },
 }

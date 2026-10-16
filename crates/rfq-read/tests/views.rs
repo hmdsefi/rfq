@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use rfq_domain::*;
 use rfq_read::{
     AccountView, Holding, OwnLegView, OwnQuoteView, OwnRequestView, PositionView, PublicLegView,
-    PublicRequestView, Selected, account, contract, contracts, open_requests, positions_of, quotes_of,
+    PublicRequestView, Selected, account, market, markets, open_requests, positions_of, quotes_of,
     requests_of,
 };
 use rfq_testkit::accounts::*;
@@ -93,7 +93,7 @@ fn positions_of_after_happy_path() {
         alice,
         vec![PositionView {
             id: p.id,
-            contract: ContractId(T0),
+            market: MarketId(T0),
             request: RequestId(7),
             qty: 1_000,
             side: Holding::Yes,
@@ -107,7 +107,7 @@ fn positions_of_after_happy_path() {
         mm2,
         vec![PositionView {
             id: p.id,
-            contract: ContractId(T0),
+            market: MarketId(T0),
             request: RequestId(7),
             qty: 1_000,
             side: Holding::No,
@@ -128,14 +128,14 @@ fn positions_of_after_happy_path() {
     assert_eq!(
         json,
         json!([{
-            "id": p.id.0, "contract": T0, "request": 7, "qty": 1_000, "side": "Yes",
+            "id": p.id.0, "market": T0, "request": 7, "qty": 1_000, "side": "Yes",
             "stake": 600_000_000u64, "settled": true, "payout": 1_000_000_000u64
         }])
     );
     assert_eq!(
         keys_of(&json[0]),
         set(&[
-            "id", "contract", "request", "qty", "side", "stake", "settled", "payout"
+            "id", "market", "request", "qty", "side", "stake", "settled", "payout"
         ])
     );
 }
@@ -144,8 +144,8 @@ fn positions_of_after_happy_path() {
 fn positions_of_after_an_invalid_resolution_refunds_each_stake() {
     let e = engine_after("disputed_ruled_invalid");
     assert_eq!(
-        e.contract(ContractId(T0)).unwrap().state,
-        ContractState::Final(Outcome::Invalid)
+        e.market(MarketId(T0)).unwrap().state,
+        MarketState::Final(Outcome::Invalid)
     );
 
     let alice = positions_of(&e, ALICE);
@@ -174,14 +174,14 @@ fn positions_of_after_a_no_resolution_pays_the_no_holder() {
         label: "propose",
         actor: ORACLE,
         action: Box::new(|c| Action::ProposeOutcome {
-            contract: c.contract(),
+            market: c.market(),
             outcome: Outcome::No,
         }),
     };
     let e = run_in_memory(&s, T0).0.engine;
     assert_eq!(
-        e.contract(ContractId(T0)).unwrap().state,
-        ContractState::Final(Outcome::No)
+        e.market(MarketId(T0)).unwrap().state,
+        MarketState::Final(Outcome::No)
     );
 
     assert_eq!(
@@ -256,7 +256,7 @@ fn requests_of_hides_the_quote_set_and_shows_the_selection_once_presented() {
             state: RequestState::Open,
             response_deadline: T0 + 1_500,
             legs: vec![OwnLegView {
-                contract: ContractId(T0),
+                market: MarketId(T0),
                 side: Side::BuyYes,
                 qty: 1_000,
                 limit_price: price(7_000),
@@ -285,7 +285,7 @@ fn requests_of_hides_the_quote_set_and_shows_the_selection_once_presented() {
     );
     assert_eq!(
         keys_of(&legs[0]),
-        set(&["contract", "side", "qty", "limit_price", "selected"])
+        set(&["market", "side", "qty", "limit_price", "selected"])
     );
 
     // The deadline has passed: the best quote (MM2's, 0.60) is selected and presented.
@@ -350,8 +350,8 @@ fn requests_of_lists_every_request_of_the_account_in_id_order() {
     h.set_time(1_000);
     h.user(
         OPERATOR,
-        Action::ListContract {
-            id: ContractId(1),
+        Action::ListMarket {
+            id: MarketId(1),
             description: "x".into(),
             oracle: ORACLE,
             trading_close: 60_000,
@@ -366,7 +366,7 @@ fn requests_of_lists_every_request_of_the_account_in_id_order() {
             ALICE,
             Action::SubmitRequest {
                 legs: vec![LegSpec {
-                    contract: ContractId(1),
+                    market: MarketId(1),
                     side: Side::BuyNo,
                     qty: 100,
                     limit_price: price(5_000),
@@ -389,11 +389,11 @@ fn open_requests_shows_only_public_fields() {
     h.fund(ALICE, 1_000);
     h.fund(CAROL, 1_000);
     h.set_time(1_000);
-    let (c1, c2) = (ContractId(1), ContractId(2));
+    let (c1, c2) = (MarketId(1), MarketId(2));
     for id in [c1, c2] {
         let out = h.user(
             OPERATOR,
-            Action::ListContract {
+            Action::ListMarket {
                 id,
                 description: "x".into(),
                 oracle: ORACLE,
@@ -404,8 +404,8 @@ fn open_requests_shows_only_public_fields() {
         );
         assert_eq!(rejection(&out), None);
     }
-    let leg = |contract| LegSpec {
-        contract,
+    let leg = |market| LegSpec {
+        market,
         side: Side::BuyYes,
         qty: 100,
         limit_price: price(7_000),
@@ -442,7 +442,7 @@ fn open_requests_shows_only_public_fields() {
             id: a,
             response_deadline: 3_000,
             legs: vec![PublicLegView {
-                contract: c1,
+                market: c1,
                 side: Side::BuyYes,
                 qty: 100
             }],
@@ -450,17 +450,17 @@ fn open_requests_shows_only_public_fields() {
     );
     assert_eq!(everything[1].legs.len(), 2);
 
-    // A request matches a contract if any of its legs is on it.
+    // A request matches a market if any of its legs is on it.
     assert_eq!(ids(&open_requests(&h.engine, Some(c1))), vec![a, c]);
     assert_eq!(ids(&open_requests(&h.engine, Some(c2))), vec![c]);
-    assert_eq!(open_requests(&h.engine, Some(ContractId(99))), vec![]);
+    assert_eq!(open_requests(&h.engine, Some(MarketId(99))), vec![]);
 
     // The serialized keys are exactly the public ones.
     let json = serde_json::to_value(&everything).unwrap();
     for request in json.as_array().unwrap() {
         assert_eq!(keys_of(request), set(&["id", "response_deadline", "legs"]));
         for leg in request["legs"].as_array().unwrap() {
-            assert_eq!(keys_of(leg), set(&["contract", "side", "qty"]));
+            assert_eq!(keys_of(leg), set(&["market", "side", "qty"]));
         }
     }
     let keys = all_keys(&json);
@@ -473,7 +473,7 @@ fn open_requests_shows_only_public_fields() {
 fn a_presented_request_is_no_longer_open() {
     let quoted = engine_through(scenario("happy_path"), |s| is_send(s, "q2"));
     assert_eq!(open_requests(&quoted, None).len(), 1);
-    assert_eq!(open_requests(&quoted, Some(ContractId(T0))).len(), 1);
+    assert_eq!(open_requests(&quoted, Some(MarketId(T0))).len(), 1);
 
     let presented = engine_through(scenario("happy_path"), is_tick);
     assert_eq!(open_requests(&presented, None), vec![]);
@@ -584,19 +584,19 @@ fn account_shows_the_ledger_balance_and_the_last_nonce() {
     assert_eq!(account(&filled, ALICE).balance.escrowed, dollars(600));
 }
 
-// ---- contracts ----
+// ---- markets ----
 
 #[test]
-fn contracts_and_contract_show_terms_and_state() {
+fn markets_and_market_show_terms_and_state() {
     let e = engine_after("multi_leg_happy");
-    let all = contracts(&e);
-    let ids: Vec<ContractId> = all.iter().map(|c| c.id).collect();
+    let all = markets(&e);
+    let ids: Vec<MarketId> = all.iter().map(|c| c.id).collect();
     assert_eq!(
         ids,
         [
-            ContractId(T0 * 10 + 1),
-            ContractId(T0 * 10 + 2),
-            ContractId(T0 * 10 + 3)
+            MarketId(T0 * 10 + 1),
+            MarketId(T0 * 10 + 2),
+            MarketId(T0 * 10 + 3)
         ]
     );
 
@@ -606,12 +606,12 @@ fn contracts_and_contract_show_terms_and_state() {
     assert_eq!(paris.trading_close, T0 + 5_000);
     assert_eq!(paris.resolution_deadline, T0 + 15_000);
     assert_eq!(paris.dispute_window, 2_000);
-    assert_eq!(paris.state, ContractState::Trading);
+    assert_eq!(paris.state, MarketState::Trading);
 
-    let rome = contract(&e, ContractId(T0 * 10 + 3)).expect("Rome is listed");
+    let rome = market(&e, MarketId(T0 * 10 + 3)).expect("Rome is listed");
     assert_eq!(rome.description, "Will it rain in Rome on 2026-11-01?");
     assert_eq!(&rome, &all[2]);
-    assert_eq!(contract(&e, ContractId(7)), None);
+    assert_eq!(market(&e, MarketId(7)), None);
 
     let json = serde_json::to_value(paris).unwrap();
     assert_eq!(
@@ -627,21 +627,21 @@ fn contracts_and_contract_show_terms_and_state() {
         })
     );
 
-    // The state follows the contract through resolution.
+    // The state follows the market through resolution.
     let proposed = engine_through(scenario("happy_path"), |s| is_send(s, "propose"));
     assert!(matches!(
-        contract(&proposed, ContractId(T0)).unwrap().state,
-        ContractState::Proposed {
+        market(&proposed, MarketId(T0)).unwrap().state,
+        MarketState::Proposed {
             outcome: Outcome::Yes,
             ..
         }
     ));
     let finalized = engine_after("happy_path");
     assert_eq!(
-        contract(&finalized, ContractId(T0)).unwrap().state,
-        ContractState::Final(Outcome::Yes)
+        market(&finalized, MarketId(T0)).unwrap().state,
+        MarketState::Final(Outcome::Yes)
     );
-    assert_eq!(contracts(&Engine::new()), vec![]);
+    assert_eq!(markets(&Engine::new()), vec![]);
 }
 
 // ---- the public JSON ----
@@ -684,8 +684,8 @@ fn the_views_json_of_request_states_and_sides_is_pinned() {
     h.set_time(1_000);
     h.user(
         OPERATOR,
-        Action::ListContract {
-            id: ContractId(1),
+        Action::ListMarket {
+            id: MarketId(1),
             description: "x".into(),
             oracle: ORACLE,
             trading_close: 60_000,
@@ -697,7 +697,7 @@ fn the_views_json_of_request_states_and_sides_is_pinned() {
         ALICE,
         Action::SubmitRequest {
             legs: vec![LegSpec {
-                contract: ContractId(1),
+                market: MarketId(1),
                 side: Side::BuyNo,
                 qty: 100,
                 limit_price: price(5_000),

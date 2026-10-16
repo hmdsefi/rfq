@@ -256,7 +256,7 @@ struct Applied<'a> {
 mod tests {
     use rfq_app::BatchKind;
     use rfq_domain::{
-        Action, Balance, ContractId, Emitted, Event, LegSpec, Pick, Price, QuoteId, RejectReason, RequestId,
+        Action, Balance, Emitted, Event, LegSpec, MarketId, Pick, Price, QuoteId, RejectReason, RequestId,
         Side,
     };
     use serde_json::{Value, json};
@@ -281,19 +281,19 @@ mod tests {
     #[test]
     fn requests_become_submit_request() {
         let body = json!({"actor": 10, "legs": [
-            {"contract": 7, "side": "BuyYes", "qty": 1_000, "limit_price": 7_000},
-            {"contract": 8, "side": "BuyNo", "qty": 500, "limit_price": 3_000}],
+            {"market": 7, "side": "BuyYes", "qty": 1_000, "limit_price": 7_000},
+            {"market": 8, "side": "BuyNo", "qty": 500, "limit_price": 3_000}],
             "response_deadline": 1_500});
         let action = Action::SubmitRequest {
             legs: vec![
                 LegSpec {
-                    contract: ContractId(7),
+                    market: MarketId(7),
                     side: Side::BuyYes,
                     qty: 1_000,
                     limit_price: price(7_000),
                 },
                 LegSpec {
-                    contract: ContractId(8),
+                    market: MarketId(8),
                     side: Side::BuyNo,
                     qty: 500,
                     limit_price: price(3_000),
@@ -399,7 +399,7 @@ mod tests {
 
     #[test]
     fn bad_bodies_are_bad_requests() {
-        let leg = json!({"contract": 7, "side": "BuyYes", "qty": 1, "limit_price": 7_000});
+        let leg = json!({"market": 7, "side": "BuyYes", "qty": 1, "limit_price": 7_000});
         let request = json!({"actor": 10, "legs": [leg], "response_deadline": 1_500});
         let quote = json!({"actor": 20, "request": 12, "leg": 0, "price": 6_200, "size": 1,
             "expires_at": 9});
@@ -439,7 +439,7 @@ mod tests {
                 with(
                     request.clone(),
                     "legs",
-                    json!([{"contract": 7, "side": "Sideways", "qty": 1, "limit_price": 7_000}]),
+                    json!([{"market": 7, "side": "Sideways", "qty": 1, "limit_price": 7_000}]),
                 )
                 .to_string()
                 .into(),
@@ -450,7 +450,7 @@ mod tests {
                 with(
                     request.clone(),
                     "legs",
-                    json!([{"contract": 7, "side": "BuyYes", "qty": 1, "limit_price": 0}]),
+                    json!([{"market": 7, "side": "BuyYes", "qty": 1, "limit_price": 0}]),
                 )
                 .to_string()
                 .into(),

@@ -20,7 +20,7 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError, RwLock, RwLockReadGuard, RwLoc
 use std::time::{Duration, Instant};
 
 use rfq_app::ClientCommand;
-use rfq_domain::{AccountId, ContractId, SequencedCommand};
+use rfq_domain::{AccountId, MarketId, SequencedCommand};
 use rfq_read::{Replica, ReplicaError, TraceEntry, views};
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -253,7 +253,7 @@ enum Route {
     Quotes(AccountId),
     OpenRequests,
     Contracts,
-    Contract(ContractId),
+    Contract(MarketId),
     Trace,
 }
 
@@ -281,7 +281,7 @@ fn route(path: &str) -> Result<Route, Miss> {
         ["requests"] => Ok(Route::OpenRequests),
         ["contracts"] => Ok(Route::Contracts),
         ["contracts", id] => number(id)
-            .map(|id| Route::Contract(ContractId(id)))
+            .map(|id| Route::Contract(MarketId(id)))
             .ok_or(Miss::BadId("contract id")),
         ["trace"] => Ok(Route::Trace),
         ["quotes"] | ["commands"] => Err(Miss::WrongMethod),
@@ -297,10 +297,10 @@ enum Read {
     Requests(AccountId),
     Quotes(AccountId),
     Open {
-        contract: Option<ContractId>,
+        market: Option<MarketId>,
     },
     Contracts,
-    Contract(ContractId),
+    Contract(MarketId),
     Trace {
         view: View,
         after_seq: u64,
@@ -332,7 +332,7 @@ fn parse(path: &str, query: &str) -> Result<(Read, Option<u64>), Reply> {
                 ));
             }
             Read::Open {
-                contract: query.number("contract")?.map(ContractId),
+                market: query.number("contract")?.map(MarketId),
             }
         }
         Route::Contracts => Read::Contracts,
@@ -409,9 +409,9 @@ fn answer(replica: &Replica, state: ReplicaState, engine: &EngineStatus, read: &
         Read::Positions(a) => rows(as_of, "positions", &views::positions_of(e, *a)),
         Read::Requests(a) => rows(as_of, "requests", &views::requests_of(e, *a)),
         Read::Quotes(a) => rows(as_of, "quotes", &views::quotes_of(e, *a)),
-        Read::Open { contract } => rows(as_of, "requests", &views::open_requests(e, *contract)),
-        Read::Contracts => rows(as_of, "contracts", &views::contracts(e)),
-        Read::Contract(id) => match views::contract(e, *id) {
+        Read::Open { market } => rows(as_of, "requests", &views::open_requests(e, *market)),
+        Read::Contracts => rows(as_of, "contracts", &views::markets(e)),
+        Read::Contract(id) => match views::market(e, *id) {
             Some(c) => flat(as_of, &c),
             None => Reply::error(404, "no such contract"),
         },
@@ -596,7 +596,7 @@ mod tests {
     use std::collections::BTreeSet;
 
     use rfq_app::client::nonce::probe_action;
-    use rfq_domain::{AccountId, Action, Command, ContractId, LegSpec, RequestId, Side, Timestamp};
+    use rfq_domain::{AccountId, Action, Command, LegSpec, MarketId, RequestId, Side, Timestamp};
     use rfq_testkit::accounts::*;
     use rfq_testkit::scenarios::{all, demo_config, run_in_memory};
     use rfq_testkit::{Harness, price};
@@ -605,7 +605,7 @@ mod tests {
     use super::*;
     use crate::view::{View, filter};
 
-    /// The scenarios' start time, in engine milliseconds (the contract is `ContractId(T0)`).
+    /// The scenarios' start time, in engine milliseconds (the market is `MarketId(T0)`).
     const T0: Timestamp = 1_000;
     const WAIT: Duration = Duration::from_millis(100);
 
@@ -671,7 +671,7 @@ mod tests {
         assert_eq!(positions.len(), 1);
         assert_eq!(
             positions[0],
-            json!({"id": positions[0]["id"], "contract": T0, "request": 7, "qty": 1_000,
+            json!({"id": positions[0]["id"], "market": T0, "request": 7, "qty": 1_000,
                    "side": "Yes", "stake": 600_000_000u64, "settled": true,
                    "payout": 1_000_000_000u64})
         );
@@ -697,15 +697,15 @@ mod tests {
 
         let body = ok(&read, "/v1/contracts");
         assert_eq!(body["as_of_seq"], as_of);
-        let contracts = body["contracts"].as_array().unwrap();
-        assert_eq!(contracts.len(), 1);
-        assert_eq!(contracts[0]["id"], T0);
-        assert_eq!(contracts[0]["oracle"], ORACLE.0);
-        assert_eq!(contracts[0]["state"], json!({"Final": "Yes"}));
+        let markets = body["contracts"].as_array().unwrap();
+        assert_eq!(markets.len(), 1);
+        assert_eq!(markets[0]["id"], T0);
+        assert_eq!(markets[0]["oracle"], ORACLE.0);
+        assert_eq!(markets[0]["state"], json!({"Final": "Yes"}));
 
         let body = ok(&read, &format!("/v1/contracts/{T0}"));
         assert_eq!(body["as_of_seq"], as_of);
-        assert_eq!(body["id"], T0, "the ContractView fields sit at the top level");
+        assert_eq!(body["id"], T0, "the MarketView fields sit at the top level");
         assert_eq!(body["description"], "Will it rain in Paris on 2026-11-01?");
         assert_eq!(body["trading_close"], T0 + 5_000);
         assert_eq!(body["dispute_window"], 2_000);
@@ -728,7 +728,7 @@ mod tests {
         assert_eq!(
             body["requests"],
             json!([{"id": 7, "response_deadline": T0 + 1_500,
-                    "legs": [{"contract": T0, "side": "BuyYes", "qty": 1_000}]}]),
+                    "legs": [{"market": T0, "side": "BuyYes", "qty": 1_000}]}]),
             "no requester, no limit price, no quotes"
         );
         assert_eq!(
@@ -886,8 +886,8 @@ mod tests {
         }
         h.user(
             OPERATOR,
-            Action::ListContract {
-                id: ContractId(T0),
+            Action::ListMarket {
+                id: MarketId(T0),
                 description: "Will it rain in Paris on 2026-11-01?".into(),
                 oracle: ORACLE,
                 trading_close: T0 + 5_000,
@@ -903,7 +903,7 @@ mod tests {
             ALICE,
             Action::SubmitRequest {
                 legs: vec![LegSpec {
-                    contract: ContractId(T0),
+                    market: MarketId(T0),
                     side: Side::BuyYes,
                     qty: 1_000,
                     limit_price: price(7_000),
@@ -1062,8 +1062,8 @@ mod tests {
         for id in 0..listings {
             h.user(
                 ALICE,
-                Action::ListContract {
-                    id: ContractId(T0 + id),
+                Action::ListMarket {
+                    id: MarketId(T0 + id),
                     description: description.clone(),
                     oracle: ORACLE,
                     trading_close: T0 + 5_000,
@@ -1598,8 +1598,8 @@ mod tests {
         }
         h.user(
             OPERATOR,
-            Action::ListContract {
-                id: ContractId(T0),
+            Action::ListMarket {
+                id: MarketId(T0),
                 description: "Will it rain in Paris on 2026-11-01?".into(),
                 oracle: ORACLE,
                 trading_close: T0 + 5_000,
@@ -1619,7 +1619,7 @@ mod tests {
             ALICE,
             Action::SubmitRequest {
                 legs: vec![LegSpec {
-                    contract: ContractId(T0),
+                    market: MarketId(T0),
                     side: Side::BuyYes,
                     qty: 1_000,
                     limit_price: price(7_000),
@@ -1876,7 +1876,7 @@ mod tests {
         assert_eq!(read.read(|r, _| r.state_hash()), before);
         // The ids are plain numbers, as on the WebSocket.
         let body = ok(&read, "/v1/accounts/10/positions");
-        assert!(body["positions"][0]["contract"].is_u64());
+        assert!(body["positions"][0]["market"].is_u64());
         let _ = AccountId(1);
     }
 }

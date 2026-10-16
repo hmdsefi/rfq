@@ -33,11 +33,8 @@ impl Engine {
         let mut total: Amount = 0;
         // Every leg is checked, so the trading-close guard is the min over legs (engine.md §8).
         for l in legs {
-            let c = self
-                .contracts
-                .get(&l.contract)
-                .ok_or(RejectReason::UnknownObject)?;
-            if c.state != ContractState::Trading {
+            let c = self.markets.get(&l.market).ok_or(RejectReason::UnknownObject)?;
+            if c.state != MarketState::Trading {
                 return Err(RejectReason::InvalidState);
             }
             if last_accept >= c.trading_close {
@@ -67,7 +64,7 @@ impl Engine {
                 legs: legs
                     .iter()
                     .map(|l| Leg {
-                        contract: l.contract,
+                        market: l.market,
                         side: l.side,
                         qty: l.qty,
                         limit_price: l.limit_price,
@@ -85,7 +82,7 @@ impl Engine {
             out.push(Emitted::public(Event::RequestOpened {
                 request: id,
                 leg: u32::try_from(i).expect("leg count is bounded"),
-                contract: l.contract,
+                market: l.market,
                 side: l.side,
                 qty: l.qty,
                 response_deadline,
@@ -374,7 +371,7 @@ impl Engine {
         Ok(())
     }
 
-    /// Escrows every leg in one command. All checks (the request, every leg's contract, every pick,
+    /// Escrows every leg in one command. All checks (the request, every leg's market, every pick,
     /// the funds) run before the first mutation.
     pub(super) fn accept(
         &mut self,
@@ -394,14 +391,11 @@ impl Engine {
             return Err(RejectReason::InvalidState);
         }
         // Defence in depth (engine.md §8 rule 5): `submit_request` makes `accept_by < trading_close`
-        // for every leg, so no contract can leave `Trading` while the request is `Presented`. If one
+        // for every leg, so no market can leave `Trading` while the request is `Presented`. If one
         // ever did, the whole request fails here, before the first mutation.
         for l in &r.legs {
-            let c = self
-                .contracts
-                .get(&l.contract)
-                .ok_or(RejectReason::UnknownObject)?;
-            if c.state != ContractState::Trading {
+            let c = self.markets.get(&l.market).ok_or(RejectReason::UnknownObject)?;
+            if c.state != MarketState::Trading {
                 return Err(RejectReason::InvalidState);
             }
         }
@@ -454,7 +448,7 @@ impl Engine {
                 pid,
                 Position {
                     id: pid,
-                    contract: l.contract,
+                    market: l.market,
                     request: id,
                     qty: l.qty,
                     yes_holder,
@@ -464,8 +458,8 @@ impl Engine {
                     settled: false,
                 },
             );
-            self.contracts
-                .get_mut(&l.contract)
+            self.markets
+                .get_mut(&l.market)
                 .expect(VALIDATED)
                 .positions
                 .push(pid);
@@ -553,7 +547,7 @@ impl Engine {
 
 // `accept`'s per-leg `Trading` check (engine.md §8 rule 5) is defence in depth: `submit_request` keeps
 // `accept_by` below every leg's `trading_close`, so no scripted flow reaches it. This forces a
-// contract out of `Trading` directly, which only a unit test inside the crate can do.
+// market out of `Trading` directly, which only a unit test inside the crate can do.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -628,8 +622,8 @@ mod tests {
             user(
                 &mut e,
                 OPERATOR,
-                Action::ListContract {
-                    id: ContractId(id),
+                Action::ListMarket {
+                    id: MarketId(id),
                     description: "m".into(),
                     oracle: AccountId(4),
                     trading_close: 1_000_000,
@@ -639,7 +633,7 @@ mod tests {
             );
         }
         let leg = |id| LegSpec {
-            contract: ContractId(id),
+            market: MarketId(id),
             side: Side::BuyYes,
             qty: 100,
             limit_price: price(7_000),
@@ -679,12 +673,12 @@ mod tests {
     }
 
     #[test]
-    fn accept_rechecks_every_leg_contract_is_trading() {
+    fn accept_rechecks_every_leg_market_is_trading() {
         for forced in [1, 2] {
             let (mut e, picks) = presented();
             let request = *e.requests.keys().next().expect("one request");
             let balances = [ALICE, MM].map(|a| e.balance(a));
-            e.contracts.get_mut(&ContractId(forced)).unwrap().state = ContractState::Closed;
+            e.markets.get_mut(&MarketId(forced)).unwrap().state = MarketState::Closed;
 
             let out = apply(
                 &mut e,
@@ -696,11 +690,7 @@ mod tests {
                 }),
             );
 
-            assert_eq!(
-                reason(&out),
-                Some(RejectReason::InvalidState),
-                "contract {forced}"
-            );
+            assert_eq!(reason(&out), Some(RejectReason::InvalidState), "market {forced}");
             assert!(matches!(
                 e.requests[&request].state,
                 RequestState::Presented { .. }
@@ -709,16 +699,16 @@ mod tests {
             assert!(e.positions.is_empty(), "nothing was escrowed");
             assert_eq!([ALICE, MM].map(|a| e.balance(a)), balances, "no balance moved");
 
-            // Control: with the contract `Trading` again the same picks fill, so the re-check was
+            // Control: with the market `Trading` again the same picks fill, so the re-check was
             // the only thing that stopped the accept above.
-            e.contracts.get_mut(&ContractId(forced)).unwrap().state = ContractState::Trading;
+            e.markets.get_mut(&MarketId(forced)).unwrap().state = MarketState::Trading;
             let out = apply(
                 &mut e,
                 DEADLINE + 2,
                 Some(ALICE),
                 Some(Action::Accept { request, picks }),
             );
-            assert_eq!(reason(&out), None, "contract {forced}");
+            assert_eq!(reason(&out), None, "market {forced}");
             assert_eq!(e.requests[&request].state, RequestState::Filled);
             assert_eq!(e.positions.len(), 2);
             assert_eq!(e.check_invariants(), Ok(()));

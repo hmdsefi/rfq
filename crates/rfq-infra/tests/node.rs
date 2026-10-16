@@ -90,12 +90,12 @@ fn ticks_only_when_a_timer_is_due() {
     )
     .unwrap();
     assert_eq!(node.poll(1_000).unwrap(), 0, "no timers armed: nothing logged");
-    // A contract arms close/hard-deadline timers.
+    // A market arms close/hard-deadline timers.
     let list = ClientCommand {
         actor: OPERATOR,
         nonce: 1,
-        action: Action::ListContract {
-            id: ContractId(1),
+        action: Action::ListMarket {
+            id: MarketId(1),
             description: "x".into(),
             oracle: ORACLE,
             trading_close: 2_000,
@@ -262,7 +262,7 @@ fn a_normal_poll_gap_does_not_resume() {
 /// must not let the window's timer fire ahead of a dispute that was waiting on ingress.
 #[test]
 fn a_stall_cannot_eat_a_dispute_window() {
-    let contract = ContractId(1);
+    let market = MarketId(1);
     let t = SharedTransport::default();
     t.push(ClientCommand {
         actor: OPERATOR,
@@ -275,8 +275,8 @@ fn a_stall_cannot_eat_a_dispute_window() {
     t.push(ClientCommand {
         actor: OPERATOR,
         nonce: 2,
-        action: Action::ListContract {
-            id: contract,
+        action: Action::ListMarket {
+            id: market,
             description: "x".into(),
             oracle: ORACLE,
             trading_close: 2_000,
@@ -291,7 +291,7 @@ fn a_stall_cannot_eat_a_dispute_window() {
         actor: ORACLE,
         nonce: 1,
         action: Action::ProposeOutcome {
-            contract,
+            market,
             outcome: Outcome::Yes,
         },
     });
@@ -300,11 +300,11 @@ fn a_stall_cannot_eat_a_dispute_window() {
     t.push(ClientCommand {
         actor: CAROL,
         nonce: 1,
-        action: Action::Dispute { contract },
+        action: Action::Dispute { market },
     });
     node.poll(2_500 + 65_000).unwrap();
     let names = t.egress_names();
-    assert!(!names.contains(&"ContractFinalized"), "{names:?}");
+    assert!(!names.contains(&"MarketFinalized"), "{names:?}");
     assert_eq!(
         names[names.len() - 2..],
         ["OutcomeProposed", "Disputed"],
@@ -413,7 +413,7 @@ fn a_stall_resume_is_published_too() {
     assert_eq!((last.origin, last.events.is_empty()), (None, true));
 }
 
-/// A listed contract and a funded requester's open request (id 4, deadline 2 000), all at wall time
+/// A listed market and a funded requester's open request (id 4, deadline 2 000), all at wall time
 /// 1 000, then optionally cancelled. The cancel leaves the request's deadline timer stale.
 fn node_with_request(cancel: bool) -> Node<MemJournal, MemTransport> {
     let op = |nonce, action| ClientCommand {
@@ -437,8 +437,8 @@ fn node_with_request(cancel: bool) -> Node<MemJournal, MemTransport> {
         ),
         op(
             2,
-            Action::ListContract {
-                id: ContractId(1),
+            Action::ListMarket {
+                id: MarketId(1),
                 description: "x".into(),
                 oracle: ORACLE,
                 trading_close: 20_000,
@@ -450,7 +450,7 @@ fn node_with_request(cancel: bool) -> Node<MemJournal, MemTransport> {
             1,
             Action::SubmitRequest {
                 legs: vec![LegSpec {
-                    contract: ContractId(1),
+                    market: MarketId(1),
                     side: Side::BuyYes,
                     qty: 1_000,
                     limit_price: price(7_000),

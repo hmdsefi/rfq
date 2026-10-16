@@ -10,7 +10,7 @@ use rfq_testkit::{dollars, price};
 
 use crate::session::{Applied, Session, SessionError};
 
-/// Every preset's clock starts here, so its contract id (`ContractId(T0)`) is stable.
+/// Every preset's clock starts here, so its market id (`MarketId(T0)`) is stable.
 pub const T0: Timestamp = 1_000;
 
 pub type ActionFn = Box<dyn Fn(&Ctx) -> Action + Send + Sync>;
@@ -68,7 +68,7 @@ pub fn by_name(name: &str) -> Option<Preset> {
     all().into_iter().find(|p| p.name == name)
 }
 
-/// Funded accounts and one contract with long windows, for manual play.
+/// Funded accounts and one market with long windows, for manual play.
 pub fn sandbox() -> Vec<Script> {
     setup_with(60_000, 120_000, 5_000)
 }
@@ -185,7 +185,7 @@ fn from_testkit(s: scenarios::Scenario) -> Preset {
 fn brief_summary(name: &str) -> &'static str {
     match name {
         "happy_path" => {
-            "Two MMs quote, the best price is presented, Alice accepts, the oracle proposes YES and the contract settles."
+            "Two MMs quote, the best price is presented, Alice accepts, the oracle proposes YES and the market settles."
         }
         "mm_cannot_withdraw_after_selection" => {
             "MM2 tries to cancel its selected quote inside the accept window: rejected, the quote is firm, Alice's accept fills."
@@ -200,7 +200,7 @@ fn brief_summary(name: &str) -> &'static str {
             "Carol disputes the proposed outcome with a bond; the arbiter rules INVALID and the positions are refunded."
         }
         "oracle_silent_hard_deadline" => {
-            "The oracle never proposes: at the hard deadline the contract resolves INVALID and refunds everyone."
+            "The oracle never proposes: at the hard deadline the market resolves INVALID and refunds everyone."
         }
         "multi_leg_happy" => {
             "Alice asks for 400 YES in each of three markets in one request; MM1 quotes legs 1 and 3, MM2 leg 2. One accept fills all three legs."
@@ -243,7 +243,7 @@ fn tick(at: Duration) -> Script {
     Script { at, mv: Move::Tick }
 }
 
-/// Everyone funded with $1,000; one contract closing at `close`, hard deadline at `hard`.
+/// Everyone funded with $1,000; one market closing at `close`, hard deadline at `hard`.
 fn setup_with(close: Duration, hard: Duration, window: Duration) -> Vec<Script> {
     let mut steps: Vec<Script> = [
         ("fund_alice", ALICE),
@@ -259,8 +259,8 @@ fn setup_with(close: Duration, hard: Duration, window: Duration) -> Vec<Script> 
         })
     })
     .collect();
-    steps.push(send(0, "list", OPERATOR, move |c| Action::ListContract {
-        id: c.contract(),
+    steps.push(send(0, "list", OPERATOR, move |c| Action::ListMarket {
+        id: c.market(),
         description: "Will it rain in Paris on 2026-11-01?".into(),
         oracle: ORACLE,
         trading_close: c.at(close),
@@ -279,7 +279,7 @@ fn setup() -> Vec<Script> {
 fn request(at: Duration) -> Script {
     send(at, "req", ALICE, |c| Action::SubmitRequest {
         legs: vec![LegSpec {
-            contract: c.contract(),
+            market: c.market(),
             side: Side::BuyYes,
             qty: 1_000,
             limit_price: price(7_000),
@@ -532,7 +532,7 @@ mod tests {
     }
 
     #[test]
-    fn sandbox_funds_four_accounts_and_lists_one_contract() {
+    fn sandbox_funds_four_accounts_and_lists_one_market() {
         let (mut s, _) = Session::new(demo_config());
         let mut ctx = Ctx::new(T0);
         for script in sandbox() {
@@ -541,6 +541,6 @@ mod tests {
         for a in [ALICE, CAROL, MM1, MM2] {
             assert_eq!(s.engine().balance(a).free, dollars(1_000));
         }
-        assert_eq!(s.engine().contracts().count(), 1);
+        assert_eq!(s.engine().markets().count(), 1);
     }
 }

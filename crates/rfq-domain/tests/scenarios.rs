@@ -118,7 +118,7 @@ fn multi_leg_happy() {
     // One position per leg, each on its own market.
     let ctx = Ctx::new(T0);
     for k in 1..=3 {
-        let c = h.engine.contract(ctx.contract_n(k)).expect("listed");
+        let c = h.engine.market(ctx.market_n(k)).expect("listed");
         assert_eq!(c.positions.len(), 1, "market {k}");
     }
     assert_eq!(
@@ -142,7 +142,7 @@ fn multi_leg_leg2_fails() {
     }
     let ctx = Ctx::new(T0);
     for k in 1..=3 {
-        let c = h.engine.contract(ctx.contract_n(k)).expect("listed");
+        let c = h.engine.market(ctx.market_n(k)).expect("listed");
         assert!(c.positions.is_empty(), "market {k}");
     }
     // The releases happen in the command that fires the deadline: the tick whose events end the request.
@@ -179,10 +179,10 @@ fn replay_with_resume_in_the_log_reproduces_state_hash() {
     let mut s = all().into_iter().find(|s| s.name == "happy_path").unwrap();
     s.steps.retain(|step| step.at <= 5_200); // through ProposeOutcome; the window ends at +7_200
     let (mut h, _) = run_in_memory(&s, T0);
-    let c = ContractId(T0);
+    let c = MarketId(T0);
     assert!(matches!(
-        h.engine.contract(c).unwrap().state,
-        ContractState::Proposed { .. }
+        h.engine.market(c).unwrap().state,
+        MarketState::Proposed { .. }
     ));
 
     // Down across the window's end (+7_200): Resume re-opens it for resume_grace (2 s), below +15_000.
@@ -191,12 +191,12 @@ fn replay_with_resume_in_the_log_reproduces_state_hash() {
     assert_eq!(
         out,
         vec![Emitted::public(Event::OutcomeProposed {
-            contract: c,
+            market: c,
             outcome: Outcome::Yes,
             dispute_until: T0 + 11_000
         })]
     );
-    assert_eq!(rejection(&h.user(CAROL, Action::Dispute { contract: c })), None);
+    assert_eq!(rejection(&h.user(CAROL, Action::Dispute { market: c })), None);
 
     // A second restart while disputed changes nothing, then the arbiter upholds the proposal.
     h.set_time(T0 + 10_000);
@@ -205,7 +205,7 @@ fn replay_with_resume_in_the_log_reproduces_state_hash() {
     let out = h.user(
         ARBITER,
         Action::Rule {
-            contract: c,
+            market: c,
             outcome: Outcome::Yes,
         },
     );

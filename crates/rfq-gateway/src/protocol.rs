@@ -142,7 +142,7 @@ pub fn encode_server(msg: &ServerMsg) -> String {
 mod tests {
     use rfq_app::BatchKind;
     use rfq_domain::{
-        AccountId, Action, Audience, Balance, ContractId, Emitted, Event, LegSpec, Outcome, Pick, Price,
+        AccountId, Action, Audience, Balance, Emitted, Event, LegSpec, MarketId, Outcome, Pick, Price,
         QuoteId, RejectReason, RequestId, Side,
     };
     use serde_json::{Value, json};
@@ -205,10 +205,10 @@ mod tests {
         let cases: Vec<(Value, Action)> = vec![
             (json!({"Withdraw": {"amount": 0}}), Action::Withdraw { amount: 0 }),
             (
-                json!({"ListContract": {"id": 7, "description": "rain?", "oracle": 4,
+                json!({"ListMarket": {"id": 7, "description": "rain?", "oracle": 4,
                     "trading_close": 5000, "resolution_deadline": 15000, "dispute_window": 2000}}),
-                Action::ListContract {
-                    id: ContractId(7),
+                Action::ListMarket {
+                    id: MarketId(7),
                     description: "rain?".into(),
                     oracle: AccountId(4),
                     trading_close: 5_000,
@@ -217,11 +217,11 @@ mod tests {
                 },
             ),
             (
-                json!({"SubmitRequest": {"legs": [{"contract": 7, "side": "BuyYes", "qty": 1000,
+                json!({"SubmitRequest": {"legs": [{"market": 7, "side": "BuyYes", "qty": 1000,
                     "limit_price": 7000}], "response_deadline": 1500}}),
                 Action::SubmitRequest {
                     legs: vec![LegSpec {
-                        contract: ContractId(7),
+                        market: MarketId(7),
                         side: Side::BuyYes,
                         qty: 1_000,
                         limit_price: price(7_000),
@@ -264,22 +264,20 @@ mod tests {
                 },
             ),
             (
-                json!({"ProposeOutcome": {"contract": 7, "outcome": "Yes"}}),
+                json!({"ProposeOutcome": {"market": 7, "outcome": "Yes"}}),
                 Action::ProposeOutcome {
-                    contract: ContractId(7),
+                    market: MarketId(7),
                     outcome: Outcome::Yes,
                 },
             ),
             (
-                json!({"Dispute": {"contract": 7}}),
-                Action::Dispute {
-                    contract: ContractId(7),
-                },
+                json!({"Dispute": {"market": 7}}),
+                Action::Dispute { market: MarketId(7) },
             ),
             (
-                json!({"Rule": {"contract": 7, "outcome": "Invalid"}}),
+                json!({"Rule": {"market": 7, "outcome": "Invalid"}}),
                 Action::Rule {
-                    contract: ContractId(7),
+                    market: MarketId(7),
                     outcome: Outcome::Invalid,
                 },
             ),
@@ -302,7 +300,7 @@ mod tests {
     #[test]
     fn bad_input_is_a_bad_request_not_a_panic() {
         let huge = "x".repeat(70 * 1024);
-        let huge_command = json!({"type": "command", "id": "big", "actor": 1, "action": {"ListContract": {
+        let huge_command = json!({"type": "command", "id": "big", "actor": 1, "action": {"ListMarket": {
             "id": 7, "description": huge, "oracle": 4, "trading_close": 1,
             "resolution_deadline": 2, "dispute_window": 1}}})
         .to_string();
@@ -406,7 +404,7 @@ mod tests {
                     Emitted::public(Event::RequestOpened {
                         request: RequestId(12),
                         leg: 0,
-                        contract: ContractId(7),
+                        market: MarketId(7),
                         side: Side::BuyYes,
                         qty: 1_000,
                         response_deadline: 2_500,
@@ -432,7 +430,7 @@ mod tests {
                 "origin": {"actor": 10, "nonce": 7},
                 "events": [
                     {"audience": "Public", "event": {"RequestOpened": {"request": 12, "leg": 0,
-                        "contract": 7, "side": "BuyYes", "qty": 1000, "response_deadline": 2500}}},
+                        "market": 7, "side": "BuyYes", "qty": 1000, "response_deadline": 2500}}},
                     {"audience": {"Account": 10}, "event": {"CommandRejected": {"reason": "InsufficientFunds"}}}
                 ],
                 "balances": [{"account": 10, "balance": {"free": 1, "reserved": 2, "escrowed": 3}}]

@@ -857,7 +857,7 @@ mod tests {
         let mut rig = Rig::new();
         rig.engine_up();
         let addr = rig.http(LONG_WAIT);
-        let request = json!({"actor": 10, "nonce": 5, "legs": [{"contract": 7, "side": "BuyYes",
+        let request = json!({"actor": 10, "nonce": 5, "legs": [{"market": 7, "side": "BuyYes",
             "qty": 1_000, "limit_price": 7_000}], "response_deadline": 1_500});
         let routes = [
             ("/v1/requests", request, 5),
@@ -1172,7 +1172,7 @@ mod tests {
         rig.engine_up();
         let addr = rig.http(LONG_WAIT);
         let listing = |description: String| {
-            json!({"actor": 1, "action": {"ListContract": {"id": 1, "description": description,
+            json!({"actor": 1, "action": {"ListMarket": {"id": 1, "description": description,
                 "oracle": 4, "trading_close": 1, "resolution_deadline": 2, "dispute_window": 1}}})
         };
         let bare = listing(String::new()).to_string().len();

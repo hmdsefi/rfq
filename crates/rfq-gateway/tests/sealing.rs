@@ -73,7 +73,7 @@ fn send_with(
     )
 }
 
-/// Everyone funded with $1,000; one contract closing at +5 s, hard deadline at +15 s, 2 s window.
+/// Everyone funded with $1,000; one market closing at +5 s, hard deadline at +15 s, 2 s window.
 fn setup() -> Vec<(Duration, Move)> {
     let mut steps: Vec<(Duration, Move)> = [ALICE, MM1, MM2, CAROL]
         .into_iter()
@@ -84,8 +84,8 @@ fn setup() -> Vec<(Duration, Move)> {
             })
         })
         .collect();
-    steps.push(send(0, "list", OPERATOR, |c| Action::ListContract {
-        id: c.contract(),
+    steps.push(send(0, "list", OPERATOR, |c| Action::ListMarket {
+        id: c.market(),
         description: "Will it rain in Paris on 2026-11-01?".into(),
         oracle: ORACLE,
         trading_close: c.at(5_000),
@@ -99,7 +99,7 @@ fn setup() -> Vec<(Duration, Move)> {
 fn request(at: Duration) -> (Duration, Move) {
     send(at, "req", ALICE, |c| Action::SubmitRequest {
         legs: vec![LegSpec {
-            contract: c.contract(),
+            market: c.market(),
             side: Side::BuyYes,
             qty: 1_000,
             limit_price: price(7_000),
@@ -244,7 +244,7 @@ fn the_rest() -> Script {
     s.push(request(100));
     s.push(send(200, "req2", CAROL, |c| Action::SubmitRequest {
         legs: vec![LegSpec {
-            contract: c.contract(),
+            market: c.market(),
             side: Side::BuyNo,
             qty: 1_000,
             limit_price: price(5_000),
@@ -269,12 +269,12 @@ fn the_rest() -> Script {
     s.push((2_000, Move::Resume));
     s.push((5_100, Move::Tick));
     s.push(send(5_200, "propose", ORACLE, |c| Action::ProposeOutcome {
-        contract: c.contract(),
+        market: c.market(),
         outcome: Outcome::Yes,
     }));
     s.push((5_300, Move::Resume));
     s.push(send(5_500, "dispute", CAROL, |c| Action::Dispute {
-        contract: c.contract(),
+        market: c.market(),
     }));
     // The arbiter never rules: the hard deadline returns the bond, inside MM1's command.
     s.push(send(15_100, "mm1_withdraw", MM1, |_| Action::Withdraw {
@@ -405,8 +405,8 @@ fn about(h: &Harness, b: &EventBatch, e: &Event) -> Option<Vec<AccountId>> {
         // A rejection goes to the command's sender.
         Event::CommandRejected { .. } => Some(b.origin.map(|(actor, _)| actor).into_iter().collect()),
         Event::Initialized
-        | Event::ContractListed { .. }
-        | Event::ContractClosed { .. }
+        | Event::MarketListed { .. }
+        | Event::MarketClosed { .. }
         | Event::RequestOpened { .. }
         | Event::RequestCancelled { .. }
         | Event::RequestExpired { .. }
@@ -414,7 +414,7 @@ fn about(h: &Harness, b: &EventBatch, e: &Event) -> Option<Vec<AccountId>> {
         | Event::OutcomeProposed { .. }
         | Event::Disputed { .. }
         | Event::Ruled { .. }
-        | Event::ContractFinalized { .. } => None,
+        | Event::MarketFinalized { .. } => None,
     }
 }
 
@@ -552,8 +552,8 @@ fn the_sealing_scripts_cover_every_published_event_kind() {
         "CommandRejected",
         "Deposited",
         "Withdrawn",
-        "ContractListed",
-        "ContractClosed",
+        "MarketListed",
+        "MarketClosed",
         "RequestOpened",
         "RequestCancelled",
         "RequestExpired",
@@ -571,7 +571,7 @@ fn the_sealing_scripts_cover_every_published_event_kind() {
         "OutcomeProposed",
         "Disputed",
         "Ruled",
-        "ContractFinalized",
+        "MarketFinalized",
         "PositionSettled",
         "DisputeBondReturned",
     ];

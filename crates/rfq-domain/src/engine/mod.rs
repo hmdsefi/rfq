@@ -1,5 +1,5 @@
 mod account;
-mod contract;
+mod market;
 mod rfq;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -26,7 +26,7 @@ pub struct Engine {
     pub(crate) now: Timestamp,
     pub(crate) nonces: BTreeMap<AccountId, u64>,
     pub(crate) ledger: Ledger,
-    pub(crate) contracts: BTreeMap<ContractId, Contract>,
+    pub(crate) markets: BTreeMap<MarketId, Market>,
     pub(crate) requests: BTreeMap<RequestId, Request>,
     pub(crate) quotes: BTreeMap<QuoteId, Quote>,
     pub(crate) positions: BTreeMap<PositionId, Position>,
@@ -54,8 +54,8 @@ impl Engine {
     pub fn quote(&self, id: QuoteId) -> Option<&Quote> {
         self.quotes.get(&id)
     }
-    pub fn contract(&self, id: ContractId) -> Option<&Contract> {
-        self.contracts.get(&id)
+    pub fn market(&self, id: MarketId) -> Option<&Market> {
+        self.markets.get(&id)
     }
     pub fn position(&self, id: PositionId) -> Option<&Position> {
         self.positions.get(&id)
@@ -74,8 +74,8 @@ impl Engine {
     pub fn quotes(&self) -> impl Iterator<Item = &Quote> {
         self.quotes.values()
     }
-    pub fn contracts(&self) -> impl Iterator<Item = &Contract> {
-        self.contracts.values()
+    pub fn markets(&self) -> impl Iterator<Item = &Market> {
+        self.markets.values()
     }
     pub fn next_timer(&self) -> Option<Timestamp> {
         self.timers.first().map(|(t, _)| *t)
@@ -142,14 +142,14 @@ impl Engine {
         let result = match action {
             Action::Deposit { to, amount } => self.deposit(actor, *to, *amount, out),
             Action::Withdraw { amount } => self.withdraw(actor, *amount, out),
-            Action::ListContract {
+            Action::ListMarket {
                 id,
                 description,
                 oracle,
                 trading_close,
                 resolution_deadline,
                 dispute_window,
-            } => self.list_contract(
+            } => self.list_market(
                 actor,
                 *id,
                 description,
@@ -174,11 +174,9 @@ impl Engine {
             Action::CancelQuote { quote } => self.cancel_quote(actor, *quote, out),
             Action::Accept { request, picks } => self.accept(actor, *request, picks, out),
             Action::Reject { request } => self.reject(actor, *request, out),
-            Action::ProposeOutcome { contract, outcome } => {
-                self.propose_outcome(actor, *contract, *outcome, out)
-            }
-            Action::Dispute { contract } => self.dispute(actor, *contract, out),
-            Action::Rule { contract, outcome } => self.rule(actor, *contract, *outcome, out),
+            Action::ProposeOutcome { market, outcome } => self.propose_outcome(actor, *market, *outcome, out),
+            Action::Dispute { market } => self.dispute(actor, *market, out),
+            Action::Rule { market, outcome } => self.rule(actor, *market, *outcome, out),
         };
         if let Err(reason) = result {
             reject(out, reason);
@@ -196,7 +194,7 @@ impl Engine {
                 TimerKey::QuoteExpiry(q) => self.on_quote_expiry(q, out),
                 TimerKey::RequestDeadline(r) => self.on_request_deadline(r, at, out),
                 TimerKey::AcceptBy(r) => self.on_accept_by(r, out),
-                TimerKey::ContractClose(c) => self.on_contract_close(c, out),
+                TimerKey::MarketClose(c) => self.on_market_close(c, out),
                 TimerKey::DisputeWindow(c) => self.on_dispute_window(c, at, out),
                 TimerKey::HardDeadline(c) => self.on_hard_deadline(c, out),
             }
@@ -269,9 +267,9 @@ impl Engine {
         for q in self.quotes.values() {
             own(q.hold, q.state.is_live(), format!("quote {:?}", q.id))?;
         }
-        for c in self.contracts.values() {
+        for c in self.markets.values() {
             if let Some(d) = c.dispute {
-                let live = matches!(c.state, ContractState::Disputed { .. });
+                let live = matches!(c.state, MarketState::Disputed { .. });
                 own(d.hold, live, format!("dispute on {:?}", c.id))?;
             }
         }
@@ -322,14 +320,14 @@ impl Engine {
                 ));
             }
         }
-        for c in self.contracts.values() {
-            let is_final = matches!(c.state, ContractState::Final(_));
+        for c in self.markets.values() {
+            let is_final = matches!(c.state, MarketState::Final(_));
             if !is_final
                 && !self
                     .timers
                     .contains(&(c.resolution_deadline, TimerKey::HardDeadline(c.id)))
             {
-                return Err(format!("I5 contract {:?} has no hard-deadline timer", c.id));
+                return Err(format!("I5 market {:?} has no hard-deadline timer", c.id));
             }
         }
         Ok(())
@@ -365,7 +363,7 @@ mod tests {
     fn position(yes_lock: Amount, no_lock: Amount) -> Position {
         Position {
             id: PositionId(1),
-            contract: ContractId(1),
+            market: MarketId(1),
             request: RequestId(1),
             qty: 1,
             yes_holder: A,
@@ -433,28 +431,28 @@ mod tests {
     }
 
     #[test]
-    fn i5_rejects_open_contract_without_hard_deadline_timer() {
+    fn i5_rejects_open_market_without_hard_deadline_timer() {
         let mut e = engine();
-        let contract = Contract {
-            id: ContractId(1),
+        let market = Market {
+            id: MarketId(1),
             description: String::new(),
             oracle: A,
             trading_close: 10,
             resolution_deadline: 20,
             dispute_window: 5,
-            state: ContractState::Trading,
+            state: MarketState::Trading,
             dispute: None,
             positions: Vec::new(),
         };
-        e.contracts.insert(ContractId(1), contract);
-        assert!(err(&e).starts_with("I5 contract"));
-        e.timers.insert((20, TimerKey::HardDeadline(ContractId(1))));
+        e.markets.insert(MarketId(1), market);
+        assert!(err(&e).starts_with("I5 market"));
+        e.timers.insert((20, TimerKey::HardDeadline(MarketId(1))));
         assert_eq!(e.check_invariants(), Ok(()));
     }
 
     fn leg(quotes: &[QuoteId]) -> Leg {
         Leg {
-            contract: ContractId(1),
+            market: MarketId(1),
             side: Side::BuyYes,
             qty: 1,
             limit_price: Price::new(5_000).unwrap(),
@@ -614,15 +612,15 @@ mod tests {
         assert_eq!(ticked.state_hash(), resumed.state_hash());
     }
 
-    fn closed_contract(resolution_deadline: Timestamp) -> Contract {
-        Contract {
-            id: ContractId(1),
+    fn closed_market(resolution_deadline: Timestamp) -> Market {
+        Market {
+            id: MarketId(1),
             description: String::new(),
             oracle: A,
             trading_close: 10,
             resolution_deadline,
             dispute_window: 5,
-            state: ContractState::Closed,
+            state: MarketState::Closed,
             dispute: None,
             positions: Vec::new(),
         }
@@ -632,67 +630,64 @@ mod tests {
     // the hard deadline, so the dispute timer always fires first), so the state is built directly.
     // Pins the defensive branch: even then, a timeout never turns a proposal into Invalid.
     #[test]
-    fn hard_deadline_on_a_proposed_contract_keeps_the_proposal() {
+    fn hard_deadline_on_a_proposed_market_keeps_the_proposal() {
         let mut e = engine();
-        let mut c = closed_contract(20);
-        c.state = ContractState::Proposed {
+        let mut c = closed_market(20);
+        c.state = MarketState::Proposed {
             outcome: Outcome::Yes,
             dispute_until: 20,
         };
-        e.contracts.insert(ContractId(1), c);
+        e.markets.insert(MarketId(1), c);
         let mut out = Vec::new();
-        e.on_hard_deadline(ContractId(1), &mut out);
+        e.on_hard_deadline(MarketId(1), &mut out);
         assert_eq!(
             out,
-            vec![Emitted::public(Event::ContractFinalized {
-                contract: ContractId(1),
+            vec![Emitted::public(Event::MarketFinalized {
+                market: MarketId(1),
                 outcome: Outcome::Yes,
             })]
         );
-        assert_eq!(
-            e.contracts[&ContractId(1)].state,
-            ContractState::Final(Outcome::Yes)
-        );
+        assert_eq!(e.markets[&MarketId(1)].state, MarketState::Final(Outcome::Yes));
     }
 
     #[test]
     fn stale_dispute_timer_does_not_finalize_an_extended_window() {
         let mut e = engine();
-        let mut c = closed_contract(100);
-        c.state = ContractState::Proposed {
+        let mut c = closed_market(100);
+        c.state = MarketState::Proposed {
             outcome: Outcome::No,
             dispute_until: 50,
         };
-        e.contracts.insert(ContractId(1), c);
+        e.markets.insert(MarketId(1), c);
         let mut out = Vec::new();
-        e.on_dispute_window(ContractId(1), 15, &mut out); // armed for the window that ended at 15
+        e.on_dispute_window(MarketId(1), 15, &mut out); // armed for the window that ended at 15
         assert_eq!(out, Vec::new());
         assert_eq!(
-            e.contracts[&ContractId(1)].state,
-            ContractState::Proposed {
+            e.markets[&MarketId(1)].state,
+            MarketState::Proposed {
                 outcome: Outcome::No,
                 dispute_until: 50
             }
         );
-        e.on_dispute_window(ContractId(1), 50, &mut out);
-        assert_eq!(names_of(&out), vec!["ContractFinalized"]);
+        e.on_dispute_window(MarketId(1), 50, &mut out);
+        assert_eq!(names_of(&out), vec!["MarketFinalized"]);
     }
 
-    // Through `apply` the window's own timer finalizes the contract before a dispute at its end is
+    // Through `apply` the window's own timer finalizes the market before a dispute at its end is
     // handled, so this guard is defence in depth; call the handler directly to pin the boundary.
     #[test]
     fn dispute_at_the_window_end_is_too_late() {
         let mut e = engine();
-        let mut c = closed_contract(100);
-        c.state = ContractState::Proposed {
+        let mut c = closed_market(100);
+        c.state = MarketState::Proposed {
             outcome: Outcome::No,
             dispute_until: 50,
         };
-        e.contracts.insert(ContractId(1), c);
+        e.markets.insert(MarketId(1), c);
         e.now = 50;
         let mut out = Vec::new();
         assert_eq!(
-            e.dispute(B, ContractId(1), &mut out),
+            e.dispute(B, MarketId(1), &mut out),
             Err(RejectReason::InvalidState)
         );
         assert_eq!(out, Vec::new());

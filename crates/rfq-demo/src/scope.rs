@@ -1,13 +1,13 @@
 //! What belongs to one scenario run on a shared, long-lived node.
 //!
 //! The demo runs every scenario against one node, and egress carries every event the node
-//! produces. While one scenario runs, the timers of earlier ones keep firing: their contracts
+//! produces. While one scenario runs, the timers of earlier ones keep firing: their markets
 //! close, finalize and settle. Those events have the same names as the ones a scenario expects,
 //! so checking the expected order against all of egress could pass on another scenario's events.
 //!
-//! So each run gets objects of its own. Its contract is `ContractId(t0)` (from
-//! [`Ctx::contract`](rfq_testkit::scenarios::Ctx::contract)), and a multi-leg run's extra markets are
-//! `ContractId(t0 * 10 + k)` for k in 1..=9 ([`Ctx::contract_n`](rfq_testkit::scenarios::Ctx::contract_n)).
+//! So each run gets objects of its own. Its market is `MarketId(t0)` (from
+//! [`Ctx::market`](rfq_testkit::scenarios::Ctx::market)), and a multi-leg run's extra markets are
+//! `MarketId(t0 * 10 + k)` for k in 1..=9 ([`Ctx::market_n`](rfq_testkit::scenarios::Ctx::market_n)).
 //! Its accounts get ids derived from the same `t0` ([`Scope::account`]), so their strict nonces
 //! start at 1. Its requests and quotes are identified by the `seq` of the commands that created
 //! them. [`Scope::owns`] keeps exactly the events about those objects, and the order is checked
@@ -15,7 +15,7 @@
 use std::collections::BTreeSet;
 
 use rfq_app::EventBatch;
-use rfq_domain::{AccountId, Action, ContractId, Emitted, Event};
+use rfq_domain::{AccountId, Action, Emitted, Event, MarketId};
 use rfq_testkit::accounts::{ARBITER, OPERATOR, TREASURY};
 
 /// Fixed by the node's genesis, so they keep their ids and are shared by every scenario.
@@ -25,7 +25,7 @@ pub const GENESIS_ROLES: [AccountId; 3] = [OPERATOR, ARBITER, TREASURY];
 const ACCOUNTS_PER_RUN: u64 = 100;
 
 pub struct Scope {
-    /// The run's start time: its contract id, and the base of its account ids.
+    /// The run's start time: its market id, and the base of its account ids.
     key: u64,
     accounts: BTreeSet<AccountId>,
     /// `(actor, nonce)` of every command this run sent.
@@ -71,9 +71,9 @@ impl Scope {
         self.origins.insert(origin);
     }
 
-    /// The run's own contract, or one of its extra markets: `t0 * 10 + k` for k in 1..=9 (the ids
-    /// `Ctx::contract_n` hands out; `k = 0` is not one, so it can't be mistaken for the run's own).
-    fn owns_contract(&self, c: ContractId) -> bool {
+    /// The run's own market, or one of its extra markets: `t0 * 10 + k` for k in 1..=9 (the ids
+    /// `Ctx::market_n` hands out; `k = 0` is not one, so it can't be mistaken for the run's own).
+    fn owns_market(&self, c: MarketId) -> bool {
         c.0 == self.key
             || self
                 .key
@@ -97,13 +97,13 @@ impl Scope {
             // Only the command's own handling rejects; timers never do.
             Event::CommandRejected { .. } => own_command,
             Event::Deposited { account: a, .. } | Event::Withdrawn { account: a, .. } => account(a),
-            Event::ContractListed { contract: c }
-            | Event::ContractClosed { contract: c }
-            | Event::OutcomeProposed { contract: c, .. }
-            | Event::Disputed { contract: c, .. }
-            | Event::Ruled { contract: c, .. }
-            | Event::DisputeBondReturned { contract: c, .. }
-            | Event::ContractFinalized { contract: c, .. } => self.owns_contract(*c),
+            Event::MarketListed { market: c }
+            | Event::MarketClosed { market: c }
+            | Event::OutcomeProposed { market: c, .. }
+            | Event::Disputed { market: c, .. }
+            | Event::Ruled { market: c, .. }
+            | Event::DisputeBondReturned { market: c, .. }
+            | Event::MarketFinalized { market: c, .. } => self.owns_market(*c),
             Event::RequestOpened { request, .. }
             | Event::RequestCancelled { request }
             | Event::RequestExpired { request }
@@ -128,18 +128,18 @@ impl Scope {
 }
 
 /// `action` with every account id it carries mapped through `f`. Only `Deposit` and
-/// `ListContract` carry any; the match has no wildcard, so a new action must be looked at here.
+/// `ListMarket` carry any; the match has no wildcard, so a new action must be looked at here.
 pub fn remap(action: Action, mut f: impl FnMut(AccountId) -> AccountId) -> Action {
     match action {
         Action::Deposit { to, amount } => Action::Deposit { to: f(to), amount },
-        Action::ListContract {
+        Action::ListMarket {
             id,
             description,
             oracle,
             trading_close,
             resolution_deadline,
             dispute_window,
-        } => Action::ListContract {
+        } => Action::ListMarket {
             id,
             description,
             oracle: f(oracle),
@@ -195,8 +195,8 @@ mod tests {
             }
         );
         let listed = remap(
-            Action::ListContract {
-                id: ContractId(9),
+            Action::ListMarket {
+                id: MarketId(9),
                 description: "d".into(),
                 oracle: ORACLE,
                 trading_close: 1,
@@ -207,8 +207,8 @@ mod tests {
         );
         assert!(matches!(
             listed,
-            Action::ListContract {
-                id: ContractId(9),
+            Action::ListMarket {
+                id: MarketId(9),
                 oracle: AccountId(1_004),
                 ..
             }
@@ -255,8 +255,8 @@ mod tests {
             })
         ));
         let finalized = |c| {
-            public(Event::ContractFinalized {
-                contract: ContractId(c),
+            public(Event::MarketFinalized {
+                market: MarketId(c),
                 outcome: Outcome::Yes,
             })
         };
@@ -278,19 +278,15 @@ mod tests {
             balances: vec![],
         };
         let finalized = |c| {
-            Emitted::public(Event::ContractFinalized {
-                contract: ContractId(c),
+            Emitted::public(Event::MarketFinalized {
+                market: MarketId(c),
                 outcome: Outcome::Yes,
             })
         };
-        let listed = |c| {
-            Emitted::public(Event::ContractListed {
-                contract: ContractId(c),
-            })
-        };
-        assert!(scope.owns(&tick, &finalized(1_000)), "the run's own contract");
+        let listed = |c| Emitted::public(Event::MarketListed { market: MarketId(c) });
+        assert!(scope.owns(&tick, &finalized(1_000)), "the run's own market");
         for k in 1..=9 {
-            // The ids `Ctx::contract_n(k)` gives a run with t0 = 1_000 (the partition test below ties them).
+            // The ids `Ctx::market_n(k)` gives a run with t0 = 1_000 (the partition test below ties them).
             assert!(scope.owns(&tick, &finalized(10_000 + k)), "market {k}");
             assert!(scope.owns(&tick, &listed(10_000 + k)), "market {k}");
         }
@@ -300,7 +296,7 @@ mod tests {
         assert!(!scope.owns(&tick, &finalized(999)));
         assert!(
             !Scope::new(u64::MAX).owns(&tick, &finalized(1)),
-            "a key whose times 10 overflows owns only its own contract"
+            "a key whose times 10 overflows owns only its own market"
         );
     }
 

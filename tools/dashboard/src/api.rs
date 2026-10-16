@@ -258,7 +258,7 @@ fn catalogue() -> Value {
     let mut list = vec![json!({
         "name": "sandbox",
         "kind": "sandbox",
-        "summary": "Funded accounts and one contract with long windows. Drive everything by hand.",
+        "summary": "Funded accounts and one market with long windows. Drive everything by hand.",
         "steps": 0,
         "expect": [],
     })];
@@ -346,13 +346,10 @@ mod tests {
         let out = call(&mut None, json!({"op": "state"}));
         assert_eq!(out["mode"], "sandbox");
         assert_eq!(out["snapshot"]["accounts"].as_array().expect("accounts").len(), 8);
-        assert_eq!(
-            out["snapshot"]["contracts"].as_array().expect("contracts").len(),
-            1
-        );
+        assert_eq!(out["snapshot"]["markets"].as_array().expect("markets").len(), 1);
         assert!(out["preset"].is_null());
         assert_eq!(out["snapshot"]["invariants"]["ok"], true);
-        // The listed contract's close is pending, and admin is allowed to see it.
+        // The listed market's close is pending, and admin is allowed to see it.
         assert!(out["snapshot"]["next_timer"].is_u64(), "{out}");
     }
 
@@ -444,7 +441,7 @@ mod tests {
         assert!(out["snapshot"]["total"].is_null());
         assert!(out["snapshot"]["next_timer"].is_null());
         assert_eq!(out["snapshot"]["positions"], json!([]));
-        assert_eq!(out["snapshot"]["contracts"][0]["positions"], json!([]));
+        assert_eq!(out["snapshot"]["markets"][0]["positions"], json!([]));
     }
 
     #[test]
@@ -512,20 +509,20 @@ mod tests {
             assert!(hidden > 0, "viewer {viewer} had nothing hidden from it");
         }
 
-        // (c) MM1 lost, so no position is MM1's and the contract's list shows none; Alice sees only
+        // (c) MM1 lost, so no position is MM1's and the market's list shows none; Alice sees only
         // hers; admin sees the whole list.
         assert_eq!(mm1["snapshot"]["positions"], json!([]));
-        assert_eq!(mm1["snapshot"]["contracts"][0]["positions"], json!([]));
+        assert_eq!(mm1["snapshot"]["markets"][0]["positions"], json!([]));
         let hers: Vec<&Value> = array(&alice["snapshot"]["positions"], "positions")
             .iter()
             .map(|p| &p["id"])
             .collect();
         assert_eq!(hers.len(), 1);
-        let listed: Vec<&Value> = array(&alice["snapshot"]["contracts"][0]["positions"], "list")
+        let listed: Vec<&Value> = array(&alice["snapshot"]["markets"][0]["positions"], "list")
             .iter()
             .collect();
         assert_eq!(listed, hers);
-        assert!(!array(&admin["snapshot"]["contracts"][0]["positions"], "list").is_empty());
+        assert!(!array(&admin["snapshot"]["markets"][0]["positions"], "list").is_empty());
     }
 
     #[test]
@@ -574,7 +571,7 @@ mod tests {
         );
         assert_eq!(position["settled"], false);
         let id = position["id"].clone();
-        assert_eq!(admin["snapshot"]["contracts"][0]["positions"], json!([id]));
+        assert_eq!(admin["snapshot"]["markets"][0]["positions"], json!([id]));
 
         // Alice (YES) and MM2 (NO) each see only themselves; the other side is null.
         let alice = view_as(&mut app, json!({"account": 10}));
@@ -588,21 +585,21 @@ mod tests {
             p["yes_lock"].is_u64() && p["no_lock"].is_u64() && p["qty"].is_u64(),
             "{p}"
         );
-        assert_eq!(alice["snapshot"]["contracts"][0]["positions"], json!([id]));
+        assert_eq!(alice["snapshot"]["markets"][0]["positions"], json!([id]));
         let mm2 = view_as(&mut app, json!({"account": 21}));
         let p = &mm2["snapshot"]["positions"][0];
         assert_eq!(
             (&p["id"], &p["yes_holder"], &p["no_holder"]),
             (&id, &Value::Null, &json!(21))
         );
-        assert_eq!(mm2["snapshot"]["contracts"][0]["positions"], json!([id]));
+        assert_eq!(mm2["snapshot"]["markets"][0]["positions"], json!([id]));
 
-        // Everyone else learns nothing about the fill: no position, and no id on the contract.
+        // Everyone else learns nothing about the fill: no position, and no id on the market.
         for account in [20, 30, 999] {
             let other = view_as(&mut app, json!({"account": account}));
             assert_eq!(other["snapshot"]["positions"], json!([]), "account {account}");
             assert_eq!(
-                other["snapshot"]["contracts"][0]["positions"],
+                other["snapshot"]["markets"][0]["positions"],
                 json!([]),
                 "account {account}"
             );
@@ -667,7 +664,7 @@ mod tests {
     #[test]
     fn a_quote_shows_the_hold_the_engine_took_on_the_leg_qty() {
         let mut app = None;
-        let request = json!({"SubmitRequest": {"legs": [{"contract": 1000, "side": "BuyYes", "qty": 1000, "limit_price": 7000}], "response_deadline": 2500}});
+        let request = json!({"SubmitRequest": {"legs": [{"market": 1000, "side": "BuyYes", "qty": 1000, "limit_price": 7000}], "response_deadline": 2500}});
         let opened = call(&mut app, json!({"op": "act", "actor": 10, "action": request}));
         assert_eq!(
             event_names(&last_entry(&opened)),
@@ -709,7 +706,7 @@ mod tests {
     #[test]
     fn replay_check_matches_after_manual_play() {
         let mut app = None;
-        let request = json!({"SubmitRequest": {"legs": [{"contract": 1000, "side": "BuyYes", "qty": 1000, "limit_price": 7000}], "response_deadline": 2500}});
+        let request = json!({"SubmitRequest": {"legs": [{"market": 1000, "side": "BuyYes", "qty": 1000, "limit_price": 7000}], "response_deadline": 2500}});
         let opened = call(&mut app, json!({"op": "act", "actor": 10, "action": request}));
         assert_eq!(
             event_names(&last_entry(&opened)),
