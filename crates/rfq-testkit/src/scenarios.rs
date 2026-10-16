@@ -260,7 +260,7 @@ fn leg_quote(at: Duration, label: &'static str, mm: AccountId, leg: u32, bps: u1
 }
 
 /// The oracle proposes YES on the run's `k`th extra market at `at` (its dispute window is 2 s).
-fn propose_yes(label: &'static str, at: Duration, k: u64) -> Step {
+fn propose_yes(at: Duration, label: &'static str, k: u64) -> Step {
     send(at, label, ORACLE, move |c| Action::ProposeOutcome {
         market: c.market_n(k),
         outcome: Outcome::Yes,
@@ -393,9 +393,9 @@ pub fn all() -> Vec<Scenario> {
         s.push(tick(1_600));
         s.push(accept(2_000));
         s.push(tick(5_100));
-        s.push(propose_yes("propose_paris", 5_200, 1));
-        s.push(propose_yes("propose_london", 5_300, 2));
-        s.push(propose_yes("propose_rome", 5_400, 3));
+        s.push(propose_yes(5_200, "propose_paris", 1));
+        s.push(propose_yes(5_300, "propose_london", 2));
+        s.push(propose_yes(5_400, "propose_rome", 3));
         s.push(tick(7_500));
         Scenario {
             name: "multi_leg_happy",

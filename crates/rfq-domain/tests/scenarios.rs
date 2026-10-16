@@ -112,7 +112,8 @@ fn multi_leg_happy_fills_all_three_legs_at_the_accept() {
     let mut s = all().into_iter().find(|s| s.name == "multi_leg_happy").unwrap();
     s.steps.retain(|step| step.at <= 2_000);
     let (h, events) = run_in_memory(&s, T0);
-    contains_in_order(&events, &s.expect[..14]).expect("the steps up to the accept");
+    let filled = s.expect.iter().position(|e| *e == "RequestFilled").unwrap() + 1;
+    contains_in_order(&events, &s.expect[..filled]).expect("the steps up to the accept");
     assert_eq!(free(&h, ALICE), dollars(1_000 - 744));
     assert_eq!(h.engine.balance(ALICE).escrowed, dollars(744));
     assert_eq!(free(&h, MM1), dollars(1_000 - 152 - 144));

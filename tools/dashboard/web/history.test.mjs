@@ -144,7 +144,7 @@ const labelOf = (name, n) => S.byName(name).steps.filter((s) => !s.wait)[n - 1]?
 // ---- the runs, played live ------------------------------------------------------------------------------
 
 /** The scenarios played at once, each a run with its own t0; three of them meet a fault. */
-const PLAYED = ["happy_path", "multi_leg_happy", "attack_double_accept", "attack_accept_wrong_price", "attack_replayed_nonce", "requester_lapses"];
+const PLAYED = ["happy_path", "multi_leg_happy", "multi_leg_leg2_fails", "attack_double_accept", "attack_accept_wrong_price", "attack_replayed_nonce", "requester_lapses"];
 const FAULTS = {
   // MM2's quote is applied and its answer lost: the driver resends it with the same nonce, a Duplicate.
   multi_leg_happy: { q2: "unknown" },
@@ -191,7 +191,7 @@ await test("the history rebuilds", () => {
 });
 const liveOf = (name) => live.find((r) => r.name === name);
 
-await test("the runs played as the faults say: four PASS, the late accept and the refused quote FAIL, and MM2's lost answer was retried", () => {
+await test("the runs played as the faults say: the late accept and the refused quote FAIL, every other run PASSes, and MM2's lost answer was retried", () => {
   assert.deepEqual(live.map((r) => [r.name, r.pass]), PLAYED.map((n) => [n, !["attack_double_accept", "requester_lapses"].includes(n)]), live.map((r) => `${r.name}: ${r.detail}`).join("\n"));
   assert.match(liveOf("requester_lapses").detail, /q2 \(mm2 SubmitQuote\): engine unavailable/);
   assert.match(liveOf("attack_double_accept").detail, /expected event RequestFilled/);
@@ -256,6 +256,17 @@ await test("not vacuous: the history goes on after a run that ends at its fill (
   const after = history.filter((e) => e.events.some((x) => ["MarketClosed", "MarketFinalized"].includes(R.eventName(x)) && R.eventBody(x).market === wrong.t0));
   assert.equal(after.length, 2, "the market closed and finalized in the history");
   const r = rebuilt.find((x) => x.t0 === wrong.t0);
+  for (const e of after) assert.ok(!r.batches.includes(e.seq), `seq ${e.seq} is not the run's`);
+});
+
+await test("not vacuous on extra markets: after multi_leg_leg2_fails expires, its three markets close and finalize in the history, and none of it is the run's", () => {
+  const failed = liveOf("multi_leg_leg2_fails");
+  const markets = [1, 2, 3].map((k) => failed.t0 * 10 + k);
+  const ofMarkets = (name) => history.filter((e) => e.events.some((x) => R.eventName(x) === name && markets.includes(R.eventBody(x).market)));
+  const after = [...ofMarkets("MarketClosed"), ...ofMarkets("MarketFinalized")];
+  assert.ok(ofMarkets("MarketClosed").length >= 1 && ofMarkets("MarketFinalized").length >= 1, "the extra markets closed and finalized in the history");
+  const r = rebuilt.find((x) => x.t0 === failed.t0);
+  assert.deepEqual([r.name, r.pass], ["multi_leg_leg2_fails", true]);
   for (const e of after) assert.ok(!r.batches.includes(e.seq), `seq ${e.seq} is not the run's`);
 });
 
