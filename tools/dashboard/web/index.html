@@ -2187,6 +2187,7 @@ const FAILURES = [
     ["F13", "Aeron crashes", "Per-session recordings; redelivered ingress is Duplicate if durable, else applied once.", ["archive_journal_replays_every_recording_across_restarts_and_crashes"], null, { note: "(Docker, <code>#[ignore]</code>d) Live: the driver-crash drill" }],
     ["F14", "Live stall or clock jump", "A poll gap over STALL_GAP_MS (1 s) sequences Resume first, as F9. Residual: downtime past resolution_deadline − dispute_window ends Invalid.", ["a_stall_cannot_eat_a_dispute_window", "a_stall_longer_than_the_gap_sequences_resume_before_the_batch"], null, { note: "Live: the stall drill" }],
     ["F15", "Egress subscriber stops polling", "5 s of tethered back-pressure halts the node, and again after each restart. Residual: subscribers must be venue-operated.", []],
+    ["F16", "Read replica behind or lost", "Every read says its as_of_seq; min_seq waits up to 2 s, else 503. A follower error makes the replica unavailable: it keeps serving and is rebuilt from the journal. It shows fsynced commands only.", ["min_seq_times_out_with_503", "the_replica_serves_while_it_rebuilds"]],
   ]],
   ["Attacks with a scenario (adversarial.md)", [
     ["", "Requester: accept a different price than shown", "Accept must echo quote ids and prices; a mismatch is rejected.", ["accept_must_echo_exact_selection"], "attack_accept_wrong_price"],

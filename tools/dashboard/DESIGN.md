@@ -69,7 +69,7 @@ The chosen view stays in place across a reset.
    - (d) **Replay check**: rebuild from the command log in a fresh engine and compare state hashes.
 6. **Deliverable panels** (secondary):
    - **D1** the request, quote and contract state machines, with the current state of the selected object lit and the last transition labelled with who triggered it; a *Multi-leg (built)* tab with a Run button for `multi_leg_leg2_fails` and one for `multi_leg_happy`, and the three-step walkthrough of engine.md §8's "leg 2 of 3" table: steps 1 and 2 are played by `multi_leg_leg2_fails`, and step 3 (the alternative path) is pinned by the engine test `a_selected_leg_cannot_be_withdrawn`;
-   - **D3** failure modes R1–R9 and F1–F15 with their test names, each linked to the preset that demonstrates it where one exists;
+   - **D3** failure modes R1–R9 and F1–F16 with their test names, each linked to the preset that demonstrates it where one exists;
    - **D4** resolution paths (undisputed, disputed then ruled, oracle silent, unruled dispute);
    - **D5** the two seams, read from this run's `Genesis` (`ReservationPolicy::FullHold`, `SelectionPolicy::SealedAtDeadline`), with invariant and non-invariant lists.
 

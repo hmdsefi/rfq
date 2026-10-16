@@ -947,5 +947,22 @@ await test("a reset while the history loads (a new epoch) seeds none of it: that
   }
 });
 
+await test("the D3 tab is failure-modes.md in full: every race and failure, with the tests the doc names", async () => {
+  const doc = readFileSync(new URL("../../../docs/specs/failure-modes.md", import.meta.url), "utf8");
+  const rows = [...doc.matchAll(/^\| ([RF]\d+) \|.*\| (.*) \|$/gm)].map(([, id, tests]) => [id, [...tests.matchAll(/`([a-z0-9_]+)`/g)].map((m) => m[1])]);
+  assert.ok(rows.length >= 25, `the doc's rows: ${rows.map(([id]) => id)}`);
+  const page = loadPage();
+  try {
+    const tab = new Map(page.val("FAILURES.flatMap(([, rows]) => rows).map(([id, , , tests]) => [id, tests])"));
+    for (const [id, tests] of rows) {
+      assert.ok(tab.has(id), `${id} is not in the D3 tab`);
+      for (const t of tests) assert.ok(tab.get(id).includes(t), `${id}: ${t} is not in the D3 tab's row`);
+    }
+    assert.match(page.run("d3Panel()"), /<td>F16<\/td>/);
+  } finally {
+    teardown(page);
+  }
+});
+
 console.log(failed ? `${failed} FAILED` : "all page tests passed");
 process.exit(failed ? 1 : 0);
