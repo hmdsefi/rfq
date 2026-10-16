@@ -37,7 +37,8 @@ use rfq_domain::SequencedCommand;
 use rusteron_archive::{
     Aeron, AeronArchive, AeronArchiveAsyncConnect, AeronArchiveContext, AeronArchiveErrorCode,
     AeronArchiveRecordingDescriptor, AeronArchiveReplayParams, AeronCountersReader,
-    AeronExclusivePublication, AeronHeader, ChannelUri, Handlers, RecordingPos, SOURCE_LOCATION_LOCAL,
+    AeronExclusivePublication, AeronHeader, AeronImage, AeronSubscription, ChannelUri, Handlers,
+    RecordingPos, SOURCE_LOCATION_LOCAL,
 };
 
 use super::{AeronError, IPC, LOG, REPLAY, RESOURCE_TIMEOUT, Unconnected, frame_of, offer, retry};
@@ -45,7 +46,7 @@ use crate::codec::{decode, encode};
 use crate::fragment::Reassembler;
 
 /// Aeron's "no position": the stop position of a recording that is still active.
-const NULL_POSITION: i64 = -1;
+pub(crate) const NULL_POSITION: i64 = -1;
 /// Aeron's "no counter".
 const NULL_COUNTER_ID: i32 = -1;
 /// How long an offer to the log may stay back-pressured or unconnected.
@@ -54,7 +55,7 @@ const LOG_PATIENCE: Duration = Duration::from_secs(10);
 const DURABLE_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long a replay may make no progress, and a stopped recording may take to get its stop
 /// position.
-const ARCHIVE_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const ARCHIVE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Fragments per replay poll.
 const REPLAY_FRAGMENTS: usize = 256;
 /// `start_recording` attempts that may hit `ActiveSubscription`.
@@ -62,12 +63,156 @@ const START_ATTEMPTS: usize = 3;
 
 /// A recording of the log stream, from the Archive's catalog.
 #[derive(Clone, Copy, Debug)]
-struct Recording {
-    id: i64,
-    start: i64,
+pub(crate) struct Recording {
+    pub(crate) id: i64,
+    pub(crate) start: i64,
     /// [`NULL_POSITION`] while active.
-    stop: i64,
-    session: i32,
+    pub(crate) stop: i64,
+    pub(crate) session: i32,
+}
+
+// The code below is shared by `ArchiveJournal`, which replays the recordings once at startup, and
+// by `JournalFollower`, which replays them and keeps following.
+
+/// Connects to the Archive over its local IPC control channel, retrying while it starts.
+pub(crate) fn connect_archive(aeron: &Aeron) -> Result<AeronArchive, AeronError> {
+    let ctx = AeronArchiveContext::new()?;
+    ctx.set_aeron(aeron)?;
+    ctx.set_control_request_channel(IPC)?;
+    ctx.set_control_response_channel(IPC)?;
+    ctx.set_error_handler(Some(|code: i32, msg: &str| {
+        tracing::error!(code, msg, "aeron archive error");
+    }))?;
+    let archive = retry("connect to the archive", || {
+        Ok(AeronArchiveAsyncConnect::new_with_aeron(&ctx, aeron)?.poll_blocking(Duration::from_secs(5))?)
+    })?;
+    tracing::info!(archive_id = archive.get_archive_id(), "connected to the archive");
+    Ok(archive)
+}
+
+/// Every recording of the log stream, in recording-id order.
+pub(crate) fn list_recordings(archive: &AeronArchive) -> Result<Vec<Recording>, AeronError> {
+    let mut out = Vec::new();
+    let mut count = 0;
+    // `aeron:ipc` matches as a fragment, so session-scoped recordings are listed too.
+    archive.list_recordings_for_uri_fn(
+        &mut count,
+        0,
+        i32::MAX,
+        IPC,
+        LOG,
+        |d: AeronArchiveRecordingDescriptor| {
+            out.push(Recording {
+                id: d.recording_id(),
+                start: d.start_position(),
+                stop: d.stop_position(),
+                session: d.session_id(),
+            });
+        },
+    )?;
+    out.sort_by_key(|r| r.id);
+    Ok(out)
+}
+
+/// One replay of a recording, as received: the image of its session on `stream`.
+pub(crate) struct Replay {
+    /// Declared first, so that it is dropped before the subscription it belongs to.
+    pub(crate) image: AeronImage,
+    _subscription: AeronSubscription,
+}
+
+/// Starts replaying `recording` from its start onto `stream`, for `length` bytes (`i64::MAX`
+/// follows a recording that is still active), subscribes to that replay's session only and waits
+/// for its image.
+pub(crate) fn start_replay(
+    aeron: &Aeron,
+    archive: &AeronArchive,
+    recording: &Recording,
+    length: i64,
+    stream: i32,
+) -> Result<Replay, AeronError> {
+    let params = AeronArchiveReplayParams::builder()
+        .position(recording.start)
+        .length(length)
+        .build()?;
+    let replay_session = archive.start_replay(recording.id, IPC, stream, &params)?;
+    // Subscribe to this replay's session only, so no other replay on the stream can mix in.
+    let session = image_session(replay_session);
+    let channel = session_channel(session);
+    let subscription = aeron
+        .async_add_subscription(&channel, stream, Handlers::NONE, Handlers::NONE)?
+        .poll_blocking(RESOURCE_TIMEOUT)?;
+    let waiting = Instant::now();
+    let image = loop {
+        if let Some(image) = subscription.image_by_session_id(session) {
+            break image;
+        }
+        if waiting.elapsed() > ARCHIVE_TIMEOUT {
+            return Err(AeronError::Timeout {
+                what: "replay image to appear",
+                after: ARCHIVE_TIMEOUT,
+            });
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    Ok(Replay {
+        image,
+        _subscription: subscription,
+    })
+}
+
+/// Reassembles the fragments of a replay into messages and decodes them.
+pub(crate) struct Decoder {
+    reassembler: Reassembler,
+}
+
+impl Decoder {
+    pub(crate) fn new() -> Self {
+        Decoder {
+            reassembler: Reassembler::new(usize::MAX),
+        }
+    }
+
+    /// Polls up to [`REPLAY_FRAGMENTS`] fragments of `image`, a replay of recording
+    /// `recording_id`, and feeds each command they complete to `f`. Returns how many fragments it
+    /// polled. A message torn at a recording's stop by a crash never completes, so it is never fed.
+    pub(crate) fn poll(
+        &mut self,
+        image: &AeronImage,
+        recording_id: i64,
+        f: &mut dyn FnMut(SequencedCommand),
+    ) -> Result<i32, AeronError> {
+        let mut failure: Option<AeronError> = None;
+        let reassembler = &mut self.reassembler;
+        let fragments = image.poll_fn(
+            |data: &[u8], header: AeronHeader| {
+                if failure.is_some() {
+                    return;
+                }
+                let position = header.position();
+                match frame_of(&header) {
+                    Ok((session, flags)) => {
+                        reassembler.on_fragment(session, flags, data, &mut |msg| match decode(msg) {
+                            Ok(sc) => f(sc),
+                            Err(source) => {
+                                failure = Some(AeronError::Corrupt {
+                                    recording_id,
+                                    position,
+                                    source,
+                                });
+                            }
+                        });
+                    }
+                    Err(e) => failure = Some(e.into()),
+                }
+            },
+            REPLAY_FRAGMENTS,
+        )?;
+        match failure {
+            Some(e) => Err(e),
+            None => Ok(fragments),
+        }
+    }
 }
 
 /// This node's own recording and the exclusive publication it records.
@@ -91,21 +236,9 @@ pub struct ArchiveJournal {
 impl ArchiveJournal {
     /// Connects to the Archive over its local IPC control channel, retrying while it starts.
     pub fn new(aeron: &Aeron) -> Result<Self, AeronError> {
-        let ctx = AeronArchiveContext::new()?;
-        ctx.set_aeron(aeron)?;
-        ctx.set_control_request_channel(IPC)?;
-        ctx.set_control_response_channel(IPC)?;
-        ctx.set_error_handler(Some(|code: i32, msg: &str| {
-            tracing::error!(code, msg, "aeron archive error");
-        }))?;
-        let archive = retry("connect to the archive", || {
-            Ok(AeronArchiveAsyncConnect::new_with_aeron(&ctx, aeron)?
-                .poll_blocking(Duration::from_secs(5))?)
-        })?;
-        tracing::info!(archive_id = archive.get_archive_id(), "connected to the archive");
         Ok(ArchiveJournal {
             aeron: aeron.clone(),
-            archive: Some(archive),
+            archive: Some(connect_archive(aeron)?),
             log: None,
         })
     }
@@ -117,26 +250,7 @@ impl ArchiveJournal {
 
     /// Every recording of the log stream, in recording-id order.
     fn recordings(&self) -> Result<Vec<Recording>, AeronError> {
-        let mut out = Vec::new();
-        let mut count = 0;
-        // `aeron:ipc` matches as a fragment, so session-scoped recordings are listed too.
-        self.archive()?.list_recordings_for_uri_fn(
-            &mut count,
-            0,
-            i32::MAX,
-            IPC,
-            LOG,
-            |d: AeronArchiveRecordingDescriptor| {
-                out.push(Recording {
-                    id: d.recording_id(),
-                    start: d.start_position(),
-                    stop: d.stop_position(),
-                    session: d.session_id(),
-                });
-            },
-        )?;
-        out.sort_by_key(|r| r.id);
-        Ok(out)
+        list_recordings(self.archive()?)
     }
 
     /// Stops every recording left active by a node that crashed, then waits until each has its
@@ -176,64 +290,13 @@ impl ArchiveJournal {
     /// Replays `[r.start, r.stop)` of one recording onto the replay stream, feeding each command
     /// to `f`. A message torn at `r.stop` by a crash never completes, so it is never fed.
     fn replay_recording(&self, r: &Recording, f: &mut dyn FnMut(SequencedCommand)) -> Result<(), AeronError> {
-        let params = AeronArchiveReplayParams::builder()
-            .position(r.start)
-            .length(r.stop - r.start)
-            .build()?;
-        let replay_session = self.archive()?.start_replay(r.id, IPC, REPLAY, &params)?;
-        // Subscribe to this replay's session only, so no other replay on the stream can mix in.
-        let session = image_session(replay_session);
-        let channel = session_channel(session);
-        let subscription = self
-            .aeron
-            .async_add_subscription(&channel, REPLAY, Handlers::NONE, Handlers::NONE)?
-            .poll_blocking(RESOURCE_TIMEOUT)?;
-        let waiting = Instant::now();
-        let image = loop {
-            if let Some(image) = subscription.image_by_session_id(session) {
-                break image;
-            }
-            if waiting.elapsed() > ARCHIVE_TIMEOUT {
-                return Err(AeronError::Timeout {
-                    what: "replay image to appear",
-                    after: ARCHIVE_TIMEOUT,
-                });
-            }
-            std::thread::sleep(Duration::from_millis(1));
-        };
-
-        let mut reassembler = Reassembler::new(usize::MAX);
-        let mut failure: Option<AeronError> = None;
+        let replay = start_replay(&self.aeron, self.archive()?, r, r.stop - r.start, REPLAY)?;
+        let image = &replay.image;
+        let mut decoder = Decoder::new();
         let mut progress = Instant::now();
         // The image position also counts padding frames, which reach no handler.
         while image.position() < r.stop {
-            let fragments = image.poll_fn(
-                |data: &[u8], header: AeronHeader| {
-                    if failure.is_some() {
-                        return;
-                    }
-                    let position = header.position();
-                    match frame_of(&header) {
-                        Ok((session, flags)) => {
-                            reassembler.on_fragment(session, flags, data, &mut |msg| match decode(msg) {
-                                Ok(sc) => f(sc),
-                                Err(source) => {
-                                    failure = Some(AeronError::Corrupt {
-                                        recording_id: r.id,
-                                        position,
-                                        source,
-                                    });
-                                }
-                            });
-                        }
-                        Err(e) => failure = Some(e.into()),
-                    }
-                },
-                REPLAY_FRAGMENTS,
-            )?;
-            if let Some(e) = failure {
-                return Err(e);
-            }
+            let fragments = decoder.poll(image, r.id, f)?;
             if fragments > 0 {
                 progress = Instant::now();
             } else if image.is_end_of_stream() || image.is_closed() {

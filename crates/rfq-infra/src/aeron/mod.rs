@@ -1,5 +1,6 @@
-//! Aeron adapters (feature `aeron`): [`AeronTransport`] for client ingress and event egress, and
-//! [`ArchiveJournal`], whose log is recorded by Aeron Archive and replayed from it.
+//! Aeron adapters (feature `aeron`): [`AeronTransport`] for client ingress and event egress,
+//! [`ArchiveJournal`], whose log is recorded by Aeron Archive and replayed from it, and
+//! [`JournalFollower`], which replays that log and keeps following it (the read side).
 //!
 //! Every `rusteron` call follows the API verified by the Task 0 spike against `rusteron-archive`
 //! 0.2.11 and the Java `ArchivingMediaDriver` 1.53.3 (`docs/specs/transport-aeron.md`, "Verified
@@ -12,9 +13,11 @@ use rusteron_archive::{AeronArchiveError, AeronCError, AeronContext, AeronHeader
 use crate::codec::CodecError;
 
 mod archive;
+mod follower;
 mod transport;
 
 pub use archive::ArchiveJournal;
+pub use follower::JournalFollower;
 /// The pinned `rusteron-archive`, for clients (such as `rfq-demo`) that open their own
 /// publications and subscriptions: one version pin for the whole workspace.
 pub use rusteron_archive;
@@ -29,6 +32,8 @@ pub const LOG: i32 = 1002;
 pub const EGRESS: i32 = 1003;
 /// Archive → node at startup: the log replayed.
 pub const REPLAY: i32 = 1004;
+/// Archive → readers: the log replayed and followed (read side).
+pub const FOLLOW: i32 = 1005;
 
 /// The channel of every stream, and of the Archive control session. Containers share IPC, not a
 /// network, so a UDP `localhost` channel would never reach the Archive.
@@ -82,6 +87,10 @@ pub enum AeronError {
     },
     #[error("recording {recording_id}: replay ended at position {at}, before {stop}")]
     ReplayEnded { recording_id: i64, at: i64, stop: i64 },
+    #[error("recording {recording_id}: replay ended at position {at}, but the recording is still active")]
+    ReplayCutShort { recording_id: i64, at: i64 },
+    #[error("recording {0} is no longer in the archive's catalog")]
+    RecordingGone(i64),
     #[error("wait_durable called before any append")]
     NothingAppended,
     #[error("recording {0} of the log stopped while the node was running")]
