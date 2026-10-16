@@ -25,6 +25,11 @@ const RfqScenarios = (() => {
   const ENGINE_WAIT_MS = 60_000;
   /** How many times one command's unknown outcome is retried. */
   const MAX_RETRIES = 3;
+  /**
+   * How late a run's step may be sent and still count as on time, for a history: one that ends this long after
+   * a script's next step was due, without it, is not that script's run (the step would have been sent).
+   */
+  const LATE_MS = 250;
 
   const ONE_DOLLAR = 1_000_000;
   const dollars = (x) => x * ONE_DOLLAR;
@@ -1119,17 +1124,17 @@ const RfqScenarios = (() => {
 
   /**
    * Whether `scenario`'s script, played as the driver plays it against what the history says the engine
-   * answered (its seqs, the picks it presented), sends exactly the run's commands (`steps`).
+   * answered (its seqs, the picks it presented), starts with exactly the run's commands so far (`steps`).
+   * `from` is the index of the run's first batch: nothing before it is about the run.
    */
-  function replays(scenario, t0, steps, batches) {
+  function replays(scenario, t0, steps, batches, from = 0) {
     const scope = new R.Scope(t0);
     const ctx = new Ctx(t0, (a) => scope.account(a));
     const lastNonce = new Map();
-    let heard = 0;
-    let i = 0;
-    for (const step of scenario.steps) {
-      if (step.wait) continue;
-      const { cmd, seq } = steps[i++];
+    let heard = from;
+    const script = scenario.steps.filter((s) => !s.wait);
+    for (const [i, { cmd, seq }] of steps.entries()) {
+      const step = script[i];
       // What the driver had heard when it sent this step: every batch before it.
       for (; heard < batches.length && batches[heard].seq < seq; heard++) ctx.observe(batches[heard].events);
       let want;
@@ -1147,37 +1152,55 @@ const RfqScenarios = (() => {
   }
 
   /**
-   * The scenario whose script sent the run's commands (`steps`, retries left out): the one with the same
-   * actors (as script accounts or genesis roles) and action names in the same order, whose script, replayed,
-   * also sends exactly these actions. The shape alone says nothing of legs, prices or picks: a
-   * `multi_leg_happy` stopped after its second quote has `multi_leg_leg2_fails`'s shape, and the wrong-price
-   * and double accepts share one. Null when no single script matches: a run cut short, or one no script sent.
+   * The scripts the run's commands so far (`steps`, retries left out) may come from: the ones that start with
+   * the same actors (as script accounts or genesis roles) and action names in the same order, and whose script,
+   * replayed, sends exactly these actions. The shape alone says nothing of legs, prices or picks: a
+   * `multi_leg_happy` stopped after its second quote has `multi_leg_leg2_fails`'s shape, and the wrong-price and
+   * double accepts share one.
    */
-  function scriptOf(t0, steps, batches) {
+  function candidatesOf(t0, steps, batches, from) {
     const role = (a) => (R.GENESIS_ROLES.includes(a) ? a : a - t0 * PER_RUN);
-    const shape = steps.map(({ cmd }) => `${role(cmd.actor)} ${actionName(cmd.action)}`).join(",");
-    const exact = scenarios.filter((s) => shapeOf(s).join(",") === shape && replays(s, t0, steps, batches));
-    return exact.length === 1 ? exact[0] : null;
+    const shape = steps.map(({ cmd }) => `${role(cmd.actor)} ${actionName(cmd.action)}`);
+    return scenarios.filter((s) => {
+      const script = shapeOf(s);
+      return script.length >= shape.length && shape.every((x, i) => x === script[i]) && replays(s, t0, steps, batches, from);
+    });
   }
 
+  /** The time the `n`th command step (from 0) of `scenario` is due in run `t0`, or null when it has fewer. */
+  const dueOf = (scenario, t0, n) => {
+    const step = scenario.steps.filter((s) => !s.wait)[n];
+    return step ? t0 + step.at : null;
+  };
+
   /**
-   * Where the driver stopped listening to a run of `scenario` (see `play`): at its last step (a wait's end
-   * is `WAIT_GRACE_MS` after its time; a command's, its batch, a retry's if it had one), then on while its
-   * expected events have not all come, `GRACE_MS` at most. Returns whether the run takes batch `b`, given
-   * the events it owns so far; batches come in seq order, so the first it does not take ends the run.
+   * Where the driver stops listening to a run of `scenario` (see `play`): at its last step (a wait's end is
+   * `WAIT_GRACE_MS` after its time; a command's, its batch, a retry's if it had one), then on while its expected
+   * events have not all come, `GRACE_MS` at most (`until`). `takes(b, own)`: whether the run takes batch `b`,
+   * given the events it owns so far; batches come in seq order, so the first it does not take ends the run.
+   * `closed(own, end)`: whether the window has ended by engine time `end`, every batch up to it taken.
    */
-  function listening(scenario, t0, cmds) {
+  function windowOf(scenario, t0, cmds) {
     const last = scenario.steps.at(-1);
     const lastCmd = cmds.at(-1);
     const endTime = last.wait ? t0 + last.at + WAIT_GRACE_MS : lastCmd.time;
-    return (b, own) => {
-      if (last.wait ? b.time <= endTime : b.seq <= lastCmd.seq) return true;
-      return b.time <= endTime + GRACE_MS && !R.containsInOrder(own, scenario.expect).ok;
+    const met = (own) => R.containsInOrder(own, scenario.expect).ok;
+    return {
+      until: endTime + GRACE_MS,
+      takes: (b, own) => (last.wait ? b.time <= endTime : b.seq <= lastCmd.seq) || (b.time <= endTime + GRACE_MS && !met(own)),
+      closed: (own, end) => (!last.wait || end > endTime) && (end > endTime + GRACE_MS || met(own)),
     };
   }
 
-  /** Run `t0` of a history (`batches` ascending by seq), rebuilt as the driver records a live run. */
-  function historyRun(t0, batches) {
+  /**
+   * Run `t0` of a history (`batches` ascending by seq), rebuilt as the driver records a live run, as of engine
+   * time `end` (every batch up to it is in `batches`; at least the last batch's time). `cutAt` is where the
+   * history fetched from the read API ended, `end` unless this is a later rebuild with the batches recorded
+   * since (`settleRun`). See `runsFromHistory` for what comes back.
+   */
+  function historyRun(t0, batches, { end = -Infinity, cutAt } = {}) {
+    end = Math.max(end, batches.at(-1)?.time ?? -Infinity);
+    cutAt ??= end;
     const scope = new R.Scope(t0);
     const accounts = {};
     for (const a of RUN_ACCOUNTS) accounts[ACCOUNT_NAMES[a]] = scope.account(a);
@@ -1197,18 +1220,41 @@ const RfqScenarios = (() => {
     }
     const steps = cmds.filter((c) => !c.retry);
     const retries = new Set(cmds.filter((c) => c.retry).map((c) => c.seq));
-    const scenario = scriptOf(t0, steps, batches);
-    const result = { own: [], batches: [] };
     // Nothing before the run's first command is about its accounts or contracts.
     const from = cmds.length ? batches.findIndex((b) => b.seq === cmds[0].seq) : 0;
-    const takes = scenario ? listening(scenario, t0, cmds) : () => true;
+    const candidates = cmds.length ? candidatesOf(t0, steps, batches, from) : [];
+    const whole = candidates.filter((s) => shapeOf(s).length === steps.length);
+    // A script with a step still to send when the history was cut (due less than LATE_MS before its end):
+    // the run may have been sending it, and the page that sent its commands reloaded.
+    const going = candidates.filter((s) => {
+      const due = dueOf(s, t0, steps.length);
+      return due != null && due > cutAt - LATE_MS;
+    });
+    // A command of one of the run's accounts with no `command`: a live batch, which carries no action.
+    const unread = batches.some((b) => !b.command && b.origin != null && scope.accounts.has(b.origin.actor));
+    const cut = going.length > 0 || unread;
+    // Judged only when the history holds the whole of one script's commands, and nothing could follow them.
+    const scenario = !cut && whole.length === 1 ? whole[0] : null;
+    // Named when only one script fits, judged or not.
+    const possible = [...whole, ...going.filter((s) => !whole.includes(s))];
+    const named = scenario ?? (cut && possible.length === 1 ? possible[0] : null);
+    const result = { own: [], batches: [] };
+    const span = scenario ? windowOf(scenario, t0, cmds) : null;
+    let closed = !span;
     let lastTime = t0;
-    for (const b of batches.slice(from)) {
-      if (!takes(b, result.own)) break;
+    for (let i = from; i < batches.length; i++) {
+      const b = batches[i];
+      if (span && !span.takes(b, result.own)) {
+        closed = true;
+        break;
+      }
       takeBatch(scope, result, b, retries.has(b.seq));
       if (result.batches.at(-1) === b.seq) lastTime = b.time;
     }
-    const script = scenario ? scenario.steps.filter((s) => !s.wait) : [];
+    closed ||= span.closed(result.own, end);
+    // Its window goes on past the history: the batches recorded after it finish the run (`settleRun`).
+    const open = !closed;
+    const script = named ? named.steps.filter((s) => !s.wait) : [];
     const commands = steps.map((c, i) => ({
       step: script[i]?.label ?? null,
       at: script[i]?.at ?? null,
@@ -1223,30 +1269,43 @@ const RfqScenarios = (() => {
       recovered: cmds.some((r) => r.retry && r.cmd.actor === c.cmd.actor && r.cmd.nonce === c.cmd.nonce),
     }));
     const unclassified = [...scope.unclassified];
-    const verdict = scenario ? R.containsInOrder(result.own, scenario.expect) : null;
-    const detail = !scenario
-      ? null
-      : unclassified.length
-        ? `the engine emitted ${unclassified.join(", ")}, which the scope has no rule for (update recorder.js)`
-        : verdict.error;
-    const pass = scenario ? !unclassified.length && verdict.ok : null;
-    const name = scenario?.name ?? `run ${clockOf(t0)}`;
+    const judged = scenario && closed;
+    const verdict = judged ? R.containsInOrder(result.own, scenario.expect) : null;
+    const incomplete = cut || open;
+    const detail = unread
+      ? "commands of the run came after the history, and the live stream does not carry their actions: it has no verdict"
+      : cut
+        ? "the history ends while the run was still sending its commands (the page that ran it reloaded): it has no verdict"
+        : open
+          ? "the history ends before the run did: its verdict comes once the engine has finished it"
+          : !judged
+            ? null
+            : unclassified.length
+              ? `the engine emitted ${unclassified.join(", ")}, which the scope has no rule for (update recorder.js)`
+              : verdict.error;
+    const pass = judged ? !unclassified.length && verdict.ok : null;
+    const name = named?.name ?? `run ${clockOf(t0)}`;
     const seqs = result.batches;
     return {
       id: `h${t0}`,
       history: true,
       name,
-      kind: scenario?.kind ?? null,
+      kind: named?.kind ?? null,
       t0,
       contract: t0,
       accounts,
-      expect: scenario?.expect ?? [],
+      expect: named?.expect ?? [],
       pass,
+      // No verdict yet or ever: cut while it sent its commands, or still going (`open`) at the history's end.
+      incomplete,
+      open,
+      cutAt,
+      until: open ? span.until : null,
       stopped: false,
       detail,
       error: null,
-      step: scenario ? scenario.steps.length : steps.length,
-      steps: scenario ? scenario.steps.length : steps.length,
+      step: named ? named.steps.length : steps.length,
+      steps: named ? named.steps.length : steps.length,
       own: result.own,
       batches: seqs,
       labels: Object.fromEntries(commands.filter((c) => c.step).map((c) => [c.step, c.seq])),
@@ -1254,7 +1313,7 @@ const RfqScenarios = (() => {
       recoveries: [],
       log: [
         `${name}: t0=${t0}, rebuilt from the history: ${commands.length} command${commands.length === 1 ? "" : "s"}, batches ${seqs[0]}..${seqs.at(-1)}`,
-        !scenario ? "no verdict: its commands are not one scenario's script" : pass ? "PASS" : `FAIL: ${detail}`,
+        incomplete ? `incomplete: ${detail}` : !judged ? "no verdict: its commands are not one scenario's script" : pass ? "PASS" : `FAIL: ${detail}`,
       ],
       // Engine time: the run's first step is due at t0, and its last batch ends it.
       startedAt: t0,
@@ -1266,20 +1325,35 @@ const RfqScenarios = (() => {
 
   /**
    * The scenario runs in a history (`entries`: the read API's admin trace, ascending by seq, each with its
-   * `origin` and `command`), one per `t0` that `runT0s` finds, by `t0`. Each is rebuilt as the driver
-   * records a live run, so the page's run machinery takes it as it is: a scope fed the run's accounts, its
-   * commands (`sent`) and then every batch in seq order gives its `own` events and `batches`, up to where
-   * the driver would have stopped listening; its name is the scenario whose script matches its commands
-   * (`scriptOf`), else the neutral `run <time>`; its verdict is the script's expect list on `own` (`pass`
-   * true or false), or none (`null`) without a name. Marked `history: true`, with the id `h<t0>`, and never
-   * running. A run with no batch is left out.
+   * `origin` and `command`), one per `t0` that `runT0s` finds, by `t0`. `end` is the engine time the history
+   * is known to be whole up to: by default its last entry's.
+   *
+   * Each is rebuilt as the driver records a live run, so the page's run machinery takes it as it is: a scope
+   * fed the run's accounts, its commands (`sent`) and then every batch in seq order gives its `own` events and
+   * `batches`, up to where the driver would have stopped listening. Its name is the scenario whose script
+   * matches its commands (`candidatesOf`), else the neutral `run <time>`; its verdict is that script's expect
+   * list on `own` (`pass` true or false). Marked `history: true`, with the id `h<t0>`, and never running.
+   *
+   * Never a verdict too early (`pass: null`, `incomplete: true`): a run whose commands so far start a script
+   * that still had a step to send when the history ends was cut by a reload, and keeps no verdict; a run that
+   * had sent all of one script's commands but whose window goes on past the end is `open` until `until`, and
+   * `settleRun` finishes it from the batches recorded since. A run with no batch is left out.
    */
-  function runsFromHistory(entries) {
+  function runsFromHistory(entries, { end } = {}) {
     const batches = [...entries].sort((a, b) => a.seq - b.seq);
     return [...runT0s(batches)]
       .sort((a, b) => a - b)
-      .map((t0) => historyRun(t0, batches))
+      .map((t0) => historyRun(t0, batches, { end }))
       .filter((r) => r.batches.length > 0);
+  }
+
+  /**
+   * An `open` history run again, as of engine time `end`, from `batches`: the history it came from and every
+   * batch recorded since (any order; the live ones carry no `command`). It is judged once its window has
+   * ended by then; a command of one of its accounts that came after the history leaves it incomplete for good.
+   */
+  function settleRun(run, batches, end) {
+    return historyRun(run.t0, [...batches].sort((a, b) => a.seq - b.seq), { end, cutAt: run.cutAt });
   }
 
   return {
@@ -1287,6 +1361,7 @@ const RfqScenarios = (() => {
     byName,
     names: () => scenarios.map((s) => s.name),
     runsFromHistory,
+    settleRun,
     runT0s,
     Ctx,
     remap,

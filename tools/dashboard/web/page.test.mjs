@@ -1140,6 +1140,114 @@ await test("a new journal after the reload (a new epoch): the old history's runs
   }
 });
 
+// ---- history: a reload in the middle of a run ----------------------------------------------------------------
+
+/** `attack_over_limit_quote` as the admin trace holds it: the setup, Alice's request, and MM2's quote above her limit. */
+function overLimitRun(t0, seq, nonce, { quote = true } = {}) {
+  const entries = scriptedRun(t0, seq, nonce, "expire").slice(0, -1); // the setup and the request, not the expiry
+  const req = entries.at(-1).seq;
+  const mm2 = t0 * 100 + 21;
+  if (quote) {
+    entries.push({ seq: req + 1, time: t0 + 300, kind: "User", origin: { actor: mm2, nonce: 1 }, events: [hTo(mm2, { QuoteSubmitted: { quote: req + 1, request: req, price: 7_500, expires_at: t0 + 10_000 } })], balances: [hBal(mm2, 75e7, 25e7)], command: { actor: mm2, nonce: 1, action: { SubmitQuote: { request: req, leg: 0, price: 7_500, size: 1000, expires_at: t0 + 10_000 } } } });
+  }
+  return { entries, req, quote: req + 1 };
+}
+/** A page that loads `entries` as its history once it is connected, with the gateway's stream starting at the history's top seq. */
+async function reloadedLive(entries) {
+  let release;
+  const gate = new Promise((resolve) => (release = resolve));
+  const api = fakeReadApi(entries);
+  const page = loadPage({ fetch: async (url) => (await gate, api.fetch(url)) });
+  page.server.seq = entries.at(-1).seq;
+  await connected(page);
+  release();
+  await page.run("historyLoaded");
+  page.run("render()");
+  return page;
+}
+const optionOf = (document, value) => runOptions(document).find(([v]) => v === value)?.[1];
+
+await test("a run still sending its commands when the page reloaded is listed and followed as incomplete, with no verdict, for good", async () => {
+  // Its setup and request are in, MM2's quote was due at +300 ms: the page that sent them reloaded.
+  const t0 = Date.now() - 200;
+  const { entries } = overLimitRun(t0, 17, 13, { quote: false });
+  const page = await reloadedLive([...TWO_RUNS, ...entries]);
+  const { val, document } = page;
+  try {
+    assert.equal(val("V.run.id"), `h${t0}`);
+    assert.match(optionOf(document, `h${t0}`), new RegExp(`^history · …${tail(t0)} run \\d\\d:\\d\\d:\\d\\d · incomplete$`));
+    assert.equal(val("verdictOf(V.run)"), null);
+    const strip = text(document, "scenario");
+    assert.ok(strip.includes("still sending its commands") && !/PASS|FAIL/.test(strip), strip);
+    assert.equal(val("V.run.open"), false, "nothing will finish it");
+    // The runs before it are judged as before.
+    assert.match(optionOf(document, `h${RUN_B}`), /no_quotes_expire · PASS$/);
+  } finally {
+    teardown(page);
+  }
+});
+
+await test("a run that had sent its last command but not finished is open, and the live batches give it its verdict once the engine has", async () => {
+  // MM2's quote went in at +300 ms; the request expires at +1.5 s, and the run's window ends at its wait, +1.6 s, and WAIT_GRACE_MS.
+  const t0 = Date.now() - 400;
+  const { entries, req, quote } = overLimitRun(t0, 17, 13);
+  const page = await reloadedLive([...TWO_RUNS, ...entries]);
+  const { val, document, server } = page;
+  try {
+    assert.deepEqual(val("[V.run.id, V.run.name, V.run.open, V.run.pass]"), [`h${t0}`, "attack_over_limit_quote", true, null]);
+    assert.equal(optionOf(document, `h${t0}`), `history · …${tail(t0)} attack_over_limit_quote · incomplete`);
+    assert.ok(text(document, "scenario").includes("its verdict comes once the engine has finished it"), text(document, "scenario"));
+    // The engine fires the deadline: the live stream carries it, with no command.
+    server.sockets[0].onmessage({ data: JSON.stringify({ type: "batch", seq: quote + 1, time: t0 + 1_500, kind: "Tick", origin: null, events: [hTo(t0 * 100 + 21, { QuoteLost: { quote } }), hPub({ RequestExpired: { request: req } })], balances: [] }) });
+    for (let i = 0; i < 60 && val("V.run.open"); i++) {
+      await sleep(100);
+      page.run("render()");
+    }
+    assert.deepEqual(val("[V.run.id, V.run.open, V.run.incomplete, V.run.pass]"), [`h${t0}`, false, false, true], val("V.run.detail"));
+    assert.ok(Date.now() >= t0 + 1_900, "not before its window ended");
+    assert.equal(optionOf(document, `h${t0}`), `history · …${tail(t0)} attack_over_limit_quote · PASS`);
+    assert.deepEqual(val("V.r.batches.map((b) => b.seq)"), [...seqs(17, 24)]);
+  } finally {
+    teardown(page);
+  }
+});
+
+await test("an open run keeps no verdict when the connection drops before the engine finished it: batches may be missing", async () => {
+  const t0 = Date.now() - 400;
+  const { entries } = overLimitRun(t0, 17, 13);
+  const page = await reloadedLive([...TWO_RUNS, ...entries]);
+  const { val, server } = page;
+  try {
+    assert.equal(val("V.run.open"), true);
+    server.sockets[0].close();
+    await sleep(2_500);
+    page.run("render()");
+    assert.deepEqual(val("[V.run.id, V.run.open, V.run.incomplete, V.run.pass]"), [`h${t0}`, false, true, null]);
+    assert.match(val("V.run.detail"), /connection dropped/);
+  } finally {
+    teardown(page);
+  }
+});
+
+await test("a stream that starts after the history's top seq may have missed batches: the open run keeps no verdict", async () => {
+  const t0 = Date.now() - 400;
+  const { entries } = overLimitRun(t0, 17, 13);
+  let release;
+  const gate = new Promise((resolve) => (release = resolve));
+  const api = fakeReadApi([...TWO_RUNS, ...entries]);
+  const page = loadPage({ fetch: async (url) => (await gate, api.fetch(url)) });
+  page.server.seq = 40; // the gateway's stream starts at seq 40: seqs 25..40 reached neither the history nor the page
+  try {
+    await connected(page);
+    release();
+    await page.run("historyLoaded");
+    page.run("render()");
+    assert.deepEqual(page.val("[V.run.id, V.run.open, V.run.incomplete, V.run.pass]"), [`h${t0}`, false, true, null]);
+  } finally {
+    teardown(page);
+  }
+});
+
 await test("the D3 tab is failure-modes.md in full: every race and failure, with the tests the doc names", async () => {
   const doc = readFileSync(new URL("../../../docs/specs/failure-modes.md", import.meta.url), "utf8");
   const rows = [...doc.matchAll(/^\| ([RF]\d+) \|.*\| (.*) \|$/gm)].map(([, id, tests]) => [id, [...tests.matchAll(/`([a-z0-9_]+)`/g)].map((m) => m[1])]);

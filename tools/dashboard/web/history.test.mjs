@@ -235,6 +235,7 @@ await test("the verdicts are the live ones: PASS for the passing runs, FAIL with
     const r = byT0.get(run.t0);
     assert.equal(r.pass, run.pass, `${run.name}: ${r.detail}`);
     assert.equal(r.detail, run.detail, run.name);
+    assert.deepEqual([r.incomplete, r.open], [false, false], `${run.name}: the whole history holds it`);
   }
 });
 
@@ -280,6 +281,74 @@ await test("a run that stopped where another script's commands end is checked ag
     assert.match(r.name, /^run \d\d:\d\d:\d\d$/, `${run.name} stopped early is not ${r.name}`);
     assert.equal(r.pass, null);
   }
+});
+
+// ---- a history cut by a reload in the middle of a run ---------------------------------------------------
+
+/**
+ * The history as a reload `ms` after `run`'s t0 fetched it, whole up to then (`end`), and the batches recorded
+ * after it, as the live stream carries them: without their command.
+ */
+function cutAt(run, ms) {
+  const end = run.t0 + ms;
+  const cut = history.filter((e) => e.time <= end);
+  const after = history.filter((e) => e.time > end).map(({ command, ...batch }) => batch);
+  return { cut, after, end };
+}
+const rebuiltIn = ({ cut, end }, run) => S.runsFromHistory(cut, { end }).find((r) => r.t0 === run.t0);
+
+await test("a history cut while a run was still sending its commands never judges it: before the quotes, after them, after the accept", () => {
+  const happy = liveOf("happy_path");
+  for (const ms of [200, 1_000, 3_000]) {
+    const fetched = cutAt(happy, ms);
+    const { cut, after } = fetched;
+    const r = rebuiltIn(fetched, happy);
+    assert.equal(r.incomplete, true, `+${ms}`);
+    assert.equal(r.open, false, `+${ms}: nothing will finish it`);
+    assert.equal(r.pass, null, `+${ms}: ${r.detail}`);
+    // Its commands so far start several scripts (and are the whole of one, at +1 s and +3 s): no name.
+    assert.match(r.name, /^run \d\d:\d\d:\d\d$/, `+${ms}: ${r.name}`);
+    assert.match(r.log.at(-1), /^incomplete: /);
+    // The batches recorded after the reload do not judge it either.
+    const later = S.settleRun(r, [...cut, ...after], happy.t0 + 60_000);
+    assert.deepEqual([later.incomplete, later.pass], [true, null], `+${ms}, settled`);
+  }
+  // Commands that only one script starts with keep its name: multi_leg_happy after its three quotes, before the accept.
+  const multi = liveOf("multi_leg_happy");
+  const r = rebuiltIn(cutAt(multi, 1_000), multi);
+  assert.deepEqual([r.name, r.incomplete, r.pass], ["multi_leg_happy", true, null]);
+});
+
+await test("a history cut after a run's last command leaves it open; the batches recorded after the cut finish it with its true verdict", () => {
+  const happy = liveOf("happy_path");
+  for (const ms of [6_000, 7_100]) {
+    const fetched = cutAt(happy, ms);
+    const { cut, after } = fetched;
+    const r = rebuiltIn(fetched, happy);
+    // Its last entry alone does not say the history was whole until the reload: then it is not even open.
+    assert.equal(S.runsFromHistory(cut).find((x) => x.t0 === happy.t0).pass, null, `+${ms}, by its last entry`);
+    // The proposal at +5.2 s was its last command; the contract finalizes at +7.2 s.
+    assert.deepEqual([r.name, r.incomplete, r.open, r.pass], ["happy_path", true, true, null], `+${ms}: ${r.detail}`);
+    // Before the end of its window (its last wait, +7.3 s, and WAIT_GRACE_MS), it stays open.
+    const early = S.settleRun(r, [...cut, ...after.filter((b) => b.time <= happy.t0 + 7_500)], happy.t0 + 7_500);
+    assert.deepEqual([early.open, early.pass], [true, null], `+${ms}, at +7.5 s`);
+    const done = S.settleRun(r, [...cut, ...after], happy.t0 + 60_000);
+    assert.deepEqual([done.name, done.incomplete, done.open, done.pass], ["happy_path", false, false, true], `+${ms}: ${done.detail}`);
+    assert.deepEqual(done.own, happy.own, `+${ms}: own`);
+    assert.deepEqual(done.batches, happy.batches, `+${ms}: batches`);
+    assert.deepEqual(done.labels, happy.labels, `+${ms}: labels`);
+  }
+});
+
+await test("an open run that gets a command after the history (the live stream carries no action) stays incomplete", () => {
+  const happy = liveOf("happy_path");
+  const fetched = cutAt(happy, 6_000);
+  const { cut, after } = fetched;
+  const r = rebuiltIn(fetched, happy);
+  assert.equal(r.open, true);
+  const unread = { seq: history.at(-1).seq + 1, time: happy.t0 + 6_500, kind: "User", origin: { actor: happy.accounts.carol, nonce: 1 }, events: [], balances: [] };
+  const done = S.settleRun(r, [...cut, ...after, unread], happy.t0 + 60_000);
+  assert.deepEqual([done.incomplete, done.open, done.pass], [true, false, null], done.detail);
 });
 
 await test("a history with nothing but one deposit of a run gets the neutral label, no verdict, and that one batch", () => {

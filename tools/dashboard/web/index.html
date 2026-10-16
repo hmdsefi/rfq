@@ -481,6 +481,12 @@ const DEFAULT_GATEWAY = "ws://127.0.0.1:18080";
 const DEFAULT_HTTP = "http://127.0.0.1:18081";
 /** The history is the newest this many seqs at most, read in pages of this many entries (the API's cap). */
 const HISTORY_SEQS = 5000, HISTORY_PAGE = 1000;
+/** This page's load, by this machine's clock: the page that ran a run still going in the history was gone by then. */
+const LOADED_AT = Date.now();
+/** How far behind the engine a following read replica may be (and the clocks apart): the history is whole up to the load less this. */
+const HISTORY_LAG_MS = 500;
+/** How often the page tries to finish the history's open runs, and how far behind the engine's clock it judges them (batches on their way). */
+const SETTLE_EVERY_MS = 500, SETTLE_MARGIN_MS = 500;
 const PER_RUN = RfqRecorder.ACCOUNTS_PER_RUN;
 /** The node's genesis roles, shared by every run. */
 const GENESIS = { 1: "Operator", 2: "Arbiter", 3: "Treasury" };
@@ -534,6 +540,9 @@ const page = {
   errors: [URL_ERROR, HTTP_ERROR].filter(Boolean),
   historyT0: new Set(), // the runs (t0) the loaded history shows: their accounts are named like the page's own runs'
   historyRuns: [], // those runs rebuilt from it (RfqScenarios.runsFromHistory), by t0, in the epoch it was seeded into; never the page's own
+  historyEntries: [], // the history as the read API gave it: the entries carry their commands, the live batches do not
+  historyAsOf: null, // the seq the history was read up to (the trace's as_of_seq)
+  streamFrom: null, // the engine's last seq when this connection's stream started (its first status); null when not connected
   view: "admin", // or a VIEWS key
   viewConn: null,
   viewOff: null,
@@ -561,10 +570,19 @@ const rec = driver.recorder;
 gw.on("conn", (c) => {
   page.conn = c.up ? "connected" : "reconnecting";
   if (c.up) page.everUp = true;
+  if (!c.up) {
+    page.streamFrom = null;
+    giveUpOpenRuns("the connection dropped before the engine finished it, so batches may be missing");
+  }
   schedule();
 });
 gw.on("status", (f) => {
   if (f.last_seq != null) page.lastSeq = f.last_seq;
+  // The first status of a connection says where its stream starts: the history's open runs may now be finished.
+  if (page.streamFrom == null && f.last_seq != null) {
+    page.streamFrom = f.last_seq;
+    settleHistory();
+  }
   schedule();
 });
 gw.on("batch", (f) => {
@@ -625,10 +643,12 @@ async function loadHistory() {
     }
     let after = Math.max(0, last - HISTORY_SEQS);
     const entries = [];
+    let asOf = null;
     for (;;) {
       const body = await getJson(`/v1/trace?view=admin&after_seq=${after}&limit=${HISTORY_PAGE}`);
       if (!Array.isArray(body?.entries) || !body.entries.every(isEntry)) throw new HistoryError("unexpected response on /v1/trace");
       for (const e of body.entries) entries.push(e);
+      asOf = Number.isSafeInteger(body.as_of_seq) ? body.as_of_seq : null;
       const next = body.next_after_seq;
       if (next == null) break;
       // A page that does not move on would be asked for forever.
@@ -637,17 +657,59 @@ async function loadHistory() {
     }
     if (rec.epoch !== epoch) return;
     // The runs the history shows, by the scenarios' account ids: their accounts get their names, and the
-    // timeline's run list gets the runs, rebuilt as the driver records its own.
-    const runs = RfqScenarios.runsFromHistory(entries);
+    // timeline's run list gets the runs, rebuilt as the driver records its own. A following replica holds
+    // everything up to this page's load (less its lag): a run still going then was cut by the reload. Else
+    // only its last entry says how far the history goes.
+    const end = replica.state === "following" ? LOADED_AT + gw.offset - HISTORY_LAG_MS : undefined;
+    const runs = RfqScenarios.runsFromHistory(entries, { end });
     rec.seedHistory(entries);
     for (const t0 of RfqScenarios.runT0s(entries)) page.historyT0.add(t0);
     for (const run of runs) run.epoch = epoch;
     page.historyRuns = runs;
+    page.historyEntries = entries;
+    page.historyAsOf = asOf;
     if (replica.state !== "following") addError(`History may be incomplete: the read replica is ${replica.state.replace(/_/g, " ")}.`);
+    settleHistory();
     schedule();
   } catch (e) {
     addError(`History not loaded (${e instanceof HistoryError ? e.message : e?.message ?? e}): showing what happens from now on.`);
   }
+}
+
+let settleTimer = null;
+
+/**
+ * Finishes the history's open runs (their windows went on past the history) from the batches recorded since,
+ * the live ones included, as of the engine's clock less SETTLE_MARGIN_MS: each open run is rebuilt alone,
+ * never every run. Only when the live stream holds every batch after the history: it started at or below the
+ * history's top seq and has not dropped since; else the open runs keep no verdict. Tries again every
+ * SETTLE_EVERY_MS while a run is open.
+ */
+function settleHistory() {
+  clearTimeout(settleTimer);
+  settleTimer = null;
+  const open = historyRunsNow().filter((r) => r.open);
+  if (!open.length || page.streamFrom == null) return; // not connected yet: its first status comes back here
+  if (page.historyAsOf == null || page.streamFrom > page.historyAsOf) {
+    return giveUpOpenRuns("the live stream started after the history ended, so batches may be missing");
+  }
+  const end = gw.engineNow() - SETTLE_MARGIN_MS;
+  // The history's own entries carry their commands; the batches after it are the live ones.
+  const read = new Set(page.historyEntries.map((e) => e.seq));
+  const batches = [...page.historyEntries, ...rec.batchList().filter((b) => !read.has(b.seq))];
+  page.historyRuns = page.historyRuns.map((r) => (open.includes(r) ? { ...RfqScenarios.settleRun(r, batches, end), epoch: r.epoch } : r));
+  schedule();
+  if (historyRunsNow().some((r) => r.open)) settleTimer = setTimeout(settleHistory, SETTLE_EVERY_MS);
+}
+
+/** The history's open runs keep no verdict, for `why` (batches may be missing). */
+function giveUpOpenRuns(why) {
+  if (!page.historyRuns.some((r) => r.open)) return;
+  clearTimeout(settleTimer);
+  settleTimer = null;
+  const detail = `${why}: it has no verdict`;
+  page.historyRuns = page.historyRuns.map((r) => (r.open ? { ...r, open: false, until: null, detail, log: [r.log[0], `incomplete: ${detail}`] } : r));
+  schedule();
 }
 
 /** Switches what the panels show: the driver's own (admin) recording, or a second connection's. */
@@ -888,10 +950,10 @@ const isAdmin = () => page.view === "admin";
 const verdictOf = (run) => (!run.done ? "running" : run.stopped ? "STOPPED" : run.pass == null ? null : run.pass ? "PASS" : "FAIL");
 /** `r12 · …6789` for the page's own run, `history · …6789` for one the history brought back. */
 const runTag = (run) => `${run.history ? "history" : run.id} · …${String(run.t0).slice(-4)}`;
-/** A run as the timeline's run list names it: its tag, its scenario and its verdict. */
+/** A run as the timeline's run list names it: its tag, its scenario and its verdict, or that it has none yet. */
 const runLabel = (run) => {
   const v = verdictOf(run);
-  return `${runTag(run)} ${run.name}${v ? ` · ${v}` : ""}`;
+  return `${runTag(run)} ${run.name}${v ? ` · ${v}` : run.incomplete ? " · incomplete" : ""}`;
 };
 
 /** An id that selects its object for the inspector and D1. `where` keeps the focus key unique. */
@@ -1081,9 +1143,10 @@ function renderScenario() {
   const s = RfqScenarios.byName(name);
   // A history run that no scenario's script matches: no expected events, so no verdict.
   if (!s && run) {
+    const why = run.incomplete ? `Incomplete: ${esc(run.detail)}.` : "From the history: its commands are not one scenario's script (a run cut short, or one no script sent), so it has no expected events and no verdict.";
     return setHtml(el, `<div>
-        <div class="scenario-title"><h2>${esc(run.name)}</h2><span class="muted" style="font-size:13px">${esc(runTag(run))}</span></div>
-        <p>From the history: its commands are not one scenario's script (a run cut short, or one no script sent), so it has no expected events and no verdict.</p>
+        <div class="scenario-title"><h2>${esc(run.name)}</h2><span class="muted" style="font-size:13px">${esc(runTag(run))}</span>${run.incomplete ? badge("Incomplete", "b-warn") : ""}</div>
+        <p>${why}</p>
       </div>`);
   }
   if (!s) return setHtml(el, '<p class="muted">Pick a scenario.</p>');
@@ -1092,7 +1155,7 @@ function renderScenario() {
     `<h2>${esc(s.name)}</h2>`,
     badge(s.kind === "attack" ? "Attack" : "Brief scenario", "b-live"),
     run ? `<span class="muted" style="font-size:13px">${esc(runTag(run))}</span>` : "",
-    v === "running" ? badge("Running", "b-live") : v ? badge(v) : "",
+    v === "running" ? badge("Running", "b-live") : v ? badge(v) : run?.incomplete ? badge("Incomplete", "b-warn") : "",
   ].join("");
   let progress;
   if (!run) progress = "<div>Not run yet</div><div>Press <strong>Run</strong>: the page acts as every participant through the gateway.</div>";
