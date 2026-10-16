@@ -221,9 +221,9 @@ const RfqRecorder = (() => {
    * **History.** `seedHistory(entries)` adds batches the page missed (the read API's trace, DESIGN §11) to
    * the current epoch, before its live batches. They are marked `history: true` and carry the `command`
    * that made them; they are not frames, and they never become the newest batch, so the merging and
-   * epoch rules of the live frames are the ones above, with one addition: a live frame that is a history
-   * batch again (same seq, time and kind) is ignored, and one with a history seq but another time or kind
-   * is a new journal's, so it starts a new epoch.
+   * epoch rules of the live frames are the ones above, with two additions: a live frame that is a history
+   * batch again (same seq, time and kind) is ignored; and before the epoch's first live batch, any other
+   * frame at or below the history's top seq is a new journal's, so it starts a new epoch.
    */
   function createRecorder() {
     const rec = {
@@ -290,16 +290,18 @@ const RfqRecorder = (() => {
       // published); the same seq with another time or kind is another journal's batch.
       const known = rec.batches.get(frame.seq);
       if (known?.history && known.time === frame.time && known.kind === frame.kind) return null;
-      if (newest && frame.seq === newest.seq && newest.epoch === rec.epoch) {
-        newest.events.push(...frame.events);
-        newest.balances = frame.balances ?? [];
-        newest.chunks++;
-        newest.lastN = n;
-        newest.lastAt = at;
-        return newest;
+      const live = newest?.epoch === rec.epoch ? newest : null; // the current epoch's newest live batch
+      if (live && frame.seq === live.seq) {
+        live.events.push(...frame.events);
+        live.balances = frame.balances ?? [];
+        live.chunks++;
+        live.lastN = n;
+        live.lastAt = at;
+        return live;
       }
-      // A seq that goes back is a new journal; so is a seq the history has, but not this batch of it.
-      if ((newest && frame.seq < newest.seq) || known?.history) {
+      // A seq that goes back is a new journal: back from the newest live batch or, before the epoch's first
+      // live batch, to the history's top or below (the history batch itself was ignored above).
+      if (live ? frame.seq < live.seq : frame.seq <= historyTop()) {
         rec.epoch++;
         rec.batches = new Map();
         rec.order = [];
@@ -324,6 +326,13 @@ const RfqRecorder = (() => {
       all.push(merged);
       newest = merged;
       return merged;
+    }
+
+    /** The highest history seq of the current epoch (`-Infinity` without history). */
+    function historyTop() {
+      let top = -Infinity;
+      for (const seq of rec.order) if (rec.batches.get(seq).history && seq > top) top = seq;
+      return top;
     }
 
     /**

@@ -877,5 +877,29 @@ await test("a batch that arrives while the history loads stays; history fills on
   }
 });
 
+await test("a reset while the history loads (a new epoch) seeds none of it: that history is the old journal's", async () => {
+  const api = fakeReadApi(HISTORY);
+  let release;
+  const gate = new Promise((resolve) => (release = resolve));
+  const page = loadPage({ fetch: async (url) => (await gate, api.fetch(url)) });
+  const { run, val, server, document } = page;
+  try {
+    await connected(page);
+    const live = (seq, time) => server.sockets[0].onmessage({ data: JSON.stringify({ type: "batch", seq, time, kind: "Tick", origin: null, events: [hPub({ RequestExpired: { request: seq } })], balances: [] }) });
+    live(8, 5_008); // the old journal, while the history loads
+    live(3, 9_003); // `docker compose down -v`: the new journal's seq 3 goes back, a new epoch
+    assert.equal(run("rec.epoch"), 1);
+    release();
+    await run("historyLoaded");
+    // The history (2..6, the old journal's) would have put its seq 2 below the new epoch's first batch.
+    assert.deepEqual(val("rec.allBatches().map((b) => [b.epoch, b.seq, b.history === true])"), [[0, 8, false], [1, 3, false]]);
+    assert.equal(run("page.historyT0.size"), 0, "no run of the old history is named either");
+    run("render()");
+    assert.equal(document.getElementById("banners").innerHTML, "", "nothing failed: there is just no history to show");
+  } finally {
+    teardown(page);
+  }
+});
+
 console.log(failed ? `${failed} FAILED` : "all page tests passed");
 process.exit(failed ? 1 : 0);

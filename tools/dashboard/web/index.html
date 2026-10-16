@@ -597,9 +597,11 @@ async function getJson(path) {
  * Loads the history a reload would lose (read-api.md §8), once, alongside the live stream (which it never
  * waits for): the admin trace from the newest `HISTORY_SEQS` seqs of the replica, page by page, seeded into
  * the recorder as history. The live batches that arrived meanwhile stay where they are (`seedHistory`).
- * Any failure leaves no history, a banner, and the page as it is without one. Never rejects.
+ * A reset seen during the fetches (the recorder's epoch moved on) makes it the old journal's history: none
+ * of it is seeded. Any failure leaves no history, a banner, and the page as it is without one. Never rejects.
  */
 async function loadHistory() {
+  const epoch = rec.epoch;
   try {
     const last = (await getJson("/v1/status"))?.replica?.last_seq;
     if (!Number.isSafeInteger(last) || last < 0) throw new HistoryError("unexpected response on /v1/status");
@@ -617,6 +619,7 @@ async function loadHistory() {
       if (!Number.isSafeInteger(next) || next <= after) throw new HistoryError("unexpected response on /v1/trace");
       after = next;
     }
+    if (rec.epoch !== epoch) return;
     rec.seedHistory(entries);
     // The runs the history shows, by the scenarios' account ids, so their accounts get their names.
     for (const e of entries) {

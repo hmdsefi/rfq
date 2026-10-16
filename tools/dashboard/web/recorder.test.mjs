@@ -255,6 +255,47 @@ test("another kind alone is another batch too, and the new journal's first batch
   assert.deepEqual([genesis.epoch, genesis.order], [1, [1]]);
 });
 
+// The history is the newest seqs of a long journal (the window starts at 5,001), and the stack is reset before
+// any live batch reaches the page: the new journal's seqs start far below the history's, at none of its seqs.
+const longHistory = () => {
+  const rec = R.createRecorder();
+  rec.seedHistory([5_001, 5_002, 5_003].map((s) => entry(s, [dep(10, s)])));
+  return rec;
+};
+
+test("before the first live batch, a seq at or below the history's top that is not that history batch starts a new epoch", () => {
+  const rec = longHistory();
+  const fresh = rec.onFrame(batch(2, [dep(99, 2)], { time: 9_002 }));
+  assert.equal(rec.epoch, 1);
+  assert.deepEqual([fresh.epoch, fresh.seq, fresh.history], [1, 2, undefined]);
+  assert.deepEqual(rec.order, [2], "the new epoch holds only the new journal's batch");
+  assert.deepEqual(rec.allBatches().map((b) => [b.epoch, b.seq, b.history === true]), [[0, 5_001, true], [0, 5_002, true], [0, 5_003, true], [1, 2, false]]);
+  // The new journal goes on in its own epoch.
+  rec.onFrame(batch(3, [dep(99, 3)], { time: 9_003 }));
+  assert.deepEqual([rec.epoch, rec.order], [1, [2, 3]]);
+  // The history's top itself, as another batch, is a new journal's too.
+  const top = longHistory();
+  top.onFrame(batch(5_003, [dep(99, 3)], { time: 9_003 }));
+  assert.deepEqual([top.epoch, top.order], [1, [5_003]]);
+});
+
+test("before the first live batch, an identical copy of the history's top is still ignored, and a seq above the top is appended", () => {
+  const same = longHistory();
+  assert.equal(same.onFrame(batch(5_003, [dep(10, 5_003)])), null);
+  assert.equal(same.epoch, 0);
+  const next = same.onFrame(batch(5_004, [dep(10, 5_004)]));
+  assert.deepEqual([same.epoch, next.epoch, next.history], [0, 0, undefined]);
+  assert.deepEqual(same.order, [5_001, 5_002, 5_003, 5_004]);
+  // Above the top with no copy first: the same epoch, after the history.
+  const above = longHistory();
+  above.onFrame(batch(5_004, [dep(10, 5_004)]));
+  assert.deepEqual([above.epoch, above.order], [0, [5_001, 5_002, 5_003, 5_004]]);
+  // With no history at all, the first live batch is just that.
+  const empty = R.createRecorder();
+  empty.onFrame(batch(2, [dep(10, 2)]));
+  assert.deepEqual([empty.epoch, empty.order], [0, [2]]);
+});
+
 test("history never sets the newest batch: a live chunk after seeding merges with its live batch; a seq going back is still a new epoch", () => {
   const rec = R.createRecorder();
   rec.seedHistory([entry(1, [dep(10, 1)]), entry(2, [dep(10, 2)])]);
