@@ -292,8 +292,12 @@ function fakeGateway() {
         if (this.closed) return;
         if (msg.type === "hello") {
           this.view = msg.view;
-          deliver(this, { type: "welcome", view: msg.view, engine: "up", now: Date.now() });
-          deliver(this, { type: "status", engine: "up", last_seq: server.seq });
+          // The engine's clock is `skewMs` off the page's; the welcome may come `welcomeDelayMs` late.
+          setTimeout(() => {
+            if (this.closed) return;
+            deliver(this, { type: "welcome", view: msg.view, engine: "up", now: Date.now() + (server.skewMs ?? 0) });
+            deliver(this, { type: "status", engine: "up", last_seq: server.seq });
+          }, server.welcomeDelayMs ?? 0);
         } else if (msg.type === "command") answer(msg, this);
       }, 0);
     }
@@ -310,16 +314,17 @@ function fakeGateway() {
 /**
  * The read API as the page sees it (`GET /v1/status`, `GET /v1/trace`) over `entries`, in the gateway's shape.
  * A page holds at most `max` entries (the gateway's cap is 1,000, whatever `limit` asks), and `next_after_seq`
- * is the last seq when more remain; `state` is the replica's. `calls` lists the URLs asked, in order.
+ * is the last seq when more remain; `state` is the replica's, and `engineLastSeq` the engine's (a replica behind
+ * it has less). `calls` lists the URLs asked, in order.
  */
-function fakeReadApi(entries = [], { lastSeq = entries.at(-1)?.seq ?? 0, max = 1000, state = "following" } = {}) {
+function fakeReadApi(entries = [], { lastSeq = entries.at(-1)?.seq ?? 0, max = 1000, state = "following", engineLastSeq = lastSeq } = {}) {
   const calls = [];
   const reply = (status, body) => ({ ok: status === 200, status, json: async () => body });
   const fetch = async (url) => {
     calls.push(String(url));
     const u = new URL(url);
     if (u.pathname === "/v1/status") {
-      return reply(200, { engine: "up", engine_last_seq: lastSeq, replica: { state, last_seq: lastSeq, state_hash: "00" } });
+      return reply(200, { engine: "up", engine_last_seq: engineLastSeq, replica: { state, last_seq: lastSeq, state_hash: "00" } });
     }
     if (u.pathname === "/v1/trace" && u.searchParams.get("view") === "admin") {
       const after = Number(u.searchParams.get("after_seq") ?? 0);
@@ -1159,6 +1164,10 @@ await test("a rebuild of the runs that fails leaves the history seeded, with a b
     assert.ok(!banners.includes("History not loaded"), banners);
     assert.match(document.getElementById("banners").innerHTML, /data-action="dismiss-error"/, "dismissible");
     assert.ok(text(document, "ledger-table").includes("$1,000.00"), "the history's balances are shown");
+    // The runs' accounts keep their names: the t0s come before the rebuild.
+    assert.deepEqual(val("[...page.historyT0].sort()"), [RUN_A, RUN_B]);
+    run('ui.sel = "all"; render()');
+    assert.ok(text(document, "user-lane").includes(`Alice (run …${tail(RUN_B)})`), text(document, "user-lane"));
   } finally {
     teardown(page);
   }
@@ -1267,6 +1276,62 @@ await test("a stream that starts after the history's top seq may have missed bat
     await page.run("historyLoaded");
     page.run("render()");
     assert.deepEqual(page.val("[V.run.id, V.run.open, V.run.incomplete, V.run.pass]"), [`h${t0}`, false, true, null]);
+  } finally {
+    teardown(page);
+  }
+});
+
+/**
+ * A page whose engine clock is `skewMs` off its own, whose welcome comes `welcomeDelayMs` late, and whose history
+ * (`entries`, through a read API with `api` options) is there at once: before the clock is measured.
+ */
+async function reloadedEarly(entries, { skewMs = 0, welcomeDelayMs = 0, api = {} } = {}) {
+  const page = loadPage({ fetch: fakeReadApi(entries, api).fetch });
+  page.server.skewMs = skewMs;
+  page.server.welcomeDelayMs = welcomeDelayMs;
+  page.server.seq = entries.at(-1).seq;
+  await page.run("historyLoaded");
+  page.run("render()");
+  return page;
+}
+
+await test("a history that comes before the page's clock is measured waits for it: an engine clock 10 s behind does not judge a run still going", async () => {
+  // The engine is 10 s behind the page; its run sent its setup and request, and MM2's quote was due at +300 ms.
+  const t0 = Date.now() - 10_000 - 200;
+  const { entries } = overLimitRun(t0, 17, 13, { quote: false });
+  const page = await reloadedEarly([...TWO_RUNS, ...entries], { skewMs: -10_000, welcomeDelayMs: 300 });
+  try {
+    // Measured to within half the round trip, which the late welcome makes 300 ms.
+    assert.ok(Math.abs(page.val("gw.offset") + 10_000) < 200, `the clock was measured first: offset ${page.val("gw.offset")}`);
+    assert.deepEqual(page.val("[V.run.id, V.run.incomplete, V.run.pass]"), [`h${t0}`, true, null], page.val("V.run.name"));
+    assert.match(page.val("V.run.name"), /^run /);
+  } finally {
+    teardown(page);
+  }
+});
+
+await test("a clock still not measured after CLOCK_WAIT_MS: the history's last entry is its end, so a run still going is not judged", async () => {
+  const t0 = Date.now() - 10_000 - 200;
+  const { entries } = overLimitRun(t0, 17, 13, { quote: false });
+  const page = await reloadedEarly([...TWO_RUNS, ...entries], { skewMs: -10_000, welcomeDelayMs: 4_000 });
+  try {
+    assert.equal(page.val("gw.offset"), 0, "not measured yet");
+    assert.deepEqual(page.val("[V.run.id, V.run.incomplete, V.run.pass]"), [`h${t0}`, true, null], page.val("V.run.name"));
+  } finally {
+    teardown(page);
+  }
+});
+
+await test("a following replica behind the engine (the trace's as_of_seq below the engine's last seq): the history's last entry is its end", async () => {
+  // The run began 6.5 s before the reload; the replica has its setup and request, not what came after.
+  const t0 = Date.now() - 6_500;
+  const { entries } = overLimitRun(t0, 17, 13, { quote: false });
+  const all = [...TWO_RUNS, ...entries];
+  const page = await reloadedEarly(all, { api: { engineLastSeq: all.at(-1).seq + 6 } });
+  try {
+    assert.deepEqual(page.val("[V.run.id, V.run.incomplete, V.run.pass]"), [`h${t0}`, true, null], `${page.val("V.run.name")}: ${page.val("V.run.detail")}`);
+    // Not vacuous: caught up, the same history judges its runs by the page's load.
+    assert.match(optionOf(page.document, `h${RUN_B}`), /no_quotes_expire · PASS$/);
   } finally {
     teardown(page);
   }

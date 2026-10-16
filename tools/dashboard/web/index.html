@@ -485,6 +485,8 @@ const HISTORY_SEQS = 5000, HISTORY_PAGE = 1000;
 const LOADED_AT = Date.now();
 /** How far behind the engine a following read replica may be (and the clocks apart): the history is whole up to the load less this. */
 const HISTORY_LAG_MS = 500;
+/** How long the history's runs wait for this page's clock to be measured against the engine's before they make do without. */
+const CLOCK_WAIT_MS = 2000;
 /** How often the page tries to finish the history's open runs, and how far behind the engine's clock it judges them (batches on their way). */
 const SETTLE_EVERY_MS = 500, SETTLE_MARGIN_MS = 500;
 const PER_RUN = RfqRecorder.ACCOUNTS_PER_RUN;
@@ -636,7 +638,8 @@ const isCommand = (c) =>
 async function loadHistory() {
   const epoch = rec.epoch;
   try {
-    const replica = (await getJson("/v1/status"))?.replica;
+    const status = await getJson("/v1/status");
+    const replica = status?.replica;
     const last = replica?.last_seq;
     if (!Number.isSafeInteger(last) || last < 0 || typeof replica.state !== "string") {
       throw new HistoryError("unexpected response on /v1/status");
@@ -658,25 +661,38 @@ async function loadHistory() {
     if (rec.epoch !== epoch) return;
     rec.seedHistory(entries);
     if (replica.state !== "following") addError(`History may be incomplete: the read replica is ${replica.state.replace(/_/g, " ")}.`);
-    loadHistoryRuns(entries, replica, asOf, epoch);
+    schedule();
+    // Whole up to the page's load: the replica follows, and by the trace's last page it held everything the
+    // engine had published at the status, which came after the load. A replica behind the engine is not.
+    const engineLast = status.engine_last_seq;
+    const whole = replica.state === "following" && Number.isSafeInteger(engineLast) && asOf != null && asOf >= engineLast;
+    await loadHistoryRuns(entries, { whole, asOf, epoch });
     schedule();
   } catch (e) {
     addError(`History not loaded (${e instanceof HistoryError ? e.message : e?.message ?? e}): showing what happens from now on.`);
   }
 }
 
+/** Whether this page's clock has been measured against the engine's (the client's first `ready`), waiting `ms` at most. */
+function clockMeasured(ms) {
+  let timer;
+  const late = new Promise((resolve) => (timer = setTimeout(() => resolve(false), ms)));
+  return Promise.race([gw.ready.then(() => true, () => false), late]).finally(() => clearTimeout(timer));
+}
+
 /**
  * The runs the seeded history shows, by the scenarios' account ids: their accounts get their names, and the
  * timeline's run list gets the runs, rebuilt as the driver records its own (`epoch`: the one they were seeded
- * into). A following replica holds everything up to this page's load, less its lag: a run still going then
- * was cut by the reload. Otherwise only the history's last entry says how far it goes. A rebuild that fails
- * leaves the history as it is, with a banner: only the runs are missing.
+ * into). A history `whole` up to this page's load (less HISTORY_LAG_MS) says that a run still going then was
+ * cut by the reload; the load is in the engine's time once the clocks are measured, which the runs wait for,
+ * CLOCK_WAIT_MS at most. Otherwise only the history's last entry says how far it goes. The accounts are named
+ * first: a rebuild that fails leaves them and the history as they are, with a banner that only the runs are missing.
  */
-function loadHistoryRuns(entries, replica, asOf, epoch) {
+async function loadHistoryRuns(entries, { whole, asOf, epoch }) {
   try {
-    const end = replica.state === "following" ? LOADED_AT + gw.offset - HISTORY_LAG_MS : undefined;
-    const runs = RfqScenarios.runsFromHistory(entries, { end });
     for (const t0 of RfqScenarios.runT0s(entries)) page.historyT0.add(t0);
+    const end = whole && (await clockMeasured(CLOCK_WAIT_MS)) ? LOADED_AT + gw.offset - HISTORY_LAG_MS : undefined;
+    const runs = RfqScenarios.runsFromHistory(entries, { end });
     for (const run of runs) run.epoch = epoch;
     page.historyRuns = runs;
     page.historyEntries = entries;
