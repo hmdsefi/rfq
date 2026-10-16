@@ -976,6 +976,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rfq-read"
+version = "0.1.0"
+dependencies = [
+ "rfq-app",
+ "rfq-domain",
+ "rfq-infra",
+ "rfq-testkit",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "rfq-testkit"
 version = "0.1.0"
 dependencies = [

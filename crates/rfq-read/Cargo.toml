@@ -1,0 +1,19 @@
+[package]
+name = "rfq-read"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+rfq-app = { path = "../rfq-app" }
+rfq-domain = { path = "../rfq-domain" }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# The scenarios, driven through a real `Node` over the in-memory adapters (no features: no Aeron).
+rfq-testkit = { path = "../rfq-testkit" }
+rfq-infra = { path = "../rfq-infra" }
+serde_json = { workspace = true }
