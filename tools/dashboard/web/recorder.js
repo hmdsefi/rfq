@@ -217,6 +217,11 @@ const RfqRecorder = (() => {
    * new journal (`docker compose down -v`): it starts a new epoch instead of being merged into an
    * unrelated old batch. `batches`, `order` and `batchList()` are the current epoch's (results and
    * origins name the current engine's seqs); `allBatches()` keeps every epoch.
+   *
+   * **History.** `seedHistory(entries)` adds batches the page missed (the read API's trace, DESIGN §11) to
+   * the current epoch, before its live batches. They are marked `history: true` and carry the `command`
+   * that made them; they are not frames, and they never become the newest batch, so the merging and
+   * epoch rules of the live frames are the ones above.
    */
   function createRecorder() {
     const rec = {
@@ -240,6 +245,7 @@ const RfqRecorder = (() => {
       batchList: () => rec.order.map((seq) => rec.batches.get(seq)),
       /** Every merged batch of every epoch, in arrival order (each carries its `epoch`). */
       allBatches: () => all.slice(),
+      seedHistory,
       clear,
     };
     const all = [];
@@ -277,6 +283,10 @@ const RfqRecorder = (() => {
      * Only the newest batch can take a chunk: an older seq seen again is a new epoch.
      */
     function mergeBatch(frame, n, at, t) {
+      // A batch the history already has: the stream delivered what the fetch had too. Only before the first
+      // live batch of the epoch: after it, a seq below the newest is a new journal, as ever (a history
+      // seq is always below the first live one).
+      if (!newest && rec.batches.get(frame.seq)?.history) return null;
       if (newest && frame.seq === newest.seq && newest.epoch === rec.epoch) {
         newest.events.push(...frame.events);
         newest.balances = frame.balances ?? [];
@@ -310,6 +320,52 @@ const RfqRecorder = (() => {
       all.push(merged);
       newest = merged;
       return merged;
+    }
+
+    /**
+     * Adds history batches (`entries`: trace entries of the read API, ascending by seq) to the current
+     * epoch: only seqs below the epoch's first live batch that are not there yet. They come first in
+     * `order` and `allBatches()` (after the batches of older epochs), ascending by seq, each marked
+     * `history: true` and carrying its `command` (`{ actor, nonce, action }` or null). Returns how many
+     * were added.
+     */
+    function seedHistory(entries) {
+      const current = rec.order.map((seq) => rec.batches.get(seq));
+      const firstLive = current.find((b) => !b.history)?.seq;
+      const added = [];
+      const seen = new Set();
+      for (const e of entries) {
+        if (rec.batches.has(e.seq) || seen.has(e.seq) || (firstLive !== undefined && e.seq >= firstLive)) continue;
+        seen.add(e.seq);
+        const b = {
+          seq: e.seq,
+          epoch: rec.epoch,
+          time: e.time,
+          kind: e.kind,
+          origin: e.origin ?? null,
+          events: [...e.events],
+          balances: e.balances ?? [],
+          chunks: 1,
+          // Not received here: there is no frame, and no receive time.
+          firstN: null,
+          lastN: null,
+          firstAt: null,
+          lastAt: null,
+          firstT: null,
+          history: true,
+          command: e.command ?? null,
+        };
+        added.push(b);
+      }
+      if (!added.length) return 0;
+      for (const b of added) rec.batches.set(b.seq, b);
+      const seeded = [...current.filter((b) => b.history), ...added].sort((a, b) => a.seq - b.seq);
+      const live = current.filter((b) => !b.history);
+      const older = all.filter((b) => b.epoch !== rec.epoch);
+      rec.order = [...seeded, ...live].map((b) => b.seq);
+      all.length = 0;
+      for (const b of [...older, ...seeded, ...live]) all.push(b);
+      return added.length;
     }
 
     function attach(gateway) {

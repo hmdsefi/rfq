@@ -477,6 +477,10 @@ a.idlink, button.idlink { color: var(--accent); text-decoration: underline; text
 // a delta is a display diff of two of them) and never fires a timer (the engine does).
 
 const DEFAULT_GATEWAY = "ws://127.0.0.1:18080";
+/** The gateway's HTTP port (the read API): the page loads the history it missed from it (DESIGN §11.2). */
+const DEFAULT_HTTP = "http://127.0.0.1:18081";
+/** The history is the newest this many seqs at most, read in pages of this many entries (the API's cap). */
+const HISTORY_SEQS = 5000, HISTORY_PAGE = 1000;
 const PER_RUN = RfqRecorder.ACCOUNTS_PER_RUN;
 /** The node's genesis roles, shared by every run. */
 const GENESIS = { 1: "Operator", 2: "Arbiter", 3: "Treasury" };
@@ -503,6 +507,15 @@ function gatewayUrl() {
 }
 const { url: GATEWAY, error: URL_ERROR } = gatewayUrl();
 
+/** The read API's base URL: `?http=` when it is an http(s):// URL (a bad one is ignored, with a banner, as `?gateway=` is). */
+function httpUrl() {
+  const q = new URLSearchParams(location.search).get("http");
+  if (q == null) return { url: DEFAULT_HTTP };
+  if (!/^https?:\/\/[^\s/]\S*$/i.test(q)) return { url: DEFAULT_HTTP, error: `Ignored ?http=${q}: it must be an http:// or https:// URL. Using ${DEFAULT_HTTP}.` };
+  return { url: q.replace(/\/+$/, "") };
+}
+const { url: HTTP_BASE, error: HTTP_ERROR } = httpUrl();
+
 // ---- The connection, the driver, the views --------------------------------------------------------
 
 const gw = RfqGateway.connect(GATEWAY);
@@ -516,7 +529,8 @@ const page = {
   runsByT0: new Map(),
   set: null, // the run set in progress: { label, kind, total, k, started, runs, stopping, hidden }
   lastSet: null,
-  errors: URL_ERROR ? [URL_ERROR] : [],
+  errors: [URL_ERROR, HTTP_ERROR].filter(Boolean),
+  historyT0: new Set(), // the runs (t0) the loaded history shows: their accounts are named like the page's own runs'
   view: "admin", // or a VIEWS key
   viewConn: null,
   viewOff: null,
@@ -556,6 +570,65 @@ gw.on("batch", (f) => {
   schedule();
 });
 gw.on("welcome", () => schedule());
+
+// ---- History: what the page missed, from the read API --------------------------------------------
+
+/** A history request that went wrong: its message is the reason the banner gives. */
+class HistoryError extends Error {}
+
+/** `GET HTTP_BASE + path` as JSON. A network failure, a status other than 200 and a body that is not JSON are each a `HistoryError`. */
+async function getJson(path) {
+  const what = path.split("?")[0];
+  let res;
+  try {
+    res = await fetch(HTTP_BASE + path, { cache: "no-store" });
+  } catch {
+    throw new HistoryError(`could not reach ${HTTP_BASE}`);
+  }
+  if (res.status !== 200) throw new HistoryError(`HTTP ${res.status} on ${what}`);
+  try {
+    return await res.json();
+  } catch {
+    throw new HistoryError(`bad JSON on ${what}`);
+  }
+}
+
+/**
+ * Loads the history a reload would lose (read-api.md §8), once, alongside the live stream (which it never
+ * waits for): the admin trace from the newest `HISTORY_SEQS` seqs of the replica, page by page, seeded into
+ * the recorder as history. The live batches that arrived meanwhile stay where they are (`seedHistory`).
+ * Any failure leaves no history, a banner, and the page as it is without one. Never rejects.
+ */
+async function loadHistory() {
+  try {
+    const last = (await getJson("/v1/status"))?.replica?.last_seq;
+    if (!Number.isSafeInteger(last) || last < 0) throw new HistoryError("unexpected response on /v1/status");
+    let after = Math.max(0, last - HISTORY_SEQS);
+    const entries = [];
+    for (;;) {
+      const body = await getJson(`/v1/trace?view=admin&after_seq=${after}&limit=${HISTORY_PAGE}`);
+      if (!Array.isArray(body?.entries) || !body.entries.every((e) => Number.isSafeInteger(e?.seq) && Array.isArray(e.events))) {
+        throw new HistoryError("unexpected response on /v1/trace");
+      }
+      for (const e of body.entries) entries.push(e);
+      const next = body.next_after_seq;
+      if (next == null) break;
+      // A page that does not move on would be asked for forever.
+      if (!Number.isSafeInteger(next) || next <= after) throw new HistoryError("unexpected response on /v1/trace");
+      after = next;
+    }
+    rec.seedHistory(entries);
+    // The runs the history shows, by the scenarios' account ids, so their accounts get their names.
+    for (const e of entries) {
+      for (const id of [e.origin?.actor, ...(e.balances ?? []).map((b) => b.account)]) {
+        if (id >= PER_RUN && SCENARIO_ACCOUNT[id % PER_RUN]) page.historyT0.add(Math.floor(id / PER_RUN));
+      }
+    }
+    schedule();
+  } catch (e) {
+    addError(`History not loaded (${e instanceof HistoryError ? e.message : e?.message ?? e}): showing what happens from now on.`);
+  }
+}
 
 /** Switches what the panels show: the driver's own (admin) recording, or a second connection's. */
 function setView(key) {
@@ -607,17 +680,20 @@ function closeViewConn() {
   page.viewRun = null;
 }
 
+/** Whether the admin view knows run `t0`: the driver ran it, or the loaded history shows it. */
+const knownRun = (t0) => page.runsByT0.has(t0) || page.historyT0.has(t0);
+
 /**
  * Display names: the run-scoped account ids with their scenario names. An account view names only the
  * accounts this page said hello as for that view (what the participant knows of itself); the admin
- * view names the accounts of the driver's runs.
+ * view names the accounts of the driver's runs and of the runs in the history it loaded.
  */
 function accountInfo(id) {
   if (GENESIS[id]) return { name: GENESIS[id], role: "system" };
   const who = SCENARIO_ACCOUNT[id % PER_RUN];
   if (!who) return undefined;
   const t0 = Math.floor(id / PER_RUN);
-  const known = page.view === "admin" ? page.runsByT0.has(t0) : page.viewAccounts.get(id) === page.view;
+  const known = page.view === "admin" ? knownRun(t0) : page.viewAccounts.get(id) === page.view;
   return known ? { name: `${who[0]} (run …${String(t0).slice(-4)})`, role: who[1] } : undefined;
 }
 const name = (id) => (id == null ? "?" : accountInfo(id)?.name ?? `#${id}`);
@@ -701,12 +777,12 @@ const legsOf = (r) => r.legs.flatMap((leg, i) => (leg ? [[leg, i]] : []));
 /**
  * The run a contract belongs to (its `t0`), to order contracts and to tell a multi-leg run's market from a
  * run's own contract: that is `t0` itself, and the markets are `t0 * 10 + k`. Display only: the page knows
- * the runs it started; a contract of no such run stands for itself.
+ * the runs it started and the ones its history shows; a contract of no such run stands for itself.
  */
 function contractRun(id) {
-  if (page.runsByT0.has(id)) return id;
+  if (knownRun(id)) return id;
   const t0 = Math.floor(id / 10);
-  return id % 10 !== 0 && page.runsByT0.has(t0) ? t0 : id;
+  return id % 10 !== 0 && knownRun(t0) ? t0 : id;
 }
 /** Contracts newest run first, then by id: a run's extra markets are `t0 * 10 + k`, so the brief's scenarios list them in id order. */
 const newerContract = (a, b) => contractRun(b.id) - contractRun(a.id) || a.id - b.id;
@@ -2332,6 +2408,8 @@ addEventListener("pagehide", (e) => {
 try { const t = localStorage.getItem("rfq-dashboard-theme"); if (t === "dark" || t === "light") root.dataset.theme = t; } catch { /* storage blocked */ }
 if (location.hash.includes("dark")) root.dataset.theme = "dark";
 render();
+// The connection is open already (above): the history is fetched next to it and never holds it up.
+const historyLoaded = loadHistory();
 </script>
 </body>
 </html>

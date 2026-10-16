@@ -307,7 +307,33 @@ function fakeGateway() {
 
 // ---- the page, loaded as the browser loads the built file ------------------------------------------
 
-function loadPage() {
+/**
+ * The read API as the page sees it (`GET /v1/status`, `GET /v1/trace`) over `entries`, in the gateway's shape.
+ * A page holds at most `max` entries (the gateway's cap is 1,000, whatever `limit` asks), and `next_after_seq`
+ * is the last seq when more remain. `calls` lists the URLs asked, in order.
+ */
+function fakeReadApi(entries = [], { lastSeq = entries.at(-1)?.seq ?? 0, max = 1000 } = {}) {
+  const calls = [];
+  const reply = (status, body) => ({ ok: status === 200, status, json: async () => body });
+  const fetch = async (url) => {
+    calls.push(String(url));
+    const u = new URL(url);
+    if (u.pathname === "/v1/status") {
+      return reply(200, { engine: "up", engine_last_seq: lastSeq, replica: { state: "following", last_seq: lastSeq, state_hash: "00" } });
+    }
+    if (u.pathname === "/v1/trace" && u.searchParams.get("view") === "admin") {
+      const after = Number(u.searchParams.get("after_seq") ?? 0);
+      const rest = entries.filter((e) => e.seq > after);
+      const page = rest.slice(0, Math.min(Number(u.searchParams.get("limit") ?? 500), max));
+      return reply(200, { as_of_seq: lastSeq, entries: page, next_after_seq: rest.length > page.length ? page.at(-1).seq : null });
+    }
+    return reply(404, { error: "not found" });
+  };
+  return { fetch, calls };
+}
+
+/** `fetch` is the page's `fetch` (default: a read API with no history), `search` its query string. */
+function loadPage({ fetch = fakeReadApi().fetch, search = "" } = {}) {
   const html = source("./index.html");
   const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
   const pageScript = scripts.find((s) => s.includes("const DEFAULT_GATEWAY"));
@@ -321,7 +347,8 @@ function loadPage() {
   const intervals = [];
   const ctx = vm.createContext({
     document,
-    location: { search: "", hash: "" },
+    location: { search, hash: "" },
+    fetch,
     WebSocket: server.Socket,
     URLSearchParams,
     performance,
@@ -612,6 +639,221 @@ await test("the multi-leg tab says Built, has a Run button per scenario (only fo
   } finally {
     stop();
     run("driver.dispose(); closeViewConn(); gw.close();");
+  }
+});
+
+// ---- history: the page loads what it missed from the read API ----------------------------------------------
+
+/** A run's history as the read API's admin trace holds it: setup, a listing, Alice's request and MM1's quote. */
+const H_T0 = 1_790_123_456_789;
+const H = { alice: H_T0 * 100 + 10, mm1: H_T0 * 100 + 20 };
+const hPub = (event) => ({ audience: "Public", event });
+const hTo = (account, event) => ({ audience: { Account: account }, event });
+const hBal = (account, free, reserved = 0, escrowed = 0) => ({ account, balance: { free, reserved, escrowed } });
+const hEntry = (seq, origin, events, balances, action) => ({
+  seq,
+  time: H_T0 + seq * 100,
+  kind: "User",
+  origin,
+  events,
+  balances,
+  command: { actor: origin.actor, nonce: origin.nonce, action },
+});
+const HISTORY = [
+  hEntry(2, { actor: 1, nonce: 2 }, [hTo(H.alice, { Deposited: { account: H.alice, amount: 1e9 } })], [hBal(H.alice, 1e9)], { Deposit: { to: H.alice, amount: 1e9 } }),
+  hEntry(3, { actor: 1, nonce: 3 }, [hTo(H.mm1, { Deposited: { account: H.mm1, amount: 1e9 } })], [hBal(H.mm1, 1e9)], { Deposit: { to: H.mm1, amount: 1e9 } }),
+  hEntry(4, { actor: 1, nonce: 4 }, [hPub({ ContractListed: { contract: H_T0 } })], [], {
+    ListContract: { id: H_T0, description: "Will it rain in Paris on 2026-11-01?", oracle: H_T0 * 100 + 4, trading_close: H_T0 + 5_000, resolution_deadline: H_T0 + 15_000, dispute_window: 2_000 },
+  }),
+  hEntry(5, { actor: H.alice, nonce: 2 }, [hPub({ RequestOpened: { request: 5, leg: 0, contract: H_T0, side: "BuyYes", qty: 1000, response_deadline: H_T0 + 3_000 } })], [hBal(H.alice, 3e8, 7e8)], {
+    SubmitRequest: { legs: [{ contract: H_T0, side: "BuyYes", qty: 1000, limit_price: 7_000 }], response_deadline: H_T0 + 3_000 },
+  }),
+  hEntry(6, { actor: H.mm1, nonce: 2 }, [hTo(H.mm1, { QuoteSubmitted: { quote: 6, request: 5, price: 6_000, expires_at: H_T0 + 3_500 } })], [hBal(H.mm1, 4e8, 6e8)], {
+    SubmitQuote: { request: 5, leg: 0, price: 6_000, size: 1000, expires_at: H_T0 + 3_500 },
+  }),
+];
+const BASE = "http://127.0.0.1:18081";
+const connected = async (page) => {
+  for (let i = 0; i < 100 && page.run("page.conn") !== "connected"; i++) await sleep(10);
+  assert.equal(page.run("page.conn"), "connected");
+};
+const teardown = ({ run, stop }) => {
+  stop();
+  run("driver.dispose(); closeViewConn(); gw.close();");
+};
+
+await test("on load the page fetches the status and the trace pages and shows the history: trace, ledger, lanes, contract and the limits", async () => {
+  const api = fakeReadApi(HISTORY, { max: 3 });
+  const page = loadPage({ fetch: api.fetch });
+  const { run, val, document } = page;
+  try {
+    await run("historyLoaded");
+    // A status and two trace pages, from seq 0 (the journal is shorter than the window), each asking for 1,000.
+    assert.deepEqual(api.calls, [`${BASE}/v1/status`, `${BASE}/v1/trace?view=admin&after_seq=0&limit=1000`, `${BASE}/v1/trace?view=admin&after_seq=4&limit=1000`]);
+    await connected(page);
+    run("render()");
+    assert.deepEqual(val("V.r.batches.map((b) => [b.seq, b.history === true])"), HISTORY.map((e) => [e.seq, true]));
+    // The trace lists every batch, each with the command the entry carried (the page sent none of them).
+    const trace = text(document, "log");
+    assert.deepEqual(document.getElementById("log").kids.map((k) => k.dataset.k).filter((k) => k.startsWith("r")), [2, 3, 4, 5, 6].map((s) => `r0:${s}`));
+    assert.match(trace, /SubmitRequest/);
+    assert.match(trace, /SubmitQuote/);
+    // The ledger has the balances of the batches, the lanes their accounts, and the request its limit.
+    const ledger = text(document, "ledger-table");
+    for (const money of ["$300.00", "$700.00", "$400.00", "$600.00"]) assert.ok(ledger.includes(money), `${money} in the ledger:\n${ledger}`);
+    const tag = `run …${String(H_T0).slice(-4)}`;
+    const lane = text(document, "user-lane");
+    assert.ok(lane.includes(`Alice (${tag})`) && lane.includes("Request #5") && lane.includes("Limit 0.70"), lane);
+    const mm = text(document, "mm-lane");
+    assert.ok(mm.includes(`MM1 (${tag})`) && mm.includes("Quote #6"), mm);
+    assert.ok(text(document, "contract").includes("Will it rain in Paris on 2026-11-01?"), "the contract's terms, from the listing command");
+    // The timeline covers them, and nothing says the history failed.
+    assert.equal(val("V.n"), HISTORY.length);
+    assert.match(text(document, "tl-label"), /Batch 5 of 5/);
+    assert.equal(document.getElementById("banners").innerHTML, "");
+    // The page's own record is untouched: no runs came back.
+    assert.equal(run("page.runs.length"), 0);
+  } finally {
+    teardown(page);
+  }
+});
+
+await test("the history is the newest 5,000 seqs at most: it starts at the replica's last seq minus 5,000, or at 0", async () => {
+  for (const [last, from] of [[12_000, 7_000], [5_000, 0], [4_999, 0], [0, 0], [5_001, 1]]) {
+    const api = fakeReadApi([], { lastSeq: last });
+    const page = loadPage({ fetch: api.fetch });
+    try {
+      await page.run("historyLoaded");
+      assert.deepEqual(api.calls, [`${BASE}/v1/status`, `${BASE}/v1/trace?view=admin&after_seq=${from}&limit=1000`], `last_seq ${last}`);
+    } finally {
+      teardown(page);
+    }
+  }
+});
+
+await test("history that cannot load: a dismissible banner with the reason, no history, and the page connects and works as before", async () => {
+  const bad = (status) => async () => ({ ok: status === 200, status, json: async () => ({}) });
+  const api = fakeReadApi(HISTORY);
+  /** The status answers, then the trace fails. */
+  const traceFails = async (url) => (String(url).includes("/v1/status") ? api.fetch(url) : bad(500)());
+  const cases = [
+    ["the port is closed", () => Promise.reject(new TypeError("Failed to fetch")), `could not reach ${BASE}`],
+    ["an older gateway", bad(404), "HTTP 404 on /v1/status"],
+    ["a replica that is behind", bad(503), "HTTP 503 on /v1/status"],
+    ["not JSON", async () => ({ ok: true, status: 200, json: async () => { throw new SyntaxError("Unexpected token <"); } }), "bad JSON on /v1/status"],
+    ["a status without a replica", async () => ({ ok: true, status: 200, json: async () => ({ engine: "up" }) }), "unexpected response on /v1/status"],
+    ["the trace fails after the status", traceFails, "HTTP 500 on /v1/trace"],
+  ];
+  for (const [what, fetch, reason] of cases) {
+    const page = loadPage({ fetch });
+    const { run, val, document } = page;
+    try {
+      await run("historyLoaded");
+      run("render()");
+      const banners = text(document, "banners");
+      assert.ok(banners.includes(`History not loaded (${reason}): showing what happens from now on.`), `${what}:\n${banners}`);
+      assert.match(document.getElementById("banners").innerHTML, /data-action="dismiss-error"/, "dismissible");
+      assert.deepEqual(val("V.r.batches"), [], `${what}: no history, not even a page of it`);
+      await connected(page);
+      // Works as today: a run goes through (the fake engine fails it on Alice's request, as the other page tests expect).
+      document.getElementById("scenario-pick").value = "happy_path";
+      await run('startRuns("one", "happy_path")');
+      assert.equal(val("page.runs.length"), 1, what);
+      // Dismissed: the banner goes.
+      run("page.errors.length = 0; render()");
+      assert.equal(document.getElementById("banners").innerHTML, "", `${what}: dismissed`);
+    } finally {
+      teardown(page);
+    }
+  }
+});
+
+await test("?http= sets the base URL when it is an http(s):// URL; anything else is ignored with a banner, as ?gateway= is", async () => {
+  const good = fakeReadApi();
+  const page = loadPage({ fetch: good.fetch, search: "?http=http://127.0.0.1:28081/" });
+  try {
+    await page.run("historyLoaded");
+    assert.equal(page.run("HTTP_BASE"), "http://127.0.0.1:28081");
+    assert.ok(good.calls[0].startsWith("http://127.0.0.1:28081/v1/status"), good.calls[0]);
+    await connected(page);
+    page.run("render()");
+    assert.equal(page.document.getElementById("banners").innerHTML, "");
+  } finally {
+    teardown(page);
+  }
+  for (const q of ["ftp://x", "ws://127.0.0.1:18081", "127.0.0.1:18081", "http://", "http:// x"]) {
+    const api = fakeReadApi();
+    const p = loadPage({ fetch: api.fetch, search: `?http=${encodeURIComponent(q)}` });
+    try {
+      await p.run("historyLoaded");
+      assert.equal(p.run("HTTP_BASE"), BASE, q);
+      assert.ok(api.calls[0].startsWith(`${BASE}/v1/status`), `${q}: ${api.calls[0]}`);
+      p.run("render()");
+      assert.ok(text(p.document, "banners").includes(`Ignored ?http=${q}: it must be an http:// or https:// URL. Using ${BASE}.`), `${q}:\n${text(p.document, "banners")}`);
+    } finally {
+      teardown(p);
+    }
+  }
+  // Both bad: both banners; ?gateway= is the one it always was.
+  const both = loadPage({ search: "?gateway=ftp://y&http=ftp://x" });
+  try {
+    both.run("render()");
+    const banners = text(both.document, "banners");
+    assert.ok(banners.includes("Ignored ?gateway=ftp://y") && banners.includes("Ignored ?http=ftp://x"), banners);
+  } finally {
+    teardown(both);
+  }
+});
+
+await test("the history never delays the WebSocket: a fetch that never answers leaves the page connected and live", async () => {
+  const page = loadPage({ fetch: () => new Promise(() => {}) });
+  try {
+    await connected(page);
+    assert.equal(page.run("rec.allBatches().length"), 0);
+    page.run("render()");
+    assert.equal(page.document.getElementById("banners").innerHTML, "", "still loading: nothing to say yet");
+  } finally {
+    teardown(page);
+  }
+});
+
+await test("a batch that arrives while the history loads stays; history fills only the seqs below it, and a live frame that is history is ignored", async () => {
+  const api = fakeReadApi(HISTORY);
+  let release;
+  const gate = new Promise((resolve) => (release = resolve));
+  const page = loadPage({ fetch: async (url) => (await gate, api.fetch(url)) });
+  const { run, val, server } = page;
+  try {
+    await connected(page);
+    const live = (seq, events) => server.sockets[0].onmessage({ data: JSON.stringify({ type: "batch", seq, time: 5_000 + seq, kind: "Tick", origin: null, events, balances: [] }) });
+    // Seq 5 is the first live batch: the history that follows has 2..6, of which only 2..4 are below it.
+    live(5, [hPub({ RequestExpired: { request: 99 } })]);
+    release();
+    await run("historyLoaded");
+    assert.deepEqual(val("rec.allBatches().map((b) => [b.seq, b.history === true])"), [[2, true], [3, true], [4, true], [5, false]]);
+    assert.equal(val("rec.batches.get(5).kind"), "Tick", "the live batch is the one that came");
+    // The stream goes on from there, in the same epoch.
+    live(6, [hPub({ RequestExpired: { request: 98 } })]);
+    assert.deepEqual(val("rec.allBatches().map((b) => b.seq)"), [2, 3, 4, 5, 6]);
+    assert.equal(run("rec.epoch"), 0);
+    run("render()");
+    assert.deepEqual(val("V.r.batches.map((b) => b.seq)"), [2, 3, 4, 5, 6]);
+  } finally {
+    teardown(page);
+  }
+  // The other way round: the history is in first, and the stream delivers batches the history already has.
+  const early = loadPage({ fetch: fakeReadApi(HISTORY).fetch });
+  try {
+    await connected(early);
+    await early.run("historyLoaded");
+    const live = (seq, events) => early.server.sockets[0].onmessage({ data: JSON.stringify({ type: "batch", seq, time: 5_000 + seq, kind: "Tick", origin: null, events, balances: [] }) });
+    live(5, [hPub({ RequestExpired: { request: 99 } })]);
+    live(6, [hPub({ RequestExpired: { request: 99 } })]);
+    live(7, [hPub({ RequestExpired: { request: 98 } })]);
+    assert.deepEqual(early.val("rec.allBatches().map((b) => [b.epoch, b.seq, b.history === true])"), [2, 3, 4, 5, 6].map((s) => [0, s, true]).concat([[0, 7, false]]));
+    assert.equal(early.val("rec.batches.get(6).kind"), "User", "the history batch, not the frame");
+  } finally {
+    teardown(early);
   }
 });
 

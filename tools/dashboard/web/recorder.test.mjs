@@ -134,6 +134,131 @@ test("a chunk merges only into the newest batch: an older seq seen again is a ne
   assert.deepEqual([rec.epoch, rec.allBatches().length, rec.batchList().length], [0, 0, 0]);
 });
 
+// ---- history: the read API's trace seeded before the live batches -------------------------------------
+
+/** A trace entry of the read API (`GET /v1/trace`): a batch frame without `type`, plus the `command` that made it. */
+const entry = (seq, events, { command = null, ...rest } = {}) => {
+  const { type, ...b } = batch(seq, events, rest);
+  return { ...b, command };
+};
+const dep = (account, amount) => pub(ev("Deposited", { account, amount }));
+const submit = (actor, nonce) => ({
+  actor,
+  nonce,
+  action: { SubmitRequest: { legs: [{ contract: 7, side: "BuyYes", qty: 5, limit_price: 7_000 }], response_deadline: 9 } },
+});
+
+test("seedHistory into an empty recorder: batches in seq order, marked history, each with its command", () => {
+  const rec = R.createRecorder();
+  const cmd = submit(10, 2);
+  const entries = [
+    entry(1, [pub(ev("Initialized"))], { kind: "Genesis" }),
+    entry(2, [dep(10, 5)], { origin: { actor: 1, nonce: 1 }, balances: [bal(10, 5)], command: { actor: 1, nonce: 1, action: { Deposit: { to: 10, amount: 5 } } } }),
+    entry(3, [pub(ev("RequestOpened", { request: 3 }))], { origin: { actor: 10, nonce: 2 }, command: cmd }),
+  ];
+  assert.equal(rec.seedHistory(entries), 3);
+  assert.deepEqual(rec.allBatches().map((b) => b.seq), [1, 2, 3]);
+  assert.deepEqual(rec.order, [1, 2, 3]);
+  assert.deepEqual(rec.batchList().map((b) => b.seq), [1, 2, 3]);
+  assert.ok(rec.allBatches().every((b) => b.history === true && b.epoch === 0 && b.chunks === 1));
+  // The batch keeps what the entry says: time, kind, origin, events, balances and the command.
+  const b = rec.batches.get(3);
+  assert.deepEqual([b.time, b.kind, b.origin, b.events, b.balances, b.command], [1_003, "User", { actor: 10, nonce: 2 }, entries[2].events, [], cmd]);
+  assert.deepEqual(rec.batches.get(2).balances, [bal(10, 5)]);
+  assert.equal(rec.batches.get(1).origin, null);
+  assert.equal(rec.batches.get(1).command, null);
+  // A copy: the entry's events are not shared with the batch.
+  assert.notEqual(b.events, entries[2].events);
+  // History is no frame: nothing was received.
+  assert.equal(rec.frames.length, 0);
+});
+
+test("seedHistory with live batches already there: only the lower seqs are added, and they come before the live ones", () => {
+  const rec = R.createRecorder();
+  rec.onFrame(batch(7, [dep(10, 1)]));
+  rec.onFrame(batch(8, [dep(10, 2)]));
+  const added = rec.seedHistory([1, 2, 3, 4, 5, 6, 7, 8, 9].map((s) => entry(s, [dep(10, s)])));
+  assert.equal(added, 6, "seqs 7 and up are the live stream's: the live ones stay, 9 is not history's to add");
+  assert.deepEqual(rec.allBatches().map((b) => [b.seq, b.history === true]), [[1, true], [2, true], [3, true], [4, true], [5, true], [6, true], [7, false], [8, false]]);
+  assert.deepEqual(rec.order, [1, 2, 3, 4, 5, 6, 7, 8]);
+  assert.equal(rec.epoch, 0);
+  // The live batches are as they came (frames, no command).
+  assert.equal(rec.batches.get(7).firstN, 1);
+  assert.equal("command" in rec.batches.get(7), false);
+  assert.deepEqual(rec.batches.get(8).events, [dep(10, 2)]);
+});
+
+test("a live frame whose seq is already history is ignored: no duplicate, no new epoch", () => {
+  const rec = R.createRecorder();
+  rec.seedHistory([entry(1, [dep(10, 1)]), entry(2, [dep(10, 2)]), entry(3, [dep(10, 3)])]);
+  // The WebSocket delivers batches the replica already had (the fetch raced the stream), whole or in chunks.
+  assert.equal(rec.onFrame(batch(3, [dep(99, 9)])), null);
+  assert.equal(rec.onFrame(batch(2, [dep(99, 9)])), null);
+  assert.equal(rec.epoch, 0);
+  assert.deepEqual(rec.allBatches().map((b) => b.seq), [1, 2, 3]);
+  assert.deepEqual(rec.batches.get(3).events, [dep(10, 3)], "the history batch is untouched");
+  assert.equal(rec.batches.get(3).chunks, 1);
+  // The frame is still a received frame (the frame log is the wire's), just not a second batch.
+  assert.equal(rec.frames.length, 2);
+  // The next seq is live as ever: an ordinary batch, after the history, in the same epoch.
+  const live = rec.onFrame(batch(4, [dep(10, 4)]));
+  assert.deepEqual([live.seq, live.epoch, live.history], [4, 0, undefined]);
+  assert.deepEqual(rec.allBatches().map((b) => b.seq), [1, 2, 3, 4]);
+  assert.equal(rec.epoch, 0);
+});
+
+test("history never sets the newest batch: a live chunk after seeding merges with its live batch; a seq going back is still a new epoch", () => {
+  const rec = R.createRecorder();
+  rec.seedHistory([entry(1, [dep(10, 1)]), entry(2, [dep(10, 2)])]);
+  const a = pub(ev("RequestOpened", { request: 5 }));
+  const b = pub(ev("QuoteLost", { quote: 6 }));
+  rec.onFrame(batch(5, [a], { origin: { actor: 10, nonce: 3 } }));
+  rec.onFrame(batch(5, [b], { origin: { actor: 10, nonce: 3 }, balances: [bal(10, 7)] }));
+  assert.equal(rec.batches.get(5).chunks, 2);
+  assert.deepEqual(rec.batches.get(5).events, [a, b]);
+  assert.deepEqual(rec.allBatches().map((x) => x.seq), [1, 2, 5]);
+  // Seeding after that adds the seqs below the live batch (3, 4), not the live one's own.
+  assert.equal(rec.seedHistory([entry(3, [dep(10, 3)]), entry(4, [dep(10, 4)]), entry(5, [dep(10, 5)])]), 2);
+  assert.deepEqual(rec.allBatches().map((x) => [x.seq, x.history === true]), [[1, true], [2, true], [3, true], [4, true], [5, false]]);
+  // A seq below the newest live one that history also has is the journal starting again, as it always was.
+  rec.onFrame(batch(2, [dep(99, 5)]));
+  assert.equal(rec.epoch, 1);
+  assert.deepEqual(rec.allBatches().map((x) => [x.epoch, x.seq]), [[0, 1], [0, 2], [0, 3], [0, 4], [0, 5], [1, 2]]);
+  assert.deepEqual(rec.order, [2]);
+  assert.equal(rec.batches.get(2).history, undefined);
+});
+
+test("seedHistory twice adds nothing the second time; entries that arrive later but fall before earlier history keep seq order", () => {
+  const rec = R.createRecorder();
+  const entries = [1, 2, 3].map((s) => entry(s, [dep(10, s)]));
+  assert.equal(rec.seedHistory(entries), 3);
+  assert.equal(rec.seedHistory(entries), 0);
+  assert.deepEqual(rec.allBatches().map((b) => b.seq), [1, 2, 3]);
+  assert.equal(rec.seedHistory([]), 0);
+  // Older entries seeded after newer ones still come first, ascending.
+  const late = R.createRecorder();
+  late.seedHistory([entry(5, [dep(10, 5)]), entry(6, [dep(10, 6)])]);
+  assert.equal(late.seedHistory([entry(2, [dep(10, 2)]), entry(3, [dep(10, 3)]), entry(5, [dep(10, 5)])]), 2);
+  assert.deepEqual(late.allBatches().map((b) => b.seq), [2, 3, 5, 6]);
+  assert.deepEqual(late.order, [2, 3, 5, 6]);
+  // A seq twice in one call counts once.
+  const dup = R.createRecorder();
+  assert.equal(dup.seedHistory([entry(1, [dep(10, 1)]), entry(1, [dep(10, 1)])]), 1);
+});
+
+test("history belongs to the current epoch, after the older epochs' batches; clear() forgets it", () => {
+  const rec = R.createRecorder();
+  rec.onFrame(batch(8, [dep(10, 1)]));
+  rec.onFrame(batch(2, [dep(10, 2)])); // a new journal: epoch 1
+  assert.equal(rec.epoch, 1);
+  assert.equal(rec.seedHistory([entry(1, [dep(10, 1)]), entry(2, [dep(10, 9)]), entry(3, [dep(10, 3)])]), 1, "seq 2 is live, 3 is above it");
+  assert.deepEqual(rec.allBatches().map((b) => [b.epoch, b.seq, b.history === true]), [[0, 8, false], [1, 1, true], [1, 2, false]]);
+  assert.deepEqual(rec.batchList().map((b) => b.seq), [1, 2]);
+  rec.clear();
+  assert.deepEqual([rec.allBatches().length, rec.order.length, rec.batches.size], [0, 0, 0]);
+  assert.equal(rec.seedHistory([entry(1, [dep(10, 1)])]), 1);
+});
+
 // ---- a view connection: only what the gateway sent that view ----------------------------------------
 
 /** A stand-in for an `RfqGateway` connection: `fire(type, payload)` calls what `on` registered. */

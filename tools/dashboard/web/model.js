@@ -9,7 +9,8 @@
 // only. What the events don't carry (a requester's limit, a quote's size, a contract's terms) comes
 // from the command the page itself sent, `commandAt(seq, epoch)`, joined only through a batch's `origin`: the
 // gateway forwards an origin only to the view that sent the command (gateway.md §4), so in an account
-// view the page's knowledge of the other participants' commands never reaches the model.
+// view the page's knowledge of the other participants' commands never reaches the model. A history batch
+// (the admin read API's trace) carries its own `command`, used where the page has none.
 //
 // A request has one or more legs (engine.md §8): `RequestOpened` comes once per leg with its index, a
 // presented request has one pick per leg, and a fill has one position per leg. A quote's leg is the
@@ -24,13 +25,16 @@ const RfqModel = (() => {
   const UNCONSUMED = ["Duplicate", "NonceGap"];
 
   /**
-   * The page's command that made `batch`, or null: only through the batch's origin, and only if the
-   * command is that origin's (same actor and nonce).
+   * The command that made `batch`, or null: only through the batch's origin, and only if the command is
+   * that origin's (same actor and nonce). It is the page's own (`commandAt`), else the batch's own
+   * `command`, which a history batch carries (the read API's trace, DESIGN §11): that is how a reloaded
+   * page knows the limits and quote sizes it never sent.
    */
   function commandOf(recording, batch) {
     const o = batch.origin;
-    if (!o || typeof recording.commandAt !== "function") return null;
-    const c = recording.commandAt(batch.seq, batch.epoch ?? 0);
+    if (!o) return null;
+    const own = typeof recording.commandAt === "function" ? recording.commandAt(batch.seq, batch.epoch ?? 0) : undefined;
+    const c = own ?? batch.command;
     return c && c.actor === o.actor && c.nonce === o.nonce ? c : null;
   }
 

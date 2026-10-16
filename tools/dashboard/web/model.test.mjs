@@ -242,6 +242,52 @@ test("a command joins a batch only when its actor and nonce are the batch's orig
   assert.deepEqual([right.requests[0].requester, right.requests[0].legs[0].limit_price], [10, 6_000]);
 });
 
+test("a history batch's own command stands in where the page has none: limits and quote sizes come back after a reload", () => {
+  const listing = { actor: 1, nonce: 4, action: { ListContract: { id: 7, description: "Will it rain?", oracle: 4, trading_close: 5_000, resolution_deadline: 15_000, dispute_window: 2_000 } } };
+  const request = { actor: 10, nonce: 2, action: { SubmitRequest: { legs: [{ contract: 7, side: "BuyYes", qty: 5, limit_price: 7_000 }], response_deadline: 9_000 } } };
+  const quote = { actor: 20, nonce: 3, action: { SubmitQuote: { request: 3, leg: 0, price: 6_000, size: 5, expires_at: 9_500 } } };
+  const open = { RequestOpened: { request: 3, leg: 0, contract: 7, side: "BuyYes", qty: 5, response_deadline: 9_000 } };
+  const entries = [
+    { ...batch(2, [pub({ ContractListed: { contract: 7 } })], { origin: { actor: 1, nonce: 4 } }), command: listing },
+    { ...batch(3, [pub(open)], { origin: { actor: 10, nonce: 2 } }), command: request },
+    { ...batch(4, [to(20, { QuoteSubmitted: { quote: 4, request: 3, price: 6_000, expires_at: 9_500 } })], { origin: { actor: 20, nonce: 3 } }), command: quote },
+  ];
+  const rec = R.createRecorder();
+  rec.seedHistory(entries);
+  // No `commandAt`: the page never sent these.
+  const m = M.modelAt({ batches: rec.allBatches(), viewer: "admin" });
+  assert.deepEqual([m.requests[0].requester, m.requests[0].legs[0].limit_price], [10, 7_000], "the request shows its limit 0.70");
+  assert.deepEqual([m.quotes[0].mm, m.quotes[0].size, m.quotes[0].leg], [20, 5, 0]);
+  assert.deepEqual([m.contracts[0].description, m.contracts[0].oracle, m.contracts[0].trading_close], ["Will it rain?", 4, 5_000]);
+  assert.deepEqual(m.trace[1].command, { User: { actor: 10, nonce: 2, action: request.action } });
+  // The page's own command, when it has one for the batch, comes first.
+  const own = { ...request, action: { SubmitRequest: { legs: [{ contract: 7, side: "BuyYes", qty: 5, limit_price: 6_500 }], response_deadline: 9_000 } } };
+  const both = M.modelAt({ batches: rec.allBatches(), commandAt: (seq) => (seq === 3 ? own : undefined), viewer: "admin" });
+  assert.equal(both.requests[0].legs[0].limit_price, 6_500);
+  // Live batches have no `command`: nothing changes for them.
+  const live = M.modelAt({ batches: [batch(3, [pub(open)], { origin: { actor: 10, nonce: 2 } })].map((f) => ({ ...f, epoch: 0 })), viewer: "admin" });
+  assert.deepEqual([live.requests[0].requester, live.requests[0].legs[0].limit_price, live.trace[0].command], [null, null, null]);
+});
+
+test("a history batch's command is used only when its actor and nonce are the batch's origin; with no origin it is never used", () => {
+  const action = { SubmitRequest: { legs: [{ contract: 7, side: "BuyYes", qty: 5, limit_price: 7_000 }], response_deadline: 9_000 } };
+  const open = pub({ RequestOpened: { request: 3, leg: 0, contract: 7, side: "BuyYes", qty: 5, response_deadline: 9_000 } });
+  const model = (origin, command) => {
+    const rec = R.createRecorder();
+    rec.seedHistory([{ ...batch(3, [open], { origin }), command }]);
+    return M.modelAt({ batches: rec.allBatches(), viewer: "admin" });
+  };
+  const origin = { actor: 10, nonce: 2 };
+  for (const [what, command] of [["actor", { actor: 11, nonce: 2, action }], ["nonce", { actor: 10, nonce: 9, action }]]) {
+    const m = model(origin, command);
+    assert.deepEqual([m.requests[0].requester, m.requests[0].legs[0].limit_price, m.trace[0].command], [null, null, null], `a command of another ${what}`);
+  }
+  const noOrigin = model(null, { actor: 10, nonce: 2, action });
+  assert.deepEqual([noOrigin.requests[0].requester, noOrigin.trace[0].command], [null, null]);
+  const right = model(origin, { actor: 10, nonce: 2, action });
+  assert.deepEqual([right.requests[0].requester, right.requests[0].legs[0].limit_price], [10, 7_000]);
+});
+
 test("a recording that began late, or a batch shared with another run: events about objects it never saw make none", () => {
   const frames = [
     batch(5, [pub({ ContractClosed: { contract: 99 } }), pub({ OutcomeProposed: { contract: 99, outcome: "Yes", dispute_until: 9 } })], { kind: "Tick" }),
