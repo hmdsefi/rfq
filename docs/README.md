@@ -30,5 +30,6 @@ The brief (the exercise PDF) is not in the repository. How to build, test and ru
 | [reviews/spec-review.md](reviews/spec-review.md) | Adversarial review of the spec before coding: 25 findings and how each was ruled |
 | [plans/2026-10-13-rfq-engine-plan.md](plans/2026-10-13-rfq-engine-plan.md) | Implementation roadmap: constraints, layers, execution order, task index |
 | [plans/2026-10-15-live-gateway-plan.md](plans/2026-10-15-live-gateway-plan.md) | The live plan: the gateway and the dashboard driving the real stack (tasks L1–L7) |
+| [plans/2026-10-16-multi-leg-plan.md](plans/2026-10-16-multi-leg-plan.md) | The multi-leg plan: requests of up to 8 legs filled all or nothing, and both multi-leg stories on the dashboard (tasks M1–M2) |
 | [plans/2026-10-16-read-api-plan.md](plans/2026-10-16-read-api-plan.md) | The read plan: the journal follower, the replica, the HTTP API and the dashboard's history on load (tasks R1–R7) |
-| [plans/tasks/](plans/tasks/) | One file per task (Setup, Gate A, Tasks 0–14, L1–L7, R1–R7) |
+| [plans/tasks/](plans/tasks/) | One file per task (Setup, Gate A, Tasks 0–14, L1–L7, M1–M2, R1–R7) |

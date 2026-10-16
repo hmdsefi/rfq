@@ -3,11 +3,27 @@
 
 A deterministic matching and settlement engine for a permissionless RFQ venue for binary-outcome contracts, in Rust. A requester asks for a price, market makers answer with firm quotes, the best quote is presented, and on acceptance both sides' collateral locks in escrow until an oracle resolves the contract. Real money sits in every intermediate state and every participant is assumed adversarial, so the design goal is that funds can never be lost, duplicated or stuck without an exit.
 
-Design docs: [docs/README.md](docs/README.md). The brief (the exercise PDF) is not in the repository: it belongs to the company that set the exercise.
+Design docs: see [Documentation](#documentation) below, or the index in [docs/README.md](docs/README.md). The brief (the exercise PDF) is not in the repository: it belongs to the company that set the exercise.
 
 The repository is private (`hmdsefi/rfq`), so you need access first. Then: `git clone https://github.com/hmdsefi/rfq.git && cd rfq`.
 
 > **CI status, 2026-10-14.** The badge is red, and not because of the code. GitHub refuses to start any job of this private repository ("recent account payments have failed or your spending limit needs to be increased"), so no workflow step has ever run. The same checks pass locally: `cargo fmt --all --check`, `cargo clippy --locked --workspace --all-targets -- -D warnings`, `cargo test --locked --workspace` (all pass), `cargo deny check`, the Docker builds of both binaries, and `./scripts/demo.sh`. The workflow is [.github/workflows/ci.yml](.github/workflows/ci.yml).
+
+## Contents
+
+- [Quick start](#quick-start)
+  - [Run the tests (no Docker)](#run-the-tests-no-docker)
+  - [Run the end-to-end demo (Docker)](#run-the-end-to-end-demo-docker)
+  - [Gateway (WebSocket)](#gateway-websocket)
+  - [Live dashboard](#live-dashboard)
+  - [HTTP API](#http-api)
+- [Layout](#layout): the crates and their layers
+- [Where each deliverable is](#where-each-deliverable-is): D1–D5
+- [Documentation](#documentation): every design doc, and what it answers
+- [Design at a glance](#design-at-a-glance)
+- [Measured numbers](#measured-numbers)
+- [Not built](#not-built)
+- [License](#license)
 
 ## Quick start
 
@@ -167,7 +183,30 @@ Code is split into hexagonal layers, and dependencies point inward only: crate b
 | D4 | Resolution design | [specs/resolution.md](docs/specs/resolution.md) |
 | D5 | Design note (quotes living seconds vs days) | [specs/quote-lifetime.md](docs/specs/quote-lifetime.md) |
 
-Also: the product and technical decisions in [rfc/0001-rfq-engine.md](docs/rfc/0001-rfq-engine.md), the adversarial review of the spec in [reviews/spec-review.md](docs/reviews/spec-review.md), and the implementation plan in [docs/plans/](docs/plans/2026-10-13-rfq-engine-plan.md).
+## Documentation
+
+All design docs live in [`docs/`](docs/README.md). Where to start:
+
+| Doc | What it answers |
+|---|---|
+| [rfc/0001-rfq-engine.md](docs/rfc/0001-rfq-engine.md) | What is being built, the product decisions (P1–P12) and technical decisions (T1–T8), and why |
+| [architecture/overview.md](docs/architecture/overview.md) | Layers and crates, the write path and the read side, Aeron streams, the write-ahead loop and its crash points, Docker topology, production path, measured numbers |
+| [demo.md](docs/demo.md) | Recorded runs (GIFs) of five scenarios on the live stack, with the engine's events and logs |
+
+The specs:
+
+| Doc | What it answers |
+|---|---|
+| [specs/engine.md](docs/specs/engine.md) | Domain model, ledger and invariants I1–I5, commands and their validation, state machines, events, multi-leg (§8) |
+| [specs/failure-modes.md](docs/specs/failure-modes.md) | Every race (R1–R9) and partial failure (F1–F16), how each is handled, and its test |
+| [specs/adversarial.md](docs/specs/adversarial.md) | What a malicious requester, market maker, oracle or bystander can try, and the defence or accepted residual risk |
+| [specs/resolution.md](docs/specs/resolution.md) | How funds unlock: oracle outcomes, disputes, delays, ambiguity, the hard deadline |
+| [specs/quote-lifetime.md](docs/specs/quote-lifetime.md) | Quotes that live seconds vs days: what stays invariant, what changes, what is built vs designed |
+| [specs/transport-aeron.md](docs/specs/transport-aeron.md) | Aeron and Archive wiring, the journal, replay and the journal follower, Docker Compose |
+| [specs/gateway.md](docs/specs/gateway.md) | The WebSocket edge: protocol, what each view may see, nonces, engine status and `outcome unknown`, the trust boundary |
+| [specs/read-api.md](docs/specs/read-api.md) | The read replica and the HTTP API: endpoints and statuses, the trace per view, `as_of_seq` and `min_seq`, limits and security |
+
+Reviews and plans: the adversarial review of the spec before coding ([reviews/spec-review.md](docs/reviews/spec-review.md)), and the implementation plans with one file per task ([docs/plans/](docs/plans/), indexed in [docs/README.md](docs/README.md)). The dashboard's own design is in [tools/dashboard/DESIGN.md](tools/dashboard/DESIGN.md).
 
 ## Design at a glance
 
