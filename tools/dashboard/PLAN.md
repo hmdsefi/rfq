@@ -61,7 +61,7 @@ The five inputs most likely to bite during the live session. Each has a pinned t
 | D3 | [Presets: brief scenarios, attacks, sandbox, runner](tasks/D3-presets.md) | D2 | implementer | task review |
 | D4 | [View filter, JSON protocol, FFI](tasks/D4-protocol-and-ffi.md) | D3 | implementer | task review |
 | D5 | [WASM build, Node smoke test, inliner](tasks/D5-wasm-build.md) | D4 | implementer | task review |
-| D6 | [Page: top bar, lanes, contract card](tasks/D6-page-lanes.md) | D1 approved, D5 | implementer | task review and a browser check |
+| D6 | [Page: top bar, lanes, market card](tasks/D6-page-lanes.md) | D1 approved, D5 | implementer | task review and a browser check |
 | D7 | [Page: admin trace, ledger, replay, D1–D5 panels](tasks/D7-page-trace-and-deliverables.md) | D6 | implementer | task review and a browser check |
 | D8 | [Verify, review, publish](tasks/D8-verify-and-publish.md) | D7 | controller | final review, PO sees the link |
 

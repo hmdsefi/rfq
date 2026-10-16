@@ -29,7 +29,7 @@
   - the top bar: preset picker, step, play, reset, take-over, the clock buttons, view-as, and the engine health chip (seq, t+, hash, I1–I5);
   - the market makers lane: two MM cards, an open request with the quote form, quotes in Active, Selected and Lost;
   - the users lane: Alice with a presented request and Accept/Reject, Carol idle, and the new-request form;
-  - the contract card: the resolution timeline with the now cursor, oracle and arbiter actions, and positions;
+  - the market card: the resolution timeline with the now cursor, oracle and arbiter actions, and positions;
   - the admin trace: the command log with one row expanded to its events and audience badges, the object inspector, the ledger table with deltas and total, and the replay check result;
   - the deliverable panels: D1 state machines (selected object lit) with the multi-leg tab labelled "Designed, not built (P6)", D3, D4 and D5;
   - the label "Demo aid — not part of the engine";

@@ -75,17 +75,17 @@ const RfqScenarios = (() => {
       return this.t0 + offset;
     }
 
-    /** One contract per run, keyed by its start time so reruns never collide. */
-    contract() {
+    /** One market per run, keyed by its start time so reruns never collide. */
+    market() {
       return this.t0;
     }
 
     /**
      * The run's `k`th extra market (`k` in 1..=9), for a multi-leg script: `t0 * 10 + k` (testkit's
-     * `Ctx::contract_n`). Distinct runs never collide, and for a millisecond clock the id stays below
-     * 2^53, so it is exact in a JS number. The run's scope owns these ids too (`Scope.ownsContract`).
+     * `Ctx::market_n`). Distinct runs never collide, and for a millisecond clock the id stays below
+     * 2^53, so it is exact in a JS number. The run's scope owns these ids too (`Scope.ownsMarket`).
      */
-    contractN(k) {
+    marketN(k) {
       if (!Number.isInteger(k) || k < 1 || k > 9) throw new RangeError(`a run has extra markets 1..=9, not ${k}`);
       const id = this.t0 * 10 + k;
       if (!Number.isSafeInteger(id)) throw new RangeError(`market id ${id} is not a safe integer`);
@@ -128,7 +128,7 @@ const RfqScenarios = (() => {
   }
 
   /**
-   * `action` with every account id it carries mapped through `f`. Only `Deposit` and `ListContract`
+   * `action` with every account id it carries mapped through `f`. Only `Deposit` and `ListMarket`
    * carry any (rfq-demo's `remap`); an action this does not know is an error, so that a new one must
    * be looked at here.
    */
@@ -137,8 +137,8 @@ const RfqScenarios = (() => {
     switch (name) {
       case "Deposit":
         return { Deposit: { ...body, to: f(body.to) } };
-      case "ListContract":
-        return { ListContract: { ...body, oracle: f(body.oracle) } };
+      case "ListMarket":
+        return { ListMarket: { ...body, oracle: f(body.oracle) } };
       case "Withdraw":
       case "SubmitRequest":
       case "CancelRequest":
@@ -191,7 +191,7 @@ const RfqScenarios = (() => {
   /** The operator lists a market that closes at +5 s, with a hard deadline at +15 s. Rust: `scenarios::list`. */
   const list = (label, id, description) =>
     send(0, label, OPERATOR, (c) => ({
-      ListContract: {
+      ListMarket: {
         id: id(c),
         description,
         oracle: ORACLE,
@@ -202,24 +202,24 @@ const RfqScenarios = (() => {
     }));
 
   /**
-   * Funds everyone and lists the run's contract (closes at +5 s, hard deadline at +15 s).
+   * Funds everyone and lists the run's market (closes at +5 s, hard deadline at +15 s).
    * Rust: `rfq_testkit::scenarios::setup`; the dashboard's `presets::setup` is the same.
    */
-  const setup = () => [...fund(), list("list", (c) => c.contract(), "Will it rain in Paris on 2026-11-01?")];
+  const setup = () => [...fund(), list("list", (c) => c.market(), "Will it rain in Paris on 2026-11-01?")];
 
   /** Funds everyone and lists three markets (Paris, London, Rome), each closing at +5 s. Rust: `scenarios::three_markets`. */
   const threeMarkets = () => [
     ...fund(),
-    list("list_paris", (c) => c.contractN(1), "Will it rain in Paris on 2026-11-01?"),
-    list("list_london", (c) => c.contractN(2), "Will it rain in London on 2026-11-01?"),
-    list("list_rome", (c) => c.contractN(3), "Will it rain in Rome on 2026-11-01?"),
+    list("list_paris", (c) => c.marketN(1), "Will it rain in Paris on 2026-11-01?"),
+    list("list_london", (c) => c.marketN(2), "Will it rain in London on 2026-11-01?"),
+    list("list_rome", (c) => c.marketN(3), "Will it rain in Rome on 2026-11-01?"),
   ];
 
   /** Alice asks for 1000 YES with a sealed 0.70 limit; quotes due at +1.5 s. Rust: the `req` step of `quoted()` (`presets::request`). */
   const request = (at) =>
     send(at, "req", ALICE, (c) => ({
       SubmitRequest: {
-        legs: [{ contract: c.contract(), side: "BuyYes", qty: 1_000, limit_price: price(7_000) }],
+        legs: [{ market: c.market(), side: "BuyYes", qty: 1_000, limit_price: price(7_000) }],
         response_deadline: c.at(1_500),
       },
     }));
@@ -246,7 +246,7 @@ const RfqScenarios = (() => {
   const threeLegRequest = () =>
     send(100, "req", ALICE, (c) => ({
       SubmitRequest: {
-        legs: [1, 2, 3].map((k) => ({ contract: c.contractN(k), side: "BuyYes", qty: 400, limit_price: price(7_000) })),
+        legs: [1, 2, 3].map((k) => ({ market: c.marketN(k), side: "BuyYes", qty: 400, limit_price: price(7_000) })),
         response_deadline: c.at(1_500),
       },
     }));
@@ -258,17 +258,17 @@ const RfqScenarios = (() => {
     }));
 
   /** The oracle proposes YES. Rust: the `propose` step of `scenarios::all` (happy, disputed). */
-  const propose = (at) => send(at, "propose", ORACLE, (c) => ({ ProposeOutcome: { contract: c.contract(), outcome: "Yes" } }));
+  const propose = (at) => send(at, "propose", ORACLE, (c) => ({ ProposeOutcome: { market: c.market(), outcome: "Yes" } }));
 
   const BRIEF_SUMMARY = {
-    happy_path: "Two MMs quote, the best price is presented, Alice accepts, the oracle proposes YES and the contract settles.",
+    happy_path: "Two MMs quote, the best price is presented, Alice accepts, the oracle proposes YES and the market settles.",
     mm_cannot_withdraw_after_selection:
       "MM2 tries to cancel its selected quote inside the accept window: rejected, the quote is firm, Alice's accept fills.",
     no_quotes_expire: "Nobody quotes: at the deadline the request expires and Alice's hold is released.",
     requester_lapses: "Alice never answers: at accept_by the request is rejected and every hold is released.",
     disputed_ruled_invalid:
       "Carol disputes the proposed outcome with a bond; the arbiter rules INVALID and the positions are refunded.",
-    oracle_silent_hard_deadline: "The oracle never proposes: at the hard deadline the contract resolves INVALID and refunds everyone.",
+    oracle_silent_hard_deadline: "The oracle never proposes: at the hard deadline the market resolves INVALID and refunds everyone.",
     multi_leg_happy:
       "Alice asks for 400 YES in each of three markets in one request; MM1 quotes legs 1 and 3, MM2 leg 2. One accept fills all three legs.",
     multi_leg_leg2_fails:
@@ -293,9 +293,9 @@ const RfqScenarios = (() => {
         "RequestPresented",
         "QuoteFilled",
         "RequestFilled",
-        "ContractClosed",
+        "MarketClosed",
         "OutcomeProposed",
-        "ContractFinalized",
+        "MarketFinalized",
         "PositionSettled",
       ],
     },
@@ -329,22 +329,22 @@ const RfqScenarios = (() => {
         ...filled(),
         wait(5_100),
         propose(5_200),
-        send(5_500, "dispute", CAROL, (c) => ({ Dispute: { contract: c.contract() } })),
-        send(6_000, "rule", ARBITER, (c) => ({ Rule: { contract: c.contract(), outcome: "Invalid" } })),
+        send(5_500, "dispute", CAROL, (c) => ({ Dispute: { market: c.market() } })),
+        send(6_000, "rule", ARBITER, (c) => ({ Rule: { market: c.market(), outcome: "Invalid" } })),
       ],
-      expect: ["RequestFilled", "OutcomeProposed", "Disputed", "Ruled", "ContractFinalized", "PositionSettled"],
+      expect: ["RequestFilled", "OutcomeProposed", "Disputed", "Ruled", "MarketFinalized", "PositionSettled"],
     },
     // Rust: `rfq_testkit::scenarios::all()`, `silent`.
     {
       name: "oracle_silent_hard_deadline",
       kind: "brief",
       steps: [...filled(), wait(15_100)],
-      expect: ["RequestFilled", "ContractClosed", "ContractFinalized", "PositionSettled"],
+      expect: ["RequestFilled", "MarketClosed", "MarketFinalized", "PositionSettled"],
     },
     // Rust: `rfq_testkit::scenarios::all()`, `multi_leg_happy` (engine.md §8). Three markets, one request, a
     // quote on every leg, and one accept fills all three legs. MM1 backs leg indices 0 and 2, MM2 index 1.
-    // `markets`: how many extra markets the run lists (`ctx.contractN(1..=markets)`); a script without it
-    // lists the run's one contract, `t0`.
+    // `markets`: how many extra markets the run lists (`ctx.marketN(1..=markets)`); a script without it
+    // lists the run's one market, `t0`.
     {
       name: "multi_leg_happy",
       kind: "brief",
@@ -700,7 +700,7 @@ const RfqScenarios = (() => {
         name: scenario.name,
         kind: scenario.kind,
         t0,
-        contract: t0,
+        market: t0,
         accounts,
         expect: scenario.expect,
         pass: false,
@@ -779,7 +779,7 @@ const RfqScenarios = (() => {
     async function play(run) {
       const { scenario, ctx, result } = run;
       const t0 = ctx.t0;
-      const lists = scenario.markets ? `markets ${ctx.contractN(1)}..${ctx.contractN(scenario.markets)}` : `contract ${t0}`;
+      const lists = scenario.markets ? `markets ${ctx.marketN(1)}..${ctx.marketN(scenario.markets)}` : `market ${t0}`;
       run.log(`${scenario.name}: t0=${t0} (engine now + ${startMargin} ms), ${lists}`);
       for (const [i, step] of scenario.steps.entries()) {
         check(run);
@@ -933,7 +933,7 @@ const RfqScenarios = (() => {
     /**
      * Runs each of `names` `n` times, `k` at a time, and returns every run's verdict and the aggregate
      * perf: `{ runs, passed, failed, pass, stopped, perf }`. Runs are scoped (accounts `t0 * 100 + id`,
-     * contract `t0` or markets `t0 * 10 + k`, distinct `t0` 1 ms apart at least), so none sees another's
+     * market `t0` or markets `t0 * 10 + k`, distinct `t0` 1 ms apart at least), so none sees another's
      * events. `runs` is in the order the jobs were given (names interleaved: each name once, then again, ...); after a Stop it
      * holds only the runs that had started.
      */
@@ -1065,22 +1065,22 @@ const RfqScenarios = (() => {
   /** A wall-clock time as the page shows one, `14:03:12`. */
   const clockOf = (ms) => new Date(ms).toTimeString().slice(0, 8);
 
-  /** The accounts and contracts an action names besides its actor (a request or quote is named by a seq). */
+  /** The accounts and markets an action names besides its actor (a request or quote is named by a seq). */
   function named(action) {
     const [name, b] = Object.entries(action ?? {})[0] ?? [];
     switch (name) {
       case "Deposit":
-        return { accounts: [b.to], contracts: [] };
-      case "ListContract":
-        return { accounts: [b.oracle], contracts: [b.id] };
+        return { accounts: [b.to], markets: [] };
+      case "ListMarket":
+        return { accounts: [b.oracle], markets: [b.id] };
       case "SubmitRequest":
-        return { accounts: [], contracts: (b.legs ?? []).map((l) => l.contract) };
+        return { accounts: [], markets: (b.legs ?? []).map((l) => l.market) };
       case "ProposeOutcome":
       case "Dispute":
       case "Rule":
-        return { accounts: [], contracts: [b.contract] };
+        return { accounts: [], markets: [b.market] };
       default:
-        return { accounts: [], contracts: [] };
+        return { accounts: [], markets: [] };
     }
   }
 
@@ -1102,12 +1102,12 @@ const RfqScenarios = (() => {
     return t0s;
   }
 
-  /** Whether `cmd` is the run's: its actor is the run's, or a shared genesis role acts on the run's accounts or contracts. */
+  /** Whether `cmd` is the run's: its actor is the run's, or a shared genesis role acts on the run's accounts or markets. */
   function isRunCommand(scope, cmd) {
     if (scope.accounts.has(cmd.actor)) return true;
     if (!R.GENESIS_ROLES.includes(cmd.actor)) return false;
-    const { accounts, contracts } = named(cmd.action);
-    return accounts.some((a) => scope.accounts.has(a)) || contracts.some((c) => scope.ownsContract(c));
+    const { accounts, markets } = named(cmd.action);
+    return accounts.some((a) => scope.accounts.has(a)) || markets.some((c) => scope.ownsMarket(c));
   }
 
   /** The run (`t0`) whose script account `a` is, or null: `t0 * 100 + id`, with `id` one of the scripts' accounts. */
@@ -1116,7 +1116,7 @@ const RfqScenarios = (() => {
   /**
    * One pass over a history (`batches`, ascending by seq) for the runs `t0s`: per run, the indexes of the
    * batches whose command may be the run's (its account's, or a genesis role's that names one of its accounts
-   * or contracts: a contract `c` is run `c`'s, or, as an extra market, run `c / 10`'s), and whether a batch of
+   * or markets: a market `c` is run `c`'s, or, as an extra market, run `c / 10`'s), and whether a batch of
    * one of its accounts has no command (a live one, which carries no action). `isRunCommand` decides.
    */
   function indexRuns(batches, t0s) {
@@ -1129,9 +1129,9 @@ const RfqScenarios = (() => {
       }
       const owners = new Set([runOfAccount(b.command.actor)]);
       if (R.GENESIS_ROLES.includes(b.command.actor)) {
-        const { accounts, contracts } = named(b.command.action);
+        const { accounts, markets } = named(b.command.action);
         for (const a of accounts) owners.add(runOfAccount(a));
-        for (const c of contracts.filter(Number.isSafeInteger)) {
+        for (const c of markets.filter(Number.isSafeInteger)) {
           owners.add(c);
           if (c % 10 > 0) owners.add(Math.floor(c / 10));
         }
@@ -1259,7 +1259,7 @@ const RfqScenarios = (() => {
     }
     const steps = cmds.filter((c) => !c.retry);
     const retries = new Set(cmds.filter((c) => c.retry).map((c) => c.seq));
-    // Nothing before the run's first command is about its accounts or contracts.
+    // Nothing before the run's first command is about its accounts or markets.
     const from = cmds.length ? cmds[0].i : 0;
     const candidates = cmds.length ? candidatesOf(t0, steps, batches, from) : [];
     const whole = candidates.filter((s) => shapeOf(s).length === steps.length);
@@ -1331,7 +1331,7 @@ const RfqScenarios = (() => {
       name,
       kind: named?.kind ?? null,
       t0,
-      contract: t0,
+      market: t0,
       accounts,
       expect: named?.expect ?? [],
       pass,

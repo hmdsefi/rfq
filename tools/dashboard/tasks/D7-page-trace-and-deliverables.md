@@ -26,16 +26,16 @@
    - **Rejections.** `CommandRejected` events show the reason in the danger style.
    - **Filter chips:** All · Rejections · Money (Deposited / Withdrawn / QuoteFilled / PositionSettled / DisputeBondReturned) · Clock (tick / resume).
 2. **Object inspector** (`renderInspector`): when `selected` is set, show:
-   - the object's current state from the snapshot (request, quote or contract);
-   - its **history**: every trace entry whose command or events reference the id. Match numeric fields named `request`, `quote`, `contract`, `old`, `new` or `id` that equal the id, searching the event and command objects recursively. Ids are command seqs, so they never collide across kinds; contract ids are `1000`.
-   - Clicking an id inside the inspector re-selects. Show an empty-state hint when nothing is selected: "Click any request, quote or contract id to trace it".
+   - the object's current state from the snapshot (request, quote or market);
+   - its **history**: every trace entry whose command or events reference the id. Match numeric fields named `request`, `quote`, `market`, `old`, `new` or `id` that equal the id, searching the event and command objects recursively. Ids are command seqs, so they never collide across kinds; market ids are `1000`.
+   - Clicking an id inside the inspector re-selects. Show an empty-state hint when nothing is selected: "Click any request, quote or market id to trace it".
 3. **Ledger** (`renderLedger`): a table of `snapshot.accounts` with name, role, free, reserved, escrowed and total.
    - Show a Δ per cell against `prev.snapshot` for the same account id, when `prev` exists and the mode is unchanged. Positive and negative deltas are styled differently.
    - Footer: **ledger total** (`snapshot.total`, admin only), with the note "changes only on Deposit/Withdraw (I1)".
    - The I1–I5 status line comes from `snapshot.invariants`.
    - **Replay check** button: sends `replay_check` and shows "Replayed N commands → hash a1b2c3d4 = live a1b2c3d4 ✓", or a red mismatch line. The result clears on the next command.
 4. **D1 panel: state machines.**
-   - Three diagrams (Request, Quote, Contract) as inline SVG, transcribed from engine.md §6.1–6.3: every state, every edge, and on each edge the trigger and who can fire it (requester, MM, clock, oracle, anyone + bond, arbiter, system).
+   - Three diagrams (Request, Quote, Market) as inline SVG, transcribed from engine.md §6.1–6.3: every state, every edge, and on each edge the trigger and who can fire it (requester, MM, clock, oracle, anyone + bond, arbiter, system).
    - When `selected` is set, its diagram highlights the object's current state, plus the edge it took last (from the inspector history's last state-changing event).
    - A tab **"Multi-leg — Designed, not built (P6)"** shows engine.md §8's "leg 2 of 3" table as a three-step walkthrough (before the deadline → the deadline fires → the alternative path), and the five atomicity rules in one line each. The tab title includes the exact text "Designed, not built (P6)".
 5. **D3 panel: failure modes.** A compact table transcribed from failure-modes.md: id (R1–R9, F1–F15), the short race or failure, how it's handled, and the test name.

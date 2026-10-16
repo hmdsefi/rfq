@@ -243,7 +243,7 @@ await test("a plain run: the label is the result's seq, the run's own events pas
   assert.equal(run.perf.commands, 1);
   assert.deepEqual(run.perf.latency_us, { n: 1, p50: 700, p95: 700, max: 700 });
   assert.equal(run.own.length, 1);
-  assert.equal(run.contract, run.t0);
+  assert.equal(run.market, run.t0);
   assert.equal(run.accounts.alice, run.t0 * 100 + 10);
   gw.close();
 });

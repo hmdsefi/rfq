@@ -7,7 +7,7 @@
 //
 // First all 14 scenarios once, one after the other, each judged PASS or FAIL against its expected
 // events with its latency percentiles; then `happy_path` x20 at concurrency 4 (every run scoped to
-// its own accounts and contract, so none sees another's events), with the aggregate numbers. Exits 0
+// its own accounts and market, so none sees another's events), with the aggregate numbers. Exits 0
 // only if every run passed. `--mix N` adds a third part: all 14 scenarios N times each, at the same
 // concurrency, so that runs of different scenarios overlap on one engine. `--verbose` prints every
 // run's log. Needs Node 22 or later (the global WebSocket).

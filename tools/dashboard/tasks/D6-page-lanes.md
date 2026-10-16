@@ -1,8 +1,8 @@
-# Task D6: Page — top bar, lanes, contract card
+# Task D6: Page — top bar, lanes, market card
 
 **Blocked until** the PO approves D1. The approved `web/mockup.html` is the binding visual source: the same tokens, classes, markup structure and copy.
 
-**Goal:** replace the temporary `web/index.html` with the real page. The top bar drives presets, the clock and the view. The market-maker and user lanes and the contract card render from engine state, and every button sends a real engine command. The trace and deliverable panels come in D7; this task leaves their containers empty.
+**Goal:** replace the temporary `web/index.html` with the real page. The top bar drives presets, the clock and the view. The market-maker and user lanes and the market card render from engine state, and every button sends a real engine command. The trace and deliverable panels come in D7; this task leaves their containers empty.
 
 **Files:**
 - Modify: `tools/dashboard/web/index.html` (full rewrite, starting from the mockup).
@@ -77,17 +77,17 @@ const variant = (v) => (typeof v === "string" ? v : Object.keys(v)[0]); // serde
    - **Label.** Show "Demo aid — not part of the engine" (exact text).
 4. **Market makers lane.** One card per MM (MM1, MM2). In a non-admin view, show only the viewer's own card, if they're an MM.
    - **Free, reserved and escrowed balances** from `snapshot.accounts`.
-   - **Open requests.** List requests with `public_state == "open"`: contract, side, qty, time left until `response_deadline`. **Never show a limit** in an MM card, even as admin, so the card shows what an MM sees.
+   - **Open requests.** List requests with `public_state == "open"`: market, side, qty, time left until `response_deadline`. **Never show a limit** in an MM card, even as admin, so the card shows what an MM sees.
    - **Quote form** per open request: price in cents (0.01–99.99, converted to bps with `Math.round(cents * 100)`), size (default = the request qty), expiry in seconds from now (default 10). It sends `act` with `{SubmitQuote:{request, leg:0, price, size, expires_at: now + secs*1000}}`. Quoting again on the same request is the engine's Replace; label the button "Replace" when the MM already has a live quote on that request.
    - **The MM's quotes** from `snapshot.quotes` with a state badge, price, size and the hold (`size × (1 − price)`, shown as a label computed from the engine's numbers for display only). **Cancel** sends `{CancelQuote:{quote}}`. Show it on every live quote: the engine answers for a Selected one, which is part of the demo.
 5. **Users lane.** One card per requester (Alice, Carol). In a non-admin view, show only the viewer's own card, if they're a requester.
    - **Balances.**
-   - **New request form:** side (BuyYes/BuyNo), qty, limit in cents, deadline in seconds from now (default 1.5). It sends `act` with `{SubmitRequest:{legs:[{contract, side, qty, limit_price}], response_deadline}}`, using the first contract in `snapshot.contracts`.
+   - **New request form:** side (BuyYes/BuyNo), qty, limit in cents, deadline in seconds from now (default 1.5). It sends `act` with `{SubmitRequest:{legs:[{market, side, qty, limit_price}], response_deadline}}`, using the first market in `snapshot.markets`.
    - **Their requests** with a state badge from `variant(state)`; for `Rejected` also show the cause.
      - **Open:** Cancel.
      - **Presented:** the picks (quote id, price) and the time left until `accept_by`, with **Accept**, which sends `{Accept:{request, picks}}` with `picks` exactly as presented, and **Reject**.
-   - **Dispute** button next to every contract in `Proposed`. Any requester may dispute; the engine takes the bond.
-6. **Contract card** (always visible; contracts are public):
+   - **Dispute** button next to every market in `Proposed`. Any requester may dispute; the engine takes the bond.
+6. **Market card** (always visible; markets are public):
    - id, description, a state badge from `variant(state)`;
    - the resolution timeline as in the mockup: trading close, proposal and `dispute_until`, resolution deadline, a "now" cursor at `snapshot.now`;
    - **Oracle actions:** Propose YES, NO or INVALID (`ProposeOutcome`, actor ORACLE);
@@ -97,17 +97,17 @@ const variant = (v) => (typeof v === "string" ? v : Object.keys(v)[0]); // serde
    - `showError(msg)` shows a dismissible inline banner with the engine's sentence. It never uses `alert()`.
    - Form validation is inline next to the field, it blocks sending, and it clears on edit: "Enter a price between 0.01 and 99.99", "Enter a whole number of shares".
    - An engine `CommandRejected` is not an error. It is shown in the trace (D7) and as a short toast in the acting card, e.g. "Rejected: InvalidState".
-8. **Selection.** Clicking any id (request, quote, contract) calls `select(kind, id)`, which sets `selected` and re-renders. D7's inspector and state-machine panel read it.
+8. **Selection.** Clicking any id (request, quote, market) calls `select(kind, id)`, which sets `selected` and re-renders. D7's inspector and state-machine panel read it.
 9. **Accessibility.** Every control is a real `<button>`, `<select>` or `<input>` with a label. The focus ring is visible. Colour is never the only signal: badges carry text.
 
 ## Steps
 
-- [ ] **Step 1:** Copy `web/mockup.html` to `web/index.html`. Keep `<style>`. Replace the sample-data markup with empty containers (`#topbar`, `#mm-lane`, `#user-lane`, `#contract`, `#trace`, `#ledger`, `#inspector`, `#panels`), and add the two build markers and the core JS above.
-- [ ] **Step 2:** Implement `renderTopBar`, `renderMarketMakers`, `renderUsers`, `renderContract` and `showError`, plus the event handlers. Use event delegation on the lane containers (`data-action`, `data-id`). Re-render by replacing each container's `innerHTML`, and re-bind nothing.
+- [ ] **Step 1:** Copy `web/mockup.html` to `web/index.html`. Keep `<style>`. Replace the sample-data markup with empty containers (`#topbar`, `#mm-lane`, `#user-lane`, `#market`, `#trace`, `#ledger`, `#inspector`, `#panels`), and add the two build markers and the core JS above.
+- [ ] **Step 2:** Implement `renderTopBar`, `renderMarketMakers`, `renderUsers`, `renderMarket` and `showError`, plus the event handlers. Use event delegation on the lane containers (`data-action`, `data-id`). Re-render by replacing each container's `innerHTML`, and re-bind nothing.
 - [ ] **Step 3:** Stub `renderTrace`, `renderLedger`, `renderInspector` and `renderPanels` as `function renderX() {}`, and call all eight from `render()`.
 - [ ] **Step 4:** Run `tools/dashboard/build.sh`. Expected: the smoke checks pass and `dist/rfq-dashboard.html` is written.
 - [ ] **Step 5:** Open `dist/rfq-dashboard.html` in the built-in browser at 1440×900. The console has no errors.
-- [ ] **Step 6:** Play `happy_path` with Play. Expected: the quotes appear in the MM cards, Alice's card shows Presented with Accept/Reject, then Filled, and the contract card ends Final with settled positions. The verdict is PASS.
+- [ ] **Step 6:** Play `happy_path` with Play. Expected: the quotes appear in the MM cards, Alice's card shows Presented with Accept/Reject, then Filled, and the market card ends Final with settled positions. The verdict is PASS.
 - [ ] **Step 7: Browser checks** (use `read_page`, `find` and `javascript_tool` to read state, and screenshots to compare with the mockup):
   1. In sandbox, Alice requests 1000 BuyYes at limit 70¢ with a 1.5 s deadline. MM1 quotes 62¢ and MM2 quotes 60¢. **Next timer** presents MM2's 0.60 to Alice. **Accept** gives Filled.
   2. Reset `mm_cannot_withdraw_after_selection`, step to just after `RequestPresented`, take over, press Cancel on MM2's Selected quote. Expected: toast "Rejected: InvalidState" and the quote stays Selected.
@@ -118,5 +118,5 @@ const variant = (v) => (typeof v === "string" ? v : Object.keys(v)[0]); // serde
 
 ```bash
 git add tools/dashboard/web/index.html
-git commit -m "feat(dashboard): page with presets, clock, view-as, market-maker and requester lanes, contract card"
+git commit -m "feat(dashboard): page with presets, clock, view-as, market-maker and requester lanes, market card"
 ```

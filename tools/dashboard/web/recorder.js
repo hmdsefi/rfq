@@ -66,7 +66,7 @@ const RfqRecorder = (() => {
 
   /**
    * What belongs to one scenario run on a shared, long-lived engine (see rfq-demo's `scope.rs`).
-   * The run's contract is `t0` (a multi-leg run lists extra markets instead, `t0 * 10 + k` for k in 1..=9),
+   * The run's market is `t0` (a multi-leg run lists extra markets instead, `t0 * 10 + k` for k in 1..=9),
    * its accounts are `t0 * 100 + id`, and its requests and quotes are the ones whose id is the `seq` of
    * one of its own commands. `owns` keeps exactly the events about those.
    */
@@ -96,12 +96,12 @@ const RfqRecorder = (() => {
     }
 
     /**
-     * The run's own contract, or one of its extra markets: `t0 * 10 + k` for k in 1..=9 (what a script's
-     * `ctx.contractN(k)` gives; `k = 0` is not one, so it can't be mistaken for the run's own). Rust:
-     * `Scope::owns_contract`. Its `checked_mul` leaves a key that cannot be multiplied by 10 owning only its
-     * own contract; here that is a key whose product is not a safe integer.
+     * The run's own market, or one of its extra markets: `t0 * 10 + k` for k in 1..=9 (what a script's
+     * `ctx.marketN(k)` gives; `k = 0` is not one, so it can't be mistaken for the run's own). Rust:
+     * `Scope::owns_market`. Its `checked_mul` leaves a key that cannot be multiplied by 10 owning only its
+     * own market; here that is a key whose product is not a safe integer.
      */
-    ownsContract(id) {
+    ownsMarket(id) {
       if (id === this.key) return true;
       const base = this.key * 10;
       if (!Number.isSafeInteger(base)) return false;
@@ -128,14 +128,14 @@ const RfqRecorder = (() => {
         case "Deposited":
         case "Withdrawn":
           return account(b.account);
-        case "ContractListed":
-        case "ContractClosed":
+        case "MarketListed":
+        case "MarketClosed":
         case "OutcomeProposed":
         case "Disputed":
         case "Ruled":
         case "DisputeBondReturned":
-        case "ContractFinalized":
-          return this.ownsContract(b.contract);
+        case "MarketFinalized":
+          return this.ownsMarket(b.market);
         case "RequestOpened":
         case "RequestCancelled":
         case "RequestExpired":

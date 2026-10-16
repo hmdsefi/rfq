@@ -6,7 +6,7 @@
 // `batches` are the merged batches of one connection, in arrival order (a recorder's `allBatches()`,
 // or a run's part of them). `position` is an index into them: the model is built from batches 0..position.
 // Object states come from the events (each event is a transition). Balances come from `balances`
-// only. What the events don't carry (a requester's limit, a quote's size, a contract's terms) comes
+// only. What the events don't carry (a requester's limit, a quote's size, a market's terms) comes
 // from the command the page itself sent, `commandAt(seq, epoch)`, joined only through a batch's `origin`: the
 // gateway forwards an origin only to the view that sent the command (gateway.md §4), so in an account
 // view the page's knowledge of the other participants' commands never reaches the model. A history batch
@@ -43,12 +43,12 @@ const RfqModel = (() => {
 
   /**
    * The model at `position` (default: the last batch; -1: before the first). Returns
-   * `{ position, count, seq, epoch, now, viewer, accounts, previous, nonces, requests, quotes, contracts,
+   * `{ position, count, seq, epoch, now, viewer, accounts, previous, nonces, requests, quotes, markets,
    * positions, trace }`, in the shape the page's renderers read:
    *   - `accounts`: `[{ id, name, role, balance }]`, each with its last `balances` value up to the position;
    *     `previous` is the same as a Map (id -> balance) one position earlier, for the ledger's deltas;
    *   - `nonces`: actor -> the last nonce the engine consumed, from the origins this connection heard;
-   *   - `requests`, `quotes`, `contracts`, `positions`: what this connection's events say about them;
+   *   - `requests`, `quotes`, `markets`, `positions`: what this connection's events say about them;
    *     a field nothing said is null (sealed, or not in this recording);
    *   - `trace`: one entry per batch, `{ key, seq, epoch, time, kind, actor, nonce, command, events, balances }`,
    *     `kind` "user", "tick", "resume", "genesis", or "hidden" (another party's command, its origin
@@ -65,15 +65,15 @@ const RfqModel = (() => {
     const nonces = new Map(); // actor -> the last nonce the engine consumed, as far as this view heard
     const requests = new Map(); // "epoch:id" -> request
     const quotes = new Map();
-    const contracts = new Map();
+    const markets = new Map();
     const positions = new Map();
     const trace = [];
 
     const k = (epoch, id) => `${epoch}:${id}`;
-    /** The contract, made by its listing; null for a contract this recording never saw listed. */
-    const contractFor = (epoch, id, listing = false) => {
-      if (listing && !contracts.has(k(epoch, id))) {
-        contracts.set(k(epoch, id), {
+    /** The market, made by its listing; null for a market this recording never saw listed. */
+    const marketFor = (epoch, id, listing = false) => {
+      if (listing && !markets.has(k(epoch, id))) {
+        markets.set(k(epoch, id), {
           id,
           epoch,
           description: null,
@@ -89,14 +89,14 @@ const RfqModel = (() => {
           positions: [],
         });
       }
-      return contracts.get(k(epoch, id)) ?? null;
+      return markets.get(k(epoch, id)) ?? null;
     };
     const positionFor = (epoch, id) => {
       if (!positions.has(k(epoch, id))) {
         positions.set(k(epoch, id), {
           id,
           epoch,
-          contract: null,
+          market: null,
           request: null,
           leg: null,
           qty: null,
@@ -117,7 +117,7 @@ const RfqModel = (() => {
      */
     const legIndexOf = (q, r) => q.leg ?? (r && r.legs.length === 1 ? 0 : null);
     /**
-     * A position opened by the request's fill, for leg `legIndex` of `request`: its contract, qty and leg,
+     * A position opened by the request's fill, for leg `legIndex` of `request`: its market, qty and leg,
      * and the holder on `holderBuysYes`'s side. An unknown leg (null) leaves the leg's fields unknown.
      */
     const fillPosition = (epoch, pid, request, legIndex, holder, holderBuysYes) => {
@@ -126,9 +126,9 @@ const RfqModel = (() => {
       if (request) p.request = request.id;
       if (leg) {
         p.leg = legIndex;
-        p.contract = leg.contract;
+        p.market = leg.market;
         p.qty = leg.qty;
-        const c = contracts.get(k(epoch, leg.contract));
+        const c = markets.get(k(epoch, leg.market));
         if (c && !c.positions.includes(pid)) c.positions.push(pid);
       }
       if (holder != null && holderBuysYes != null) p[holderBuysYes ? "yes_holder" : "no_holder"] = holder;
@@ -154,10 +154,10 @@ const RfqModel = (() => {
         const d = body(e.event);
         const owner = e.audience && e.audience !== "Public" ? e.audience.Account : null;
         switch (name) {
-          case "ContractListed": {
-            const c = contractFor(epoch, d.contract, true);
-            const listed = actionOf(cmd, "ListContract");
-            if (listed && listed.id === d.contract) {
+          case "MarketListed": {
+            const c = marketFor(epoch, d.market, true);
+            const listed = actionOf(cmd, "ListMarket");
+            if (listed && listed.id === d.market) {
               Object.assign(c, {
                 description: listed.description,
                 oracle: listed.oracle,
@@ -168,13 +168,13 @@ const RfqModel = (() => {
             }
             break;
           }
-          case "ContractClosed": {
-            const c = contractFor(epoch, d.contract);
+          case "MarketClosed": {
+            const c = marketFor(epoch, d.market);
             if (c) c.state = "Closed";
             break;
           }
           case "OutcomeProposed": {
-            const c = contractFor(epoch, d.contract);
+            const c = marketFor(epoch, d.market);
             if (!c) break;
             c.state = { Proposed: { outcome: d.outcome, dispute_until: d.dispute_until } };
             // A Resume re-emits it with a later dispute_until: the proposal keeps its first time.
@@ -182,7 +182,7 @@ const RfqModel = (() => {
             break;
           }
           case "Disputed": {
-            const c = contractFor(epoch, d.contract);
+            const c = marketFor(epoch, d.market);
             if (!c) break;
             const proposed = c.state?.Proposed?.outcome ?? c.proposal?.outcome ?? null;
             c.state = { Disputed: { proposed } };
@@ -190,17 +190,17 @@ const RfqModel = (() => {
             break;
           }
           case "Ruled": {
-            const c = contractFor(epoch, d.contract);
+            const c = marketFor(epoch, d.market);
             if (c) c.ruling = { outcome: d.outcome, bond_returned: d.bond_returned };
             break;
           }
-          case "ContractFinalized": {
-            const c = contractFor(epoch, d.contract);
+          case "MarketFinalized": {
+            const c = marketFor(epoch, d.market);
             if (c) c.state = { Final: d.outcome };
             break;
           }
           case "DisputeBondReturned": {
-            const c = contractFor(epoch, d.contract);
+            const c = marketFor(epoch, d.market);
             if (c) c.bond_returned = { disputer: d.disputer, amount: d.amount };
             break;
           }
@@ -220,7 +220,7 @@ const RfqModel = (() => {
               requests.set(k(epoch, d.request), r);
             }
             r.legs[d.leg] = {
-              contract: d.contract,
+              market: d.market,
               side: d.side,
               qty: d.qty,
               limit_price: submitted?.legs?.[d.leg]?.limit_price ?? null,
@@ -379,7 +379,7 @@ const RfqModel = (() => {
       nonces,
       requests: [...requests.values()],
       quotes: [...quotes.values()],
-      contracts: [...contracts.values()],
+      markets: [...markets.values()],
       positions: [...positions.values()],
       trace,
     };

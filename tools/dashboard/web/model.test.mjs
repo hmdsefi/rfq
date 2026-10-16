@@ -23,7 +23,7 @@ function test(name, fn) {
 const fx = JSON.parse(readFileSync(new URL("./fixtures/happy_path.live.json", import.meta.url), "utf8"));
 const { alice, mm1, mm2, carol, oracle } = fx.run.accounts;
 const L = fx.run.labels; // label -> seq: the ids of the run's requests and quotes are these seqs
-const contract = fx.run.t0;
+const market = fx.run.t0;
 
 /** The page's own commands, by the seq of the batch each made (what the driver's `commandAt` answers). */
 const bySeq = new Map(fx.commands.map((c) => [c.seq, c]));
@@ -61,16 +61,16 @@ test("at the RequestPresented batch: the request is Presented with the engine's 
   assert.equal(m.quotes.find((q) => q.id === L.q1).state, "Lost");
   assert.equal(r.legs[0].selected, L.q2);
   // The page's own commands fill in what the events don't carry: the requester and her sealed limit,
-  // a quote's maker (also its event's audience) and size, the contract's terms.
+  // a quote's maker (also its event's audience) and size, the market's terms.
   assert.equal(r.requester, alice);
   assert.equal(r.legs[0].limit_price, 7_000);
-  assert.deepEqual([r.legs[0].side, r.legs[0].qty, r.legs[0].contract], ["BuyYes", 1_000, contract]);
+  assert.deepEqual([r.legs[0].side, r.legs[0].qty, r.legs[0].market], ["BuyYes", 1_000, market]);
   const q2 = m.quotes.find((q) => q.id === L.q2);
   assert.deepEqual([q2.mm, q2.request, q2.price, q2.size, q2.leg], [mm2, L.req, 6_000, 1_000, 0]);
-  const c = m.contracts.find((x) => x.id === contract);
+  const c = m.markets.find((x) => x.id === market);
   assert.equal(c.state, "Trading");
   assert.equal(c.description, "Will it rain in Paris on 2026-11-01?");
-  assert.deepEqual([c.oracle, c.trading_close, c.resolution_deadline, c.dispute_window], [oracle, contract + 5_000, contract + 15_000, 2_000]);
+  assert.deepEqual([c.oracle, c.trading_close, c.resolution_deadline, c.dispute_window], [oracle, market + 5_000, market + 15_000, 2_000]);
   // Nothing filled yet.
   assert.deepEqual(m.positions, []);
 });
@@ -94,20 +94,20 @@ test("balances are the last `balances` seen up to the position; the previous pos
   assert.deepEqual(end.accounts.map((a) => a.id).sort(), [alice, mm1, mm2, carol].sort());
 });
 
-test("the end: request and quote Filled, the contract Final, the position settled with the engine's payouts", () => {
+test("the end: request and quote Filled, the market Final, the position settled with the engine's payouts", () => {
   const m = M.modelAt(admin);
   assert.equal(m.position, admin.batches.length - 1);
   assert.equal(variant(m.requests.find((x) => x.id === L.req).state), "Filled");
   assert.equal(m.quotes.find((q) => q.id === L.q2).state, "Filled");
-  const c = m.contracts.find((x) => x.id === contract);
+  const c = m.markets.find((x) => x.id === market);
   assert.deepEqual(c.state, { Final: "Yes" });
   assert.deepEqual(c.proposal, { at: admin.batches[indexOf(admin, L.propose)].time, outcome: "Yes", until: c.proposal.until });
   const settled = eventsNamed(admin, "PositionSettled")[0].events.find((e) => variant(e.event) === "PositionSettled").event.PositionSettled;
   assert.equal(m.positions.length, 1);
   const p = m.positions[0];
   assert.deepEqual(
-    [p.id, p.contract, p.request, p.qty, p.yes_holder, p.no_holder, p.settled],
-    [settled.position, contract, L.req, 1_000, alice, mm2, true],
+    [p.id, p.market, p.request, p.qty, p.yes_holder, p.no_holder, p.settled],
+    [settled.position, market, L.req, 1_000, alice, mm2, true],
   );
   assert.deepEqual([p.yes_payout, p.no_payout], [settled.yes_payout, settled.no_payout]);
   // No lock is made up: the events don't carry one.
@@ -135,7 +135,7 @@ test("the trace: one entry per batch, with kind, actor and nonce from the origin
 
 test("positions: -1 is before the first batch, past the end is the end, and nothing after the position leaks in", () => {
   const empty = M.modelAt(admin, -1);
-  assert.deepEqual([empty.accounts, empty.requests, empty.quotes, empty.contracts, empty.trace, empty.seq, empty.now], [[], [], [], [], [], null, null]);
+  assert.deepEqual([empty.accounts, empty.requests, empty.quotes, empty.markets, empty.trace, empty.seq, empty.now], [[], [], [], [], [], null, null]);
   assert.equal(M.modelAt(admin, 999).position, admin.batches.length - 1);
   const atListing = M.modelAt(admin, indexOf(admin, L.list));
   assert.deepEqual(atListing.requests, []);
@@ -164,8 +164,8 @@ test("as MM1: its own balance, quote and the public request; never the limit, th
   // MM1 never hears that the request was presented or filled: those go to the requester only.
   assert.equal(variant(r.state), "Open");
   assert.deepEqual(m.quotes.map((q) => [q.id, q.mm, q.size, q.state]), [[L.q1, mm1, 1_000, "Lost"]]);
-  // The contract's terms come with the operator's command, which this view never receives.
-  const c = m.contracts.find((x) => x.id === contract);
+  // The market's terms come with the operator's command, which this view never receives.
+  const c = m.markets.find((x) => x.id === market);
   assert.equal(c.description, null);
   assert.deepEqual(c.state, { Final: "Yes" });
   assert.deepEqual(m.positions, []);
@@ -204,16 +204,16 @@ const batch = (seq, events, { origin = null, balances = [], kind = "User", time 
 
 test("replace, dispute, ruling, a Resume and a rejection: each event moves its object as the engine said", () => {
   const frames = [
-    batch(2, [pub({ ContractListed: { contract: 7 } })]),
-    batch(3, [pub({ RequestOpened: { request: 3, leg: 0, contract: 7, side: "BuyNo", qty: 5, response_deadline: 9_000 } })]),
+    batch(2, [pub({ MarketListed: { market: 7 } })]),
+    batch(3, [pub({ RequestOpened: { request: 3, leg: 0, market: 7, side: "BuyNo", qty: 5, response_deadline: 9_000 } })]),
     batch(4, [to(20, { QuoteSubmitted: { quote: 4, request: 3, price: 4_000, expires_at: 9_500 } })]),
     batch(5, [to(20, { QuoteReplaced: { old: 4, new: 5 } }), to(20, { QuoteSubmitted: { quote: 5, request: 3, price: 3_900, expires_at: 9_500 } })]),
     batch(6, [to(20, { QuoteLost: { quote: 5 } }), pub({ RequestRejected: { request: 3, cause: "Lapsed" } })], { kind: "Tick" }),
-    batch(7, [pub({ OutcomeProposed: { contract: 7, outcome: "No", dispute_until: 12_000 } })]),
-    batch(8, [pub({ Disputed: { contract: 7, disputer: 30 } })]),
+    batch(7, [pub({ OutcomeProposed: { market: 7, outcome: "No", dispute_until: 12_000 } })]),
+    batch(8, [pub({ Disputed: { market: 7, disputer: 30 } })]),
     batch(9, [], { kind: "Resume" }),
     batch(10, [to(30, { CommandRejected: { reason: "InvalidState" } })], { origin: { actor: 30, nonce: 4 } }),
-    batch(11, [pub({ Ruled: { contract: 7, outcome: "Invalid", bond_returned: true } }), pub({ ContractFinalized: { contract: 7, outcome: "Invalid" } })]),
+    batch(11, [pub({ Ruled: { market: 7, outcome: "Invalid", bond_returned: true } }), pub({ MarketFinalized: { market: 7, outcome: "Invalid" } })]),
   ];
   const rec = recording(frames);
   const at = (seq) => M.modelAt(rec, indexOf(rec, seq));
@@ -221,19 +221,19 @@ test("replace, dispute, ruling, a Resume and a rejection: each event moves its o
   assert.equal(at(5).quotes.find((q) => q.id === 5).mm, 20, "the maker is the event's audience");
   assert.deepEqual(at(6).requests[0].state, { Rejected: "Lapsed" });
   assert.equal(at(6).requests[0].legs[0].limit_price, null, "no command of the page: no limit");
-  assert.deepEqual(at(7).contracts[0].state, { Proposed: { outcome: "No", dispute_until: 12_000 } });
-  assert.deepEqual(at(8).contracts[0].state, { Disputed: { proposed: "No" } });
-  assert.deepEqual(at(8).contracts[0].dispute, { disputer: 30 });
+  assert.deepEqual(at(7).markets[0].state, { Proposed: { outcome: "No", dispute_until: 12_000 } });
+  assert.deepEqual(at(8).markets[0].state, { Disputed: { proposed: "No" } });
+  assert.deepEqual(at(8).markets[0].dispute, { disputer: 30 });
   assert.equal(at(9).trace.at(-1).kind, "resume");
   assert.deepEqual(at(10).trace.at(-1).events.map((e) => e.event), [{ CommandRejected: { reason: "InvalidState" } }]);
   assert.equal(at(10).trace.at(-1).command, null, "a command the page did not send has no action to show");
-  assert.deepEqual(at(11).contracts[0].state, { Final: "Invalid" });
-  assert.deepEqual(at(11).contracts[0].ruling, { outcome: "Invalid", bond_returned: true });
+  assert.deepEqual(at(11).markets[0].state, { Final: "Invalid" });
+  assert.deepEqual(at(11).markets[0].ruling, { outcome: "Invalid", bond_returned: true });
 });
 
 test("a command joins a batch only when its actor and nonce are the batch's origin", () => {
-  const frames = [batch(3, [pub({ RequestOpened: { request: 3, leg: 0, contract: 7, side: "BuyYes", qty: 5, response_deadline: 9 } })], { origin: { actor: 10, nonce: 2 } })];
-  const wrong = { actor: 10, nonce: 9, action: { SubmitRequest: { legs: [{ contract: 7, side: "BuyYes", qty: 5, limit_price: 6_000 }], response_deadline: 9 } } };
+  const frames = [batch(3, [pub({ RequestOpened: { request: 3, leg: 0, market: 7, side: "BuyYes", qty: 5, response_deadline: 9 } })], { origin: { actor: 10, nonce: 2 } })];
+  const wrong = { actor: 10, nonce: 9, action: { SubmitRequest: { legs: [{ market: 7, side: "BuyYes", qty: 5, limit_price: 6_000 }], response_deadline: 9 } } };
   const m = M.modelAt({ ...recording(frames), commandAt: () => wrong });
   assert.equal(m.requests[0].requester, null);
   assert.equal(m.requests[0].legs[0].limit_price, null);
@@ -243,12 +243,12 @@ test("a command joins a batch only when its actor and nonce are the batch's orig
 });
 
 test("a history batch's own command stands in where the page has none: limits and quote sizes come back after a reload", () => {
-  const listing = { actor: 1, nonce: 4, action: { ListContract: { id: 7, description: "Will it rain?", oracle: 4, trading_close: 5_000, resolution_deadline: 15_000, dispute_window: 2_000 } } };
-  const request = { actor: 10, nonce: 2, action: { SubmitRequest: { legs: [{ contract: 7, side: "BuyYes", qty: 5, limit_price: 7_000 }], response_deadline: 9_000 } } };
+  const listing = { actor: 1, nonce: 4, action: { ListMarket: { id: 7, description: "Will it rain?", oracle: 4, trading_close: 5_000, resolution_deadline: 15_000, dispute_window: 2_000 } } };
+  const request = { actor: 10, nonce: 2, action: { SubmitRequest: { legs: [{ market: 7, side: "BuyYes", qty: 5, limit_price: 7_000 }], response_deadline: 9_000 } } };
   const quote = { actor: 20, nonce: 3, action: { SubmitQuote: { request: 3, leg: 0, price: 6_000, size: 5, expires_at: 9_500 } } };
-  const open = { RequestOpened: { request: 3, leg: 0, contract: 7, side: "BuyYes", qty: 5, response_deadline: 9_000 } };
+  const open = { RequestOpened: { request: 3, leg: 0, market: 7, side: "BuyYes", qty: 5, response_deadline: 9_000 } };
   const entries = [
-    { ...batch(2, [pub({ ContractListed: { contract: 7 } })], { origin: { actor: 1, nonce: 4 } }), command: listing },
+    { ...batch(2, [pub({ MarketListed: { market: 7 } })], { origin: { actor: 1, nonce: 4 } }), command: listing },
     { ...batch(3, [pub(open)], { origin: { actor: 10, nonce: 2 } }), command: request },
     { ...batch(4, [to(20, { QuoteSubmitted: { quote: 4, request: 3, price: 6_000, expires_at: 9_500 } })], { origin: { actor: 20, nonce: 3 } }), command: quote },
   ];
@@ -258,10 +258,10 @@ test("a history batch's own command stands in where the page has none: limits an
   const m = M.modelAt({ batches: rec.allBatches(), viewer: "admin" });
   assert.deepEqual([m.requests[0].requester, m.requests[0].legs[0].limit_price], [10, 7_000], "the request shows its limit 0.70");
   assert.deepEqual([m.quotes[0].mm, m.quotes[0].size, m.quotes[0].leg], [20, 5, 0]);
-  assert.deepEqual([m.contracts[0].description, m.contracts[0].oracle, m.contracts[0].trading_close], ["Will it rain?", 4, 5_000]);
+  assert.deepEqual([m.markets[0].description, m.markets[0].oracle, m.markets[0].trading_close], ["Will it rain?", 4, 5_000]);
   assert.deepEqual(m.trace[1].command, { User: { actor: 10, nonce: 2, action: request.action } });
   // The page's own command, when it has one for the batch, comes first.
-  const own = { ...request, action: { SubmitRequest: { legs: [{ contract: 7, side: "BuyYes", qty: 5, limit_price: 6_500 }], response_deadline: 9_000 } } };
+  const own = { ...request, action: { SubmitRequest: { legs: [{ market: 7, side: "BuyYes", qty: 5, limit_price: 6_500 }], response_deadline: 9_000 } } };
   const both = M.modelAt({ batches: rec.allBatches(), commandAt: (seq) => (seq === 3 ? own : undefined), viewer: "admin" });
   assert.equal(both.requests[0].legs[0].limit_price, 6_500);
   // Live batches have no `command`: nothing changes for them.
@@ -270,8 +270,8 @@ test("a history batch's own command stands in where the page has none: limits an
 });
 
 test("a history batch's command is used only when its actor and nonce are the batch's origin; with no origin it is never used", () => {
-  const action = { SubmitRequest: { legs: [{ contract: 7, side: "BuyYes", qty: 5, limit_price: 7_000 }], response_deadline: 9_000 } };
-  const open = pub({ RequestOpened: { request: 3, leg: 0, contract: 7, side: "BuyYes", qty: 5, response_deadline: 9_000 } });
+  const action = { SubmitRequest: { legs: [{ market: 7, side: "BuyYes", qty: 5, limit_price: 7_000 }], response_deadline: 9_000 } };
+  const open = pub({ RequestOpened: { request: 3, leg: 0, market: 7, side: "BuyYes", qty: 5, response_deadline: 9_000 } });
   const model = (origin, command) => {
     const rec = R.createRecorder();
     rec.seedHistory([{ ...batch(3, [open], { origin }), command }]);
@@ -290,25 +290,25 @@ test("a history batch's command is used only when its actor and nonce are the ba
 
 test("a recording that began late, or a batch shared with another run: events about objects it never saw make none", () => {
   const frames = [
-    batch(5, [pub({ ContractClosed: { contract: 99 } }), pub({ OutcomeProposed: { contract: 99, outcome: "Yes", dispute_until: 9 } })], { kind: "Tick" }),
+    batch(5, [pub({ MarketClosed: { market: 99 } }), pub({ OutcomeProposed: { market: 99, outcome: "Yes", dispute_until: 9 } })], { kind: "Tick" }),
     batch(6, [to(10, { PositionSettled: { position: 3, yes_holder: 10, yes_payout: 5, no_holder: 20, no_payout: 0 } }), to(20, { QuoteLost: { quote: 4 } })], { kind: "Tick" }),
-    batch(7, [pub({ RequestExpired: { request: 2 } }), pub({ Disputed: { contract: 99, disputer: 30 } }), pub({ ContractFinalized: { contract: 99, outcome: "Yes" } })], { kind: "Tick" }),
+    batch(7, [pub({ RequestExpired: { request: 2 } }), pub({ Disputed: { market: 99, disputer: 30 } }), pub({ MarketFinalized: { market: 99, outcome: "Yes" } })], { kind: "Tick" }),
   ];
   const m = M.modelAt(recording(frames));
-  assert.deepEqual([m.contracts, m.positions, m.requests, m.quotes], [[], [], [], []]);
+  assert.deepEqual([m.markets, m.positions, m.requests, m.quotes], [[], [], [], []]);
   assert.equal(m.trace.length, 3, "the batches are still in the trace, as they came");
 });
 
 test("a journal reset: batches of two epochs with the same seq are two trace entries, and objects don't mix", () => {
   const frames = [
-    batch(3, [pub({ RequestOpened: { request: 3, leg: 0, contract: 7, side: "BuyYes", qty: 5, response_deadline: 9 } })]),
+    batch(3, [pub({ RequestOpened: { request: 3, leg: 0, market: 7, side: "BuyYes", qty: 5, response_deadline: 9 } })]),
     batch(4, [pub({ RequestExpired: { request: 3 } })], { kind: "Tick" }),
-    batch(3, [pub({ RequestOpened: { request: 3, leg: 0, contract: 8, side: "BuyNo", qty: 6, response_deadline: 9 } })]),
+    batch(3, [pub({ RequestOpened: { request: 3, leg: 0, market: 8, side: "BuyNo", qty: 6, response_deadline: 9 } })]),
   ];
   const m = M.modelAt(recording(frames));
   assert.deepEqual(m.trace.map((e) => e.key), ["0:3", "0:4", "1:3"]);
   // Ids are per journal: the new epoch's request #3 is a new object.
-  assert.deepEqual(m.requests.map((r) => [r.epoch, r.id, variant(r.state), r.legs[0].contract]), [[0, 3, "Expired", 7], [1, 3, "Open", 8]]);
+  assert.deepEqual(m.requests.map((r) => [r.epoch, r.id, variant(r.state), r.legs[0].market]), [[0, 3, "Expired", 7], [1, 3, "Open", 8]]);
 });
 
 // ---- multi-leg: one request, three legs (engine.md §8) ------------------------------------------------
@@ -332,15 +332,15 @@ function threeLegs({ fill }) {
   [alice, mm1, mm2].forEach((a, i) => add(2 + i, [to(a, { Deposited: { account: a, amount: 1_000_000_000 } })], {
     origin: { actor: op, nonce: 1 + i }, balances: [bal(a, 1_000_000_000)], action: { Deposit: { to: a, amount: 1_000_000_000 } },
   }));
-  markets.forEach(([id, city], i) => add(5 + i, [pub({ ContractListed: { contract: id } })], {
+  markets.forEach(([id, city], i) => add(5 + i, [pub({ MarketListed: { market: id } })], {
     origin: { actor: op, nonce: 4 + i },
-    action: { ListContract: { id, description: `Will it rain in ${city} on 2026-11-01?`, oracle: 4, trading_close: 50_000, resolution_deadline: 150_000, dispute_window: 2_000 } },
+    action: { ListMarket: { id, description: `Will it rain in ${city} on 2026-11-01?`, oracle: 4, trading_close: 50_000, resolution_deadline: 150_000, dispute_window: 2_000 } },
   }));
   const REQ = 9;
-  add(REQ, markets.map(([contract], leg) => pub({ RequestOpened: { request: REQ, leg, contract, side: "BuyYes", qty: 400, response_deadline: 11_500 } })), {
+  add(REQ, markets.map(([market], leg) => pub({ RequestOpened: { request: REQ, leg, market, side: "BuyYes", qty: 400, response_deadline: 11_500 } })), {
     origin: { actor: alice, nonce: 1 },
     balances: [bal(alice, 160_000_000, 840_000_000)],
-    action: { SubmitRequest: { legs: markets.map(([contract]) => ({ contract, side: "BuyYes", qty: 400, limit_price: 7_000 })), response_deadline: 11_500 } },
+    action: { SubmitRequest: { legs: markets.map(([market]) => ({ market, side: "BuyYes", qty: 400, limit_price: 7_000 })), response_deadline: 11_500 } },
   });
   const quote = (seq, mm, leg, price, balances) => add(seq, [to(mm, { QuoteSubmitted: { quote: seq, request: REQ, price, expires_at: 13_500 } })], {
     origin: { actor: mm, nonce: 1 },
@@ -398,9 +398,9 @@ test("a 3-leg request opens with every leg: market, side, qty, and the sealed li
   const m = M.modelAt(rec, indexOf(rec, ml.REQ));
   const r = m.requests[0];
   assert.equal(r.legs.length, 3);
-  assert.deepEqual(r.legs.map((l) => [l.contract, l.side, l.qty, l.limit_price]), [[101, "BuyYes", 400, 7_000], [102, "BuyYes", 400, 7_000], [103, "BuyYes", 400, 7_000]]);
+  assert.deepEqual(r.legs.map((l) => [l.market, l.side, l.qty, l.limit_price]), [[101, "BuyYes", 400, 7_000], [102, "BuyYes", 400, 7_000], [103, "BuyYes", 400, 7_000]]);
   assert.equal(r.requester, ml.ids.alice);
-  assert.deepEqual(m.contracts.map((c) => [c.id, c.description]), ml.markets.map(([id, city]) => [id, `Will it rain in ${city} on 2026-11-01?`]));
+  assert.deepEqual(m.markets.map((c) => [c.id, c.description]), ml.markets.map(([id, city]) => [id, `Will it rain in ${city} on 2026-11-01?`]));
 });
 
 test("Presented with 3 picks: one per leg, each leg's selected quote, and each quote's own leg", () => {
@@ -421,10 +421,10 @@ test("Filled with 3 positions: one per leg, on that leg's market and qty, the ma
   const m = M.modelAt(modelOf(ml));
   assert.equal(variant(m.requests[0].state), "Filled");
   assert.deepEqual(
-    m.positions.map((p) => [p.id, p.leg, p.contract, p.qty, p.request, p.yes_holder, p.no_holder]),
+    m.positions.map((p) => [p.id, p.leg, p.market, p.qty, p.request, p.yes_holder, p.no_holder]),
     [[1, 0, 101, 400, ml.REQ, ml.ids.alice, ml.ids.mm1], [2, 1, 102, 400, ml.REQ, ml.ids.alice, ml.ids.mm2], [3, 2, 103, 400, ml.REQ, ml.ids.alice, ml.ids.mm1]],
   );
-  assert.deepEqual(m.contracts.map((c) => c.positions), [[1], [2], [3]], "one position per market");
+  assert.deepEqual(m.markets.map((c) => c.positions), [[1], [2], [3]], "one position per market");
   assert.deepEqual(m.quotes.map((q) => q.state), ["Filled", "Filled", "Filled"]);
   // The money is the engine's: Alice escrowed $744 of her $840 hold and the rest is free again.
   assert.deepEqual(m.accounts.find((a) => a.id === ml.ids.alice).balance, { free: 256_000_000, reserved: 0, escrowed: 744_000_000 });
@@ -436,7 +436,7 @@ test("as Alice: Filled lists every position from RequestFilled, leg by leg; her 
   const r = m.requests[0];
   assert.deepEqual([r.requester, variant(r.state), r.legs.map((l) => l.limit_price)], [ml.ids.alice, "Filled", [7_000, 7_000, 7_000]]);
   assert.deepEqual(r.picks.map((p) => p.leg), [0, 1, 2]);
-  assert.deepEqual(m.positions.map((p) => [p.id, p.leg, p.contract, p.qty, p.yes_holder, p.no_holder]), [[1, 0, 101, 400, ml.ids.alice, null], [2, 1, 102, 400, ml.ids.alice, null], [3, 2, 103, 400, ml.ids.alice, null]]);
+  assert.deepEqual(m.positions.map((p) => [p.id, p.leg, p.market, p.qty, p.yes_holder, p.no_holder]), [[1, 0, 101, 400, ml.ids.alice, null], [2, 1, 102, 400, ml.ids.alice, null], [3, 2, 103, 400, ml.ids.alice, null]]);
   assert.deepEqual(m.quotes, []);
   const text = JSON.stringify(m, (k, v) => (v instanceof Map ? [...v] : v));
   for (const id of [ml.ids.mm1, ml.ids.mm2]) assert.ok(!hasNumber(text, id), `account ${id} in Alice's model`);
@@ -466,11 +466,11 @@ test("as MM2 during the Expired story: its own quote and leg, the public legs; n
   const ml = threeLegs({ fill: false });
   const m = M.modelAt(modelOf(ml, viewOf(ml.frames, ml.ids.mm2), { viewer: { account: ml.ids.mm2 } }));
   const r = m.requests[0];
-  assert.deepEqual(r.legs.map((l) => [l.contract, l.side, l.qty, l.limit_price]), [[101, "BuyYes", 400, null], [102, "BuyYes", 400, null], [103, "BuyYes", 400, null]]);
+  assert.deepEqual(r.legs.map((l) => [l.market, l.side, l.qty, l.limit_price]), [[101, "BuyYes", 400, null], [102, "BuyYes", 400, null], [103, "BuyYes", 400, null]]);
   assert.equal(r.requester, null);
   assert.equal(variant(r.state), "Expired", "RequestExpired is public");
   assert.deepEqual(m.quotes.map((q) => [q.id, q.mm, q.leg, q.price, q.state]), [[12, ml.ids.mm2, 2, 6_000, "Lost"]]);
-  assert.deepEqual(m.contracts.map((c) => c.description), [null, null, null], "the listing's terms went to the operator only");
+  assert.deepEqual(m.markets.map((c) => c.description), [null, null, null], "the listing's terms went to the operator only");
   const text = JSON.stringify(m, (k, v) => (v instanceof Map ? [...v] : v));
   for (const needle of [ml.ids.alice, ml.ids.mm1, 6_200, 7_000, 152_000_000]) assert.ok(!hasNumber(text, needle), `${needle} in MM2's model`);
 });
@@ -487,10 +487,10 @@ test("a quote's leg is its own command's; without one, only the presented picks 
   assert.deepEqual(presented.requests[0].legs.map((l) => l.selected), [11, 12, 13]);
   // The fill maps each position through its quote's leg.
   const filled = M.modelAt(rec);
-  assert.deepEqual(filled.positions.map((p) => [p.id, p.leg, p.contract]), [[1, 0, 101], [2, 1, 102], [3, 2, 103]]);
+  assert.deepEqual(filled.positions.map((p) => [p.id, p.leg, p.market]), [[1, 0, 101], [2, 1, 102], [3, 2, 103]]);
   // A single-leg request has only one leg to name: that stays leg 0, as before.
   const single = M.modelAt(recording([
-    batch(3, [pub({ RequestOpened: { request: 3, leg: 0, contract: 7, side: "BuyYes", qty: 5, response_deadline: 9 } })]),
+    batch(3, [pub({ RequestOpened: { request: 3, leg: 0, market: 7, side: "BuyYes", qty: 5, response_deadline: 9 } })]),
     batch(4, [to(20, { QuoteSubmitted: { quote: 4, request: 3, price: 4_000, expires_at: 9 } })]),
   ]));
   assert.deepEqual([single.quotes[0].leg, single.requests[0].legs[0].quotes], [0, [4]]);
@@ -517,7 +517,7 @@ test("last nonces: one pass over the batches, per actor, the last consumed (Dupl
 });
 
 /**
- * A long session: `runs` happy_path-shaped runs, 12 batches each, on fresh accounts and contracts
+ * A long session: `runs` happy_path-shaped runs, 12 batches each, on fresh accounts and markets
  * (`t0 × 100 + id`, as the driver scopes them), with the page's commands for the joins.
  */
 function synthetic(runs) {
@@ -538,14 +538,14 @@ function synthetic(runs) {
       const n = k * 4 + i + 2;
       add(() => [to(acct, { Deposited: { account: acct, amount: 1_000_000_000 } })], { origin: { actor: 1, nonce: n }, balances: [bal(acct, 1_000_000_000)], action: { Deposit: { to: acct, amount: 1_000_000_000 } } });
     }
-    add(() => [pub({ ContractListed: { contract: t0 } })], {
+    add(() => [pub({ MarketListed: { market: t0 } })], {
       origin: { actor: 1, nonce: k * 4 + 5 },
-      action: { ListContract: { id: t0, description: "Will it rain?", oracle, trading_close: t0 + 5_000, resolution_deadline: t0 + 15_000, dispute_window: 2_000 } },
+      action: { ListMarket: { id: t0, description: "Will it rain?", oracle, trading_close: t0 + 5_000, resolution_deadline: t0 + 15_000, dispute_window: 2_000 } },
     });
-    const req = add((s) => [pub({ RequestOpened: { request: s, leg: 0, contract: t0, side: "BuyYes", qty: 1_000, response_deadline: t0 + 1_500 } })], {
+    const req = add((s) => [pub({ RequestOpened: { request: s, leg: 0, market: t0, side: "BuyYes", qty: 1_000, response_deadline: t0 + 1_500 } })], {
       origin: { actor: alice, nonce: 2 },
       balances: [bal(alice, 300_000_000, 700_000_000)],
-      action: { SubmitRequest: { legs: [{ contract: t0, side: "BuyYes", qty: 1_000, limit_price: 7_000 }], response_deadline: t0 + 1_500 } },
+      action: { SubmitRequest: { legs: [{ market: t0, side: "BuyYes", qty: 1_000, limit_price: 7_000 }], response_deadline: t0 + 1_500 } },
     });
     const quote = (mm, price) => add((s) => [to(mm, { QuoteSubmitted: { quote: s, request: req, price, expires_at: t0 + 10_000 } })], {
       origin: { actor: mm, nonce: 2 },
@@ -564,13 +564,13 @@ function synthetic(runs) {
       balances: [bal(alice, 400_000_000, 0, 600_000_000), bal(mm2, 600_000_000, 0, 400_000_000)],
       action: { Accept: { request: req, picks: [{ leg: 0, quote: q2, price: 6_000 }] } },
     });
-    add(() => [pub({ ContractClosed: { contract: t0 } })], { kind: "Tick" });
-    add(() => [pub({ OutcomeProposed: { contract: t0, outcome: "Yes", dispute_until: t0 + 7_200 } })], {
+    add(() => [pub({ MarketClosed: { market: t0 } })], { kind: "Tick" });
+    add(() => [pub({ OutcomeProposed: { market: t0, outcome: "Yes", dispute_until: t0 + 7_200 } })], {
       origin: { actor: oracle, nonce: 2 },
-      action: { ProposeOutcome: { contract: t0, outcome: "Yes" } },
+      action: { ProposeOutcome: { market: t0, outcome: "Yes" } },
     });
     add(() => [
-      pub({ ContractFinalized: { contract: t0, outcome: "Yes" } }),
+      pub({ MarketFinalized: { market: t0, outcome: "Yes" } }),
       to(alice, { PositionSettled: { position: k + 1, yes_holder: alice, yes_payout: 1_000_000_000, no_holder: mm2, no_payout: 0 } }),
       to(mm2, { PositionSettled: { position: k + 1, yes_holder: alice, yes_payout: 1_000_000_000, no_holder: mm2, no_payout: 0 } }),
     ], { kind: "Tick", balances: [bal(alice, 1_400_000_000), bal(mm2, 600_000_000)] });

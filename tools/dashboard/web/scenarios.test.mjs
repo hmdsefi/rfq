@@ -19,7 +19,7 @@ const S = require("./scenarios.js");
 const wasmPath = process.argv[2] ?? fileURLToPath(new URL("../target/wasm32-unknown-unknown/release/rfq_dashboard.wasm", import.meta.url));
 const { call } = await createEngine(readFileSync(wasmPath));
 
-/** Every preset starts its clock here, so its contract id is 1000 (`presets::T0`). */
+/** Every preset starts its clock here, so its market id is 1000 (`presets::T0`). */
 const T0 = 1_000;
 let failed = 0;
 function test(name, fn) {
@@ -103,8 +103,8 @@ for (const p of rust) {
     }
     assert.equal(scope.unclassified.size, 0, [...scope.unclassified].join(", "));
     assert.deepEqual(R.containsInOrder(own, js.expect), { ok: true, error: null });
-    // Every market the run listed is the run's own: the one contract t0, or t0 * 10 + k for each extra market.
-    const listed = (events) => events.filter((e) => R.eventName(e) === "ContractListed").map((e) => R.eventBody(e).contract);
+    // Every market the run listed is the run's own: the one market t0, or t0 * 10 + k for each extra market.
+    const listed = (events) => events.filter((e) => R.eventName(e) === "MarketListed").map((e) => R.eventBody(e).market);
     const everyListing = trace.flatMap((entry) => listed(entry.events));
     assert.deepEqual(listed(own), everyListing, `${p.name}: a market it listed is not the run's own`);
     assert.deepEqual(everyListing, js.markets ? Array.from({ length: js.markets }, (_, i) => T0 * 10 + i + 1) : [T0], `${p.name}: its markets`);
@@ -133,20 +133,20 @@ test("a scenario's accounts, once mapped, are the run's own (only OPERATOR and A
 test("remap maps the Deposit target and the oracle, and refuses an action it does not know", () => {
   const f = (a) => a + 1_000;
   assert.deepEqual(S.remap({ Deposit: { to: 10, amount: 5 } }, f), { Deposit: { to: 1_010, amount: 5 } });
-  const listed = S.remap({ ListContract: { id: 9, description: "d", oracle: 4, trading_close: 1, resolution_deadline: 2, dispute_window: 3 } }, f);
-  assert.deepEqual(listed, { ListContract: { id: 9, description: "d", oracle: 1_004, trading_close: 1, resolution_deadline: 2, dispute_window: 3 } });
+  const listed = S.remap({ ListMarket: { id: 9, description: "d", oracle: 4, trading_close: 1, resolution_deadline: 2, dispute_window: 3 } }, f);
+  assert.deepEqual(listed, { ListMarket: { id: 9, description: "d", oracle: 1_004, trading_close: 1, resolution_deadline: 2, dispute_window: 3 } });
   const cancel = { CancelRequest: { request: 9 } };
   assert.deepEqual(S.remap(cancel, f), cancel);
   assert.throws(() => S.remap({ Mint: { amount: 1 } }, f), /does not know the action Mint/);
 });
 
-test("ctx: contract, contractN, at, labels, picks", () => {
+test("ctx: market, marketN, at, labels, picks", () => {
   const ctx = new S.Ctx(5_000);
-  assert.equal(ctx.contract(), 5_000);
-  // The run's kth extra market is t0 * 10 + k, k in 1..=9 (testkit's `Ctx::contract_n`).
-  assert.deepEqual([1, 2, 9].map((k) => ctx.contractN(k)), [50_001, 50_002, 50_009]);
-  for (const k of [0, 10, 1.5, -1, "1", undefined]) assert.throws(() => ctx.contractN(k), /extra markets 1\.\.=9/, `k = ${k}`);
-  assert.ok(Number.isSafeInteger(new S.Ctx(1_800_000_000_000).contractN(9)), "a millisecond clock stays exact in a JS number");
+  assert.equal(ctx.market(), 5_000);
+  // The run's kth extra market is t0 * 10 + k, k in 1..=9 (testkit's `Ctx::market_n`).
+  assert.deepEqual([1, 2, 9].map((k) => ctx.marketN(k)), [50_001, 50_002, 50_009]);
+  for (const k of [0, 10, 1.5, -1, "1", undefined]) assert.throws(() => ctx.marketN(k), /extra markets 1\.\.=9/, `k = ${k}`);
+  assert.ok(Number.isSafeInteger(new S.Ctx(1_800_000_000_000).marketN(9)), "a millisecond clock stays exact in a JS number");
   assert.equal(ctx.at(1_500), 6_500);
   assert.throws(() => ctx.request("req"), /label req has no seq yet/);
   ctx.recordLabel("req", 42);

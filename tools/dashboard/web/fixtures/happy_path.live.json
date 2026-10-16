@@ -32,9 +32,9 @@
    "RequestPresented",
    "QuoteFilled",
    "RequestFilled",
-   "ContractClosed",
+   "MarketClosed",
    "OutcomeProposed",
-   "ContractFinalized",
+   "MarketFinalized",
    "PositionSettled"
   ],
   "pass": true
@@ -185,8 +185,8 @@
     {
      "audience": "Public",
      "event": {
-      "ContractListed": {
-       "contract": 1792026893372
+      "MarketListed": {
+       "market": 1792026893372
       }
      }
     }
@@ -209,7 +209,7 @@
       "RequestOpened": {
        "request": 9,
        "leg": 0,
-       "contract": 1792026893372,
+       "market": 1792026893372,
        "side": "BuyYes",
        "qty": 1000,
        "response_deadline": 1792026894872
@@ -419,8 +419,8 @@
     {
      "audience": "Public",
      "event": {
-      "ContractClosed": {
-       "contract": 1792026893372
+      "MarketClosed": {
+       "market": 1792026893372
       }
      }
     }
@@ -441,7 +441,7 @@
      "audience": "Public",
      "event": {
       "OutcomeProposed": {
-       "contract": 1792026893372,
+       "market": 1792026893372,
        "outcome": "Yes",
        "dispute_until": 1792026900781
       }
@@ -460,8 +460,8 @@
     {
      "audience": "Public",
      "event": {
-      "ContractFinalized": {
-       "contract": 1792026893372,
+      "MarketFinalized": {
+       "market": 1792026893372,
        "outcome": "Yes"
       }
      }
@@ -569,7 +569,7 @@
    "actor": 1,
    "nonce": 6,
    "action": {
-    "ListContract": {
+    "ListMarket": {
      "id": 1792026893372,
      "description": "Will it rain in Paris on 2026-11-01?",
      "oracle": 179202689337204,
@@ -588,7 +588,7 @@
     "SubmitRequest": {
      "legs": [
       {
-       "contract": 1792026893372,
+       "market": 1792026893372,
        "side": "BuyYes",
        "qty": 1000,
        "limit_price": 7000
@@ -653,7 +653,7 @@
    "nonce": 2,
    "action": {
     "ProposeOutcome": {
-     "contract": 1792026893372,
+     "market": 1792026893372,
      "outcome": "Yes"
     }
    },
@@ -702,8 +702,8 @@
      {
       "audience": "Public",
       "event": {
-       "ContractListed": {
-        "contract": 1792026893372
+       "MarketListed": {
+        "market": 1792026893372
        }
       }
      }
@@ -726,7 +726,7 @@
        "RequestOpened": {
         "request": 9,
         "leg": 0,
-        "contract": 1792026893372,
+        "market": 1792026893372,
         "side": "BuyYes",
         "qty": 1000,
         "response_deadline": 1792026894872
@@ -818,8 +818,8 @@
      {
       "audience": "Public",
       "event": {
-       "ContractClosed": {
-        "contract": 1792026893372
+       "MarketClosed": {
+        "market": 1792026893372
        }
       }
      }
@@ -837,7 +837,7 @@
       "audience": "Public",
       "event": {
        "OutcomeProposed": {
-        "contract": 1792026893372,
+        "market": 1792026893372,
         "outcome": "Yes",
         "dispute_until": 1792026900781
        }
@@ -856,8 +856,8 @@
      {
       "audience": "Public",
       "event": {
-       "ContractFinalized": {
-        "contract": 1792026893372,
+       "MarketFinalized": {
+        "market": 1792026893372,
         "outcome": "Yes"
        }
       }
@@ -930,8 +930,8 @@
      {
       "audience": "Public",
       "event": {
-       "ContractListed": {
-        "contract": 1792026893372
+       "MarketListed": {
+        "market": 1792026893372
        }
       }
      }
@@ -951,7 +951,7 @@
        "RequestOpened": {
         "request": 9,
         "leg": 0,
-        "contract": 1792026893372,
+        "market": 1792026893372,
         "side": "BuyYes",
         "qty": 1000,
         "response_deadline": 1792026894872
@@ -1035,8 +1035,8 @@
      {
       "audience": "Public",
       "event": {
-       "ContractClosed": {
-        "contract": 1792026893372
+       "MarketClosed": {
+        "market": 1792026893372
        }
       }
      }
@@ -1054,7 +1054,7 @@
       "audience": "Public",
       "event": {
        "OutcomeProposed": {
-        "contract": 1792026893372,
+        "market": 1792026893372,
         "outcome": "Yes",
         "dispute_until": 1792026900781
        }
@@ -1073,8 +1073,8 @@
      {
       "audience": "Public",
       "event": {
-       "ContractFinalized": {
-        "contract": 1792026893372,
+       "MarketFinalized": {
+        "market": 1792026893372,
         "outcome": "Yes"
        }
       }

@@ -211,11 +211,11 @@ function fakeGateway() {
         events.push(to(a.to, { Deposited: { account: a.to, amount: a.amount } }));
         touched.push(move(a.to, { free: a.amount }));
         break;
-      case "ListContract":
-        events.push(pub({ ContractListed: { contract: a.id } }));
+      case "ListMarket":
+        events.push(pub({ MarketListed: { market: a.id } }));
         break;
       case "SubmitRequest": {
-        a.legs.forEach((l, leg) => events.push(pub({ RequestOpened: { request: seq, leg, contract: l.contract, side: l.side, qty: l.qty, response_deadline: a.response_deadline } })));
+        a.legs.forEach((l, leg) => events.push(pub({ RequestOpened: { request: seq, leg, market: l.market, side: l.side, qty: l.qty, response_deadline: a.response_deadline } })));
         const hold = a.legs.reduce((total, l) => total + l.qty * l.limit_price * 100, 0);
         touched.push(move(msg.actor, { free: -hold, reserved: hold }));
         sim.requests.set(seq, { requester: msg.actor, legs: a.legs, hold, quotes: [], best: null });
@@ -256,7 +256,7 @@ function fakeGateway() {
     server.commands.push(msg);
     if (server.sim) return simulate(msg, socket);
     const [kind, body] = Object.entries(msg.action)[0];
-    if (kind !== "Deposit" && kind !== "ListContract") {
+    if (kind !== "Deposit" && kind !== "ListMarket") {
       deliver(socket, { type: "error", id: msg.id, error: "engine unavailable" });
       return;
     }
@@ -266,16 +266,16 @@ function fakeGateway() {
     const seq = ++server.seq;
     const events = kind === "Deposit"
       ? [{ audience: { Account: body.to }, event: { Deposited: { account: body.to, amount: body.amount } } }]
-      : [{ audience: "Public", event: { ContractListed: { contract: body.id } } }];
+      : [{ audience: "Public", event: { MarketListed: { market: body.id } } }];
     const balances = kind === "Deposit" ? [{ account: body.to, balance: { free: body.amount, reserved: 0, escrowed: 0 } }] : [];
     broadcast({ type: "batch", seq, time: Date.now(), kind: "User", origin: { actor: msg.actor, nonce }, events, balances });
     deliver(socket, { type: "result", id: msg.id, seq, latency_us: 1234 });
-    if (kind === "ListContract") {
+    if (kind === "ListMarket") {
       // Someone else's public event that names an account (Disputed names its disputer): every view
       // gets the id. Here Carol of the same run, from a command that is not the page's.
       const carol = body.id * 100 + 30;
       broadcast({ type: "batch", seq: ++server.seq, time: Date.now(), kind: "User", origin: { actor: carol, nonce: 9 },
-        events: [{ audience: "Public", event: { Disputed: { contract: body.id, disputer: carol } } }], balances: [] });
+        events: [{ audience: "Public", event: { Disputed: { market: body.id, disputer: carol } } }], balances: [] });
     }
   }
   server.Socket = class {
@@ -379,7 +379,7 @@ function loadPage({ fetch = fakeReadApi().fetch, search = "" } = {}) {
 
 /** The rendered output of the regions that show data (the static docs, controls and drills excluded). */
 const DATA_REGIONS = [
-  "banners", "scenario", "timeline", "tl-run", "tl-label", "user-lane", "contract", "mm-lane", "ledger-table",
+  "banners", "scenario", "timeline", "tl-run", "tl-label", "user-lane", "market", "mm-lane", "ledger-table",
   "ledger-note", "run-progress", "runs-table", "runlog", "trace-head", "log", "inspector", "tb-status",
 ];
 const rendered = (document) => DATA_REGIONS.map((id) => `<${id}>${document.getElementById(id).innerHTML}</${id}>`).join("\n");
@@ -426,7 +426,7 @@ await test("an account view renders only what the gateway sent it: no driver det
     // What MM1 did receive is there: its own balance (named, it is the viewer) and the public listing.
     assert.match(out, /MM1 \(run …\d{4}\)/);
     assert.ok(out.includes("$1,000.00"), "MM1's own balance");
-    assert.ok(out.includes(`Contract #${result.contract}`), "the public listing");
+    assert.ok(out.includes(`Market #${result.market}`), "the public listing");
     assert.ok(out.includes(`by #${carol}`), "a public event's account, as the gateway sent it: an id");
 
     // Not vacuous: the same page in the Admin view shows the driver's detail, steps and verdict.
@@ -467,7 +467,7 @@ await test("multi_leg_leg2_fails, admin: every leg and quote is listed, the requ
     await run('startRuns("one", "multi_leg_leg2_fails")');
     const result = val("page.runs[0]");
     assert.equal(result.pass, true, result.detail);
-    // The run's log names its markets, not a contract that was never listed.
+    // The run's log names its markets, not a market that was never listed.
     assert.match(result.log[0], new RegExp(`markets ${result.t0 * 10 + 1}\\.\\.${result.t0 * 10 + 3}$`));
     await sleep(150);
     run("render()");
@@ -503,20 +503,20 @@ await test("multi_leg_leg2_fails, admin: every leg and quote is listed, the requ
     assert.match(mm, new RegExp(`Quote #${q3}[^]*?leg 3 of 3`, "i"));
     assert.equal(count(mm, "Lost"), 2);
     assert.equal(count(mm, "Hold released"), 2);
-    // The contract area: all three markets the run listed, each tied to its leg, with a timeline that makes sense.
-    const contract = text(document, "contract");
-    for (const city of ["Paris", "London", "Rome"]) assert.ok(contract.includes(`Will it rain in ${city} on 2026-11-01?`), `${city} in the contract area`);
-    for (const leg of [1, 2, 3]) assert.match(contract, new RegExp(`Leg ${leg} of 3 of request #${req}`), `market of leg ${leg}`);
+    // The market area: all three markets the run listed, each tied to its leg, with a timeline that makes sense.
+    const market = text(document, "market");
+    for (const city of ["Paris", "London", "Rome"]) assert.ok(market.includes(`Will it rain in ${city} on 2026-11-01?`), `${city} in the market area`);
+    for (const leg of [1, 2, 3]) assert.match(market, new RegExp(`Leg ${leg} of 3 of request #${req}`), `market of leg ${leg}`);
     // Compact cards, not three full ones, and no timeline counting from a market id (a time ~10^13 s away).
-    assert.equal(count(document.getElementById("contract").innerHTML, 'class="panel contract market"'), 3);
-    assert.ok(!/t\+-/.test(contract) && !contract.includes("trading closes"), "a timeline measured from the wrong start");
+    assert.equal(count(document.getElementById("market").innerHTML, 'class="panel market compact"'), 3);
+    assert.ok(!/t\+-/.test(market) && !market.includes("trading closes"), "a timeline measured from the wrong start");
     // The deadlines stay one click away: the inspector's facts for a market are relative to the run's t0.
-    run(`selected = { kind: "contract", id: ${result.t0 * 10 + 2} }; render()`);
+    run(`selected = { kind: "market", id: ${result.t0 * 10 + 2} }; render()`);
     const inspector = text(document, "inspector");
     assert.match(inspector, /Trading closes t\+5\.000 s/);
     assert.match(inspector, /Hard deadline t\+15\.000 s/);
     run("selected = null; render()");
-    assert.deepEqual(val("V.M.contracts.map((c) => c.id)"), [1, 2, 3].map((k) => result.t0 * 10 + k));
+    assert.deepEqual(val("V.M.markets.map((c) => c.id)"), [1, 2, 3].map((k) => result.t0 * 10 + k));
     // The trace says it too, and the balances under it are the release (display diffs of the engine's balances).
     const trace = text(document, "log");
     assert.match(trace, /none of its 3 legs filled/);
@@ -555,9 +555,9 @@ await test("multi_leg_happy, admin: Presented lists a pick per leg, Filled a pos
     assert.ok(lane.includes("Filled"), lane);
     for (const [leg, pos] of [[1, 1], [2, 2], [3, 3]]) assert.match(lane, new RegExp(`Leg ${leg} of 3[^]*?Position #${pos}`), `position of leg ${leg}`);
     assert.equal(count(lane, "Position #"), 3);
-    assert.deepEqual(val("V.M.positions.map((p) => [p.id, p.leg, p.contract])"), [1, 2, 3].map((k, i) => [k, i, result.t0 * 10 + k]));
-    const contract = text(document, "contract");
-    assert.equal(count(contract, "400 shares"), 3, "a position in each market");
+    assert.deepEqual(val("V.M.positions.map((p) => [p.id, p.leg, p.market])"), [1, 2, 3].map((k, i) => [k, i, result.t0 * 10 + k]));
+    const market = text(document, "market");
+    assert.equal(count(market, "400 shares"), 3, "a position in each market");
     const mm = text(document, "mm-lane");
     for (const [q, leg] of [[q1, 1], [q2, 2], [q3, 3]]) assert.match(mm, new RegExp(`Quote #${q}[^]*?leg ${leg} of 3`, "i"), `quote ${q}`);
     assert.equal(count(mm, "Filled"), 3);
@@ -667,11 +667,11 @@ const hEntry = (seq, origin, events, balances, action) => ({
 const HISTORY = [
   hEntry(2, { actor: 1, nonce: 2 }, [hTo(H.alice, { Deposited: { account: H.alice, amount: 1e9 } })], [hBal(H.alice, 1e9)], { Deposit: { to: H.alice, amount: 1e9 } }),
   hEntry(3, { actor: 1, nonce: 3 }, [hTo(H.mm1, { Deposited: { account: H.mm1, amount: 1e9 } })], [hBal(H.mm1, 1e9)], { Deposit: { to: H.mm1, amount: 1e9 } }),
-  hEntry(4, { actor: 1, nonce: 4 }, [hPub({ ContractListed: { contract: H_T0 } })], [], {
-    ListContract: { id: H_T0, description: "Will it rain in Paris on 2026-11-01?", oracle: H_T0 * 100 + 4, trading_close: H_T0 + 5_000, resolution_deadline: H_T0 + 15_000, dispute_window: 2_000 },
+  hEntry(4, { actor: 1, nonce: 4 }, [hPub({ MarketListed: { market: H_T0 } })], [], {
+    ListMarket: { id: H_T0, description: "Will it rain in Paris on 2026-11-01?", oracle: H_T0 * 100 + 4, trading_close: H_T0 + 5_000, resolution_deadline: H_T0 + 15_000, dispute_window: 2_000 },
   }),
-  hEntry(5, { actor: H.alice, nonce: 2 }, [hPub({ RequestOpened: { request: 5, leg: 0, contract: H_T0, side: "BuyYes", qty: 1000, response_deadline: H_T0 + 3_000 } })], [hBal(H.alice, 3e8, 7e8)], {
-    SubmitRequest: { legs: [{ contract: H_T0, side: "BuyYes", qty: 1000, limit_price: 7_000 }], response_deadline: H_T0 + 3_000 },
+  hEntry(5, { actor: H.alice, nonce: 2 }, [hPub({ RequestOpened: { request: 5, leg: 0, market: H_T0, side: "BuyYes", qty: 1000, response_deadline: H_T0 + 3_000 } })], [hBal(H.alice, 3e8, 7e8)], {
+    SubmitRequest: { legs: [{ market: H_T0, side: "BuyYes", qty: 1000, limit_price: 7_000 }], response_deadline: H_T0 + 3_000 },
   }),
   hEntry(6, { actor: H.mm1, nonce: 2 }, [hTo(H.mm1, { QuoteSubmitted: { quote: 6, request: 5, price: 6_000, expires_at: H_T0 + 3_500 } })], [hBal(H.mm1, 4e8, 6e8)], {
     SubmitQuote: { request: 5, leg: 0, price: 6_000, size: 1000, expires_at: H_T0 + 3_500 },
@@ -687,7 +687,7 @@ const teardown = ({ run, stop }) => {
   run("driver.dispose(); closeViewConn(); gw.close();");
 };
 
-await test("on load the page fetches the status and the trace pages and shows the history: trace, ledger, lanes, contract and the limits", async () => {
+await test("on load the page fetches the status and the trace pages and shows the history: trace, ledger, lanes, market and the limits", async () => {
   const api = fakeReadApi(HISTORY, { max: 3 });
   const page = loadPage({ fetch: api.fetch });
   const { run, val, document } = page;
@@ -711,7 +711,7 @@ await test("on load the page fetches the status and the trace pages and shows th
     assert.ok(lane.includes(`Alice (${tag})`) && lane.includes("Request #5") && lane.includes("Limit 0.70"), lane);
     const mm = text(document, "mm-lane");
     assert.ok(mm.includes(`MM1 (${tag})`) && mm.includes("Quote #6"), mm);
-    assert.ok(text(document, "contract").includes("Will it rain in Paris on 2026-11-01?"), "the contract's terms, from the listing command");
+    assert.ok(text(document, "market").includes("Will it rain in Paris on 2026-11-01?"), "the market's terms, from the listing command");
     // The timeline covers them, and nothing says the history failed.
     assert.equal(val("V.n"), HISTORY.length);
     assert.match(text(document, "tl-label"), /Batch 5 of 5/);
@@ -968,10 +968,10 @@ function scriptedRun(t0, seq, nonce, last) {
   const user = (actor, n, at, action, events, balances = []) =>
     entries.push({ seq: seq++, time: t0 + at, kind: "User", origin: { actor, nonce: n }, events, balances, command: { actor, nonce: n, action } });
   for (const to of [10, 20, 21, 30].map(acct)) user(1, nonce++, 0, { Deposit: { to, amount: 1e9 } }, [hTo(to, { Deposited: { account: to, amount: 1e9 } })], [hBal(to, 1e9)]);
-  user(1, nonce++, 0, { ListContract: { id: t0, description: "Will it rain in Paris on 2026-11-01?", oracle: acct(4), trading_close: t0 + 5_000, resolution_deadline: t0 + 15_000, dispute_window: 2_000 } }, [hPub({ ContractListed: { contract: t0 } })]);
+  user(1, nonce++, 0, { ListMarket: { id: t0, description: "Will it rain in Paris on 2026-11-01?", oracle: acct(4), trading_close: t0 + 5_000, resolution_deadline: t0 + 15_000, dispute_window: 2_000 } }, [hPub({ MarketListed: { market: t0 } })]);
   const req = seq;
-  user(alice, 1, 100, { SubmitRequest: { legs: [{ contract: t0, side: "BuyYes", qty: 1000, limit_price: 7_000 }], response_deadline: t0 + 1_500 } },
-    [hPub({ RequestOpened: { request: req, leg: 0, contract: t0, side: "BuyYes", qty: 1000, response_deadline: t0 + 1_500 } })], [hBal(alice, 3e8, 7e8)]);
+  user(alice, 1, 100, { SubmitRequest: { legs: [{ market: t0, side: "BuyYes", qty: 1000, limit_price: 7_000 }], response_deadline: t0 + 1_500 } },
+    [hPub({ RequestOpened: { request: req, leg: 0, market: t0, side: "BuyYes", qty: 1000, response_deadline: t0 + 1_500 } })], [hBal(alice, 3e8, 7e8)]);
   if (last === "self_quote") {
     user(alice, 2, 300, { SubmitQuote: { request: req, leg: 0, price: 6_000, size: 1000, expires_at: t0 + 10_000 } }, [hTo(alice, { CommandRejected: { reason: "SelfTrade" } })]);
   } else {

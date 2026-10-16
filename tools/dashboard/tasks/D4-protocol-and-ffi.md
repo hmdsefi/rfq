@@ -36,7 +36,7 @@
     - Actions use the engine's serde shape (externally tagged). Ids are plain numbers, prices are bps (1..=9999), and amounts are micro-USD.
     - `presets` returns `{"presets":[{"name","kind":"sandbox"|"brief"|"attack","summary","steps","expect"}]}`.
     - Every other op returns `{"mode","viewer","snapshot","trace","preset","new_seqs","replay"?}`:
-      - `snapshot`: `{now, seq, state_hash, invariants:{ok,error}, next_timer, total, accounts:[{id,name,role,balance:{free,reserved,escrowed}}], requests:[{id,requester,state,public_state,response_deadline,legs:[{contract,side,qty,limit_price,quotes,selected}],picks}], quotes:[Quote], contracts:[Contract], positions:[Position]}`
+      - `snapshot`: `{now, seq, state_hash, invariants:{ok,error}, next_timer, total, accounts:[{id,name,role,balance:{free,reserved,escrowed}}], requests:[{id,requester,state,public_state,response_deadline,legs:[{market,side,qty,limit_price,quotes,selected}],picks}], quotes:[Quote], markets:[Market], positions:[Position]}`
       - `trace`: `[{seq,time,kind,actor,nonce,command,events:[{audience,event}]}]`
       - `preset`: `null` or `{name,kind,summary,step,steps,next,finished,taken_over,expect,verdict:null|{pass,detail}}`
       - `new_seqs`: the seqs this request appended.
@@ -107,7 +107,7 @@ pub struct Snapshot {
     pub accounts: Vec<AccountView>,
     pub requests: Vec<RequestView>,
     pub quotes: Vec<Quote>,
-    pub contracts: Vec<Contract>,
+    pub markets: Vec<Market>,
     pub positions: Vec<Position>,
 }
 
@@ -142,7 +142,7 @@ pub struct RequestView {
 
 #[derive(Debug, Serialize)]
 pub struct LegView {
-    pub contract: ContractId,
+    pub market: MarketId,
     pub side: Side,
     pub qty: Qty,
     /// The sealed limit: requester and admin only.
@@ -172,7 +172,7 @@ pub fn snapshot(s: &Session, viewer: Viewer) -> Snapshot {
         Err(error) => Health { ok: false, error: Some(error) },
     };
     let positions = e
-        .contracts()
+        .markets()
         .flat_map(|c| c.positions.iter())
         .filter_map(|id| e.position(*id))
         .filter(|p| viewer.owns(p.yes_holder) || viewer.owns(p.no_holder))
@@ -192,7 +192,7 @@ pub fn snapshot(s: &Session, viewer: Viewer) -> Snapshot {
             .collect(),
         requests: e.requests().map(|r| request_view(e, r, viewer)).collect(),
         quotes: e.quotes().filter(|q| viewer.owns(q.mm)).cloned().collect(),
-        contracts: e.contracts().cloned().collect(),
+        markets: e.markets().cloned().collect(),
         positions,
     }
 }
@@ -244,7 +244,7 @@ fn request_view(e: &Engine, r: &Request, viewer: Viewer) -> RequestView {
         .legs
         .iter()
         .map(|leg| LegView {
-            contract: leg.contract,
+            market: leg.market,
             side: leg.side,
             qty: leg.qty,
             limit_price: mine.then_some(leg.limit_price),
@@ -283,7 +283,7 @@ fn kind(cmd: &Command) -> &'static str {
         Command::User { action, .. } => match action {
             Action::Deposit { .. } => "Deposit",
             Action::Withdraw { .. } => "Withdraw",
-            Action::ListContract { .. } => "ListContract",
+            Action::ListMarket { .. } => "ListMarket",
             Action::SubmitRequest { .. } => "SubmitRequest",
             Action::CancelRequest { .. } => "CancelRequest",
             Action::SubmitQuote { .. } => "SubmitQuote",
@@ -354,7 +354,7 @@ mod tests {
         let out = call(&mut None, json!({"op": "state"}));
         assert_eq!(out["mode"], "sandbox");
         assert_eq!(out["snapshot"]["accounts"].as_array().expect("accounts").len(), 8);
-        assert_eq!(out["snapshot"]["contracts"].as_array().expect("contracts").len(), 1);
+        assert_eq!(out["snapshot"]["markets"].as_array().expect("markets").len(), 1);
         assert!(out["preset"].is_null());
         assert_eq!(out["snapshot"]["invariants"]["ok"], true);
     }
@@ -471,7 +471,7 @@ mod tests {
     #[test]
     fn replay_check_matches_after_manual_play() {
         let mut app = None;
-        let request = json!({"SubmitRequest": {"legs": [{"contract": 1000, "side": "BuyYes", "qty": 1000, "limit_price": 7000}], "response_deadline": 2500}});
+        let request = json!({"SubmitRequest": {"legs": [{"market": 1000, "side": "BuyYes", "qty": 1000, "limit_price": 7000}], "response_deadline": 2500}});
         let opened = call(&mut app, json!({"op": "act", "actor": 10, "action": request}));
         assert_eq!(event_names(&last_entry(&opened)), vec!["RequestOpened"], "{opened}");
         call(&mut app, json!({"op": "advance", "ms": 2000}));
@@ -482,7 +482,7 @@ mod tests {
 }
 ```
 
-> Note on `the_first_call_starts_the_sandbox` and `replay_check_matches_after_manual_play`: the sandbox runs Genesis, then 4 deposits and 1 listing at `T0 = 1000`, so the contract id is `1000` and Alice's request is seq 7. If `RequestOpened` is not the only event (for example the engine also reports the hold), assert `contains` instead and note it in the report. Never weaken an assertion about what a viewer must *not* see.
+> Note on `the_first_call_starts_the_sandbox` and `replay_check_matches_after_manual_play`: the sandbox runs Genesis, then 4 deposits and 1 listing at `T0 = 1000`, so the market id is `1000` and Alice's request is seq 7. If `RequestOpened` is not the only event (for example the engine also reports the hold), assert `contains` instead and note it in the report. Never weaken an assertion about what a viewer must *not* see.
 
 - [ ] **Step 3: Run the tests and watch them fail.**
 
@@ -726,7 +726,7 @@ fn catalogue() -> Value {
     let mut list = vec![json!({
         "name": "sandbox",
         "kind": "sandbox",
-        "summary": "Funded accounts and one contract with long windows. Drive everything by hand.",
+        "summary": "Funded accounts and one market with long windows. Drive everything by hand.",
         "steps": 0,
         "expect": [],
     })];

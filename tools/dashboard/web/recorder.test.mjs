@@ -98,7 +98,7 @@ test("a seq that goes backwards starts a new epoch: the old batches are kept and
   const old2 = pub(ev("Deposited", { account: 10, amount: 1 }));
   rec.onFrame(batch(1, [pub(ev("Initialized"))]));
   rec.onFrame(batch(2, [old2], { balances: [bal(10, 1)] }));
-  rec.onFrame(batch(3, [pub(ev("ContractListed", { contract: 7 }))]));
+  rec.onFrame(batch(3, [pub(ev("MarketListed", { market: 7 }))]));
   assert.equal(rec.epoch, 0);
   // `docker compose down -v`: a fresh journal, seq 2 again, about something else.
   const new2 = pub(ev("Deposited", { account: 99, amount: 5 }));
@@ -145,7 +145,7 @@ const dep = (account, amount) => pub(ev("Deposited", { account, amount }));
 const submit = (actor, nonce) => ({
   actor,
   nonce,
-  action: { SubmitRequest: { legs: [{ contract: 7, side: "BuyYes", qty: 5, limit_price: 7_000 }], response_deadline: 9 } },
+  action: { SubmitRequest: { legs: [{ market: 7, side: "BuyYes", qty: 5, limit_price: 7_000 }], response_deadline: 9 } },
 });
 
 test("seedHistory into an empty recorder: batches in seq order, marked history, each with its command", () => {
@@ -394,11 +394,11 @@ test("attachViews: frames go to the recorder of the view the last welcome confir
   gw.frame(batch(4, [pub(ev("Deposited", { account: 21, amount: 5 }))], { balances: [bal(21, 5)] }));
   assert.equal(recs[10].batches.has(4) || recs[20].batches.has(4), false);
   gw.frame({ type: "welcome", view: { account: 10 }, engine: "up", now: 3 });
-  gw.frame(batch(5, [pub(ev("ContractClosed", { contract: 1 }))]));
+  gw.frame(batch(5, [pub(ev("MarketClosed", { market: 1 }))]));
   assert.deepEqual(recs[10].batchList().map((b) => b.seq), [3, 5]);
   // An admin welcome has no recorder here: its frames are dropped.
   gw.frame({ type: "welcome", view: "admin", engine: "up", now: 4 });
-  gw.frame(batch(6, [pub(ev("ContractClosed", { contract: 2 }))]));
+  gw.frame(batch(6, [pub(ev("MarketClosed", { market: 2 }))]));
   assert.equal(recs[10].batches.has(6), false);
   assert.ok(asked.some((v) => v === "admin"));
   off();
@@ -541,7 +541,7 @@ test("another run's events are not owned (rfq-demo scope.rs, on hand-written bat
   // Request 7 was made by our command (seq 7); request 9 by someone else's.
   assert.equal(scope.owns(tick, pub(ev("RequestExpired", { request: 7 }))), true);
   assert.equal(scope.owns(tick, pub(ev("RequestExpired", { request: 9 }))), false);
-  const finalized = (c) => pub(ev("ContractFinalized", { contract: c, outcome: "Yes" }));
+  const finalized = (c) => pub(ev("MarketFinalized", { market: c, outcome: "Yes" }));
   assert.equal(scope.owns(tick, finalized(1_000)), true);
   assert.equal(scope.owns(tick, finalized(2_000)), false);
   assert.equal(scope.owns(tick, pub("Initialized")), false);
@@ -584,9 +584,9 @@ test("the objects of a run are the seqs of its own commands: quotes, requests, r
 test("a run's extra markets are owned too: t0 * 10 + k for k in 1..=9, no other (rfq-demo scope.rs)", () => {
   const scope = new R.Scope(1_000);
   const tick = batch(5, [], { kind: "Tick" });
-  const finalized = (c) => pub(ev("ContractFinalized", { contract: c, outcome: "Yes" }));
-  const listed = (c) => pub(ev("ContractListed", { contract: c }));
-  assert.equal(scope.owns(tick, finalized(1_000)), true, "the run's own contract");
+  const finalized = (c) => pub(ev("MarketFinalized", { market: c, outcome: "Yes" }));
+  const listed = (c) => pub(ev("MarketListed", { market: c }));
+  assert.equal(scope.owns(tick, finalized(1_000)), true, "the run's own market");
   for (let k = 1; k <= 9; k++) {
     assert.equal(scope.owns(tick, finalized(10_000 + k)), true, `market ${k}`);
     assert.equal(scope.owns(tick, listed(10_000 + k)), true, `market ${k} listed`);
@@ -595,7 +595,7 @@ test("a run's extra markets are owned too: t0 * 10 + k for k in 1..=9, no other 
   assert.equal(scope.owns(tick, finalized(10_010)), false, "k = 10 is not a market");
   assert.equal(scope.owns(tick, finalized(20_001)), false, "another run's market");
   assert.equal(scope.owns(tick, finalized(999)), false);
-  // A key whose times 10 is not a safe integer owns only its own contract (the Rust scope's checked_mul).
+  // A key whose times 10 is not a safe integer owns only its own market (the Rust scope's checked_mul).
   const huge = new R.Scope(Number.MAX_SAFE_INTEGER);
   assert.equal(huge.owns(tick, finalized(1)), false);
   assert.equal(huge.owns(tick, finalized(Number.MAX_SAFE_INTEGER)), true);
@@ -607,26 +607,26 @@ test("two runs' markets stay apart: each market id is owned by exactly one run",
   const b = new R.Scope(1_800_000_000_001); // one ms later: its markets are 10 ids further on
   const tick = batch(5, [], { kind: "Tick" });
   for (let k = 1; k <= 9; k++) {
-    const mine = pub(ev("ContractListed", { contract: 1_800_000_000_000 * 10 + k }));
+    const mine = pub(ev("MarketListed", { market: 1_800_000_000_000 * 10 + k }));
     assert.deepEqual([a.owns(tick, mine), b.owns(tick, mine)], [true, false], `market ${k} of run a`);
-    const theirs = pub(ev("ContractListed", { contract: 1_800_000_000_001 * 10 + k }));
+    const theirs = pub(ev("MarketListed", { market: 1_800_000_000_001 * 10 + k }));
     assert.deepEqual([a.owns(tick, theirs), b.owns(tick, theirs)], [false, true], `market ${k} of run b`);
   }
 });
 
 test("every event the engine can emit has a rule (none is unclassified)", () => {
   const names = [
-    "Initialized", "CommandRejected", "Deposited", "Withdrawn", "ContractListed", "ContractClosed",
+    "Initialized", "CommandRejected", "Deposited", "Withdrawn", "MarketListed", "MarketClosed",
     "RequestOpened", "RequestCancelled", "RequestExpired", "RequestPresented", "RequestRejected",
     "RequestFilled", "QuoteSubmitted", "QuoteReplaced", "QuoteCancelled", "QuoteExpired", "QuoteLost",
     "QuoteSelected", "QuoteReleased", "QuoteFilled", "OutcomeProposed", "Disputed", "Ruled",
-    "ContractFinalized", "PositionSettled", "DisputeBondReturned",
+    "MarketFinalized", "PositionSettled", "DisputeBondReturned",
   ];
   assert.equal(names.length, 26);
   const scope = new R.Scope(1_000);
   for (const name of names) {
     // The engine's own fields; every one of them is read by the rule for its event.
-    const body = name === "Initialized" ? undefined : { reason: "Duplicate", account: 1, contract: 1, request: 1, quote: 1, old: 1, new: 2, yes_holder: 1, no_holder: 2 };
+    const body = name === "Initialized" ? undefined : { reason: "Duplicate", account: 1, market: 1, request: 1, quote: 1, old: 1, new: 2, yes_holder: 1, no_holder: 2 };
     scope.owns(batch(1, []), pub(ev(name, body)));
   }
   assert.equal(scope.unclassified.size, 0);
@@ -650,7 +650,7 @@ test("two runs partition a shared stream: every event is owned by exactly one ru
     batch(4, [to(mmB, ev("QuoteSubmitted", { quote: 4 }))], { origin: { actor: mmB, nonce: 1 } }),
     batch(5, [to(mmA, ev("QuoteSubmitted", { quote: 5 }))], { origin: { actor: mmA, nonce: 1 } }),
     batch(6, [pub(ev("RequestExpired", { request: 3 })), pub(ev("RequestExpired", { request: 2 })), pub(ev("QuoteLost", { quote: 5 }))], { kind: "Tick" }),
-    batch(7, [pub(ev("ContractClosed", { contract: 2_000 })), pub(ev("ContractClosed", { contract: 1_000 }))], { kind: "Tick" }),
+    batch(7, [pub(ev("MarketClosed", { market: 2_000 })), pub(ev("MarketClosed", { market: 1_000 }))], { kind: "Tick" }),
     batch(8, [rejected("Duplicate")], { origin: { actor: mmB, nonce: 1 } }),
   ];
   const owners = [];

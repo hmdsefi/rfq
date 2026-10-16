@@ -35,15 +35,15 @@ There is one presenter. A **"view as"** switch changes who the page shows the wo
 |---|---|
 | **Admin** (default) | Everything: all commands, all events whatever their audience, all balances, holds and states |
 | **Alice / Carol** (requesters) | Public events plus `Account(self)` events. Their own requests. Never another party's quote prices |
-| **MM1 / MM2** (market makers) | Public events plus their own. Open requests show contract, side, qty and deadline; never the limit or the requester |
+| **MM1 / MM2** (market makers) | Public events plus their own. Open requests show market, side, qty and deadline; never the limit or the requester |
 
 The filter applies the engine's own `audience` field, which is how sealing works (engine.md §7). "View as Alice" is the live proof that quotes stay sealed.
 
 For a viewer who isn't the owner:
-- a request shows only its public fields (contract, side, qty, deadline) and a coarse state, `open` or `closed`;
+- a request shows only its public fields (market, side, qty, deadline) and a coarse state, `open` or `closed`;
 - quotes, balances and positions show only the viewer's own;
 - a position's counterparty stays hidden until the position settles, because the engine names both holders only in `PositionSettled`;
-- contracts are public, except their list of positions, which shows only the viewer's own (fills are announced privately);
+- markets are public, except their list of positions, which shows only the viewer's own (fills are announced privately);
 - the next pending timer is shown to admin only, because it can be a sealed quote's expiry;
 - other parties' commands appear only through the events the viewer is allowed to see.
 
@@ -57,18 +57,18 @@ The chosen view stays in place across a reset.
    - Their quotes with state badges (Active, Selected, Lost, Cancelled, Expired, Released, Filled, Replaced) and the collateral each one holds.
    - Actions: **Quote** (price, size, expiry), **Replace** (submit again on the same leg), **Cancel**.
 3. **Users lane.** One card per requester.
-   - **New request** (contract, side, qty, limit, response deadline).
+   - **New request** (market, side, qty, limit, response deadline).
    - Their requests with state badges.
    - **Accept / Reject** on a presented request (accept echoes the presented picks; the attack presets show what happens otherwise).
    - **Dispute** on a proposed outcome.
-4. **Contract card.** Contract state, the resolution timeline (trading close, proposal, dispute window, hard deadline, a "now" cursor), the oracle's **Propose** and the arbiter's **Rule**, and positions with payouts after settlement.
+4. **Market card.** Market state, the resolution timeline (trading close, proposal, dispute window, hard deadline, a "now" cursor), the oracle's **Propose** and the arbiter's **Rule**, and positions with payouts after settlement.
 5. **Admin trace.**
    - (a) The command log: seq, time, actor, nonce and action, each expandable to its events with audience badges.
-   - (b) An object inspector: click any request, quote or contract id anywhere to see its full history.
+   - (b) An object inspector: click any request, quote or market id anywhere to see its full history.
    - (c) The ledger table: free, reserved and escrowed per account, with deltas against the previous command, and the ledger total, which only `Deposit` and `Withdraw` change (I1).
    - (d) **Replay check**: rebuild from the command log in a fresh engine and compare state hashes.
 6. **Deliverable panels** (secondary):
-   - **D1** the request, quote and contract state machines, with the current state of the selected object lit and the last transition labelled with who triggered it; a *Multi-leg (built)* tab with a Run button for `multi_leg_leg2_fails` and one for `multi_leg_happy`, and the three-step walkthrough of engine.md §8's "leg 2 of 3" table: steps 1 and 2 are played by `multi_leg_leg2_fails`, and step 3 (the alternative path) is pinned by the engine test `a_selected_leg_cannot_be_withdrawn`;
+   - **D1** the request, quote and market state machines, with the current state of the selected object lit and the last transition labelled with who triggered it; a *Multi-leg (built)* tab with a Run button for `multi_leg_leg2_fails` and one for `multi_leg_happy`, and the three-step walkthrough of engine.md §8's "leg 2 of 3" table: steps 1 and 2 are played by `multi_leg_leg2_fails`, and step 3 (the alternative path) is pinned by the engine test `a_selected_leg_cannot_be_withdrawn`;
    - **D3** failure modes R1–R9 and F1–F16 with their test names, each linked to the preset that demonstrates it where one exists;
    - **D4** resolution paths (undisputed, disputed then ruled, oracle silent, unruled dispute);
    - **D5** the two seams, read from this run's `Genesis` (`ReservationPolicy::FullHold`, `SelectionPolicy::SealedAtDeadline`), with invariant and non-invariant lists.
@@ -85,7 +85,7 @@ The chosen view stays in place across a reset.
 - `multi_leg_happy`: one request for three markets, a quote on every leg, and one accept fills all three legs
 - `multi_leg_leg2_fails`: legs 1 and 3 are quoted, leg 2 is not, so at the deadline the whole request expires and every hold is released in that one command
 
-The two multi-leg scenarios list three markets (Paris, London, Rome) as `ContractId(t0 * 10 + k)` for k = 1..=3 (`Ctx::contract_n`), and a run's scope owns those ids too.
+The two multi-leg scenarios list three markets (Paris, London, Rome) as `MarketId(t0 * 10 + k)` for k = 1..=3 (`Ctx::market_n`), and a run's scope owns those ids too.
 
 When a preset finishes, the page runs `contains_in_order` against the scenario's `expect` list and shows PASS or FAIL.
 
@@ -100,7 +100,7 @@ When a preset finishes, the page runs `contains_in_order` against the scenario's
 | `attack_self_trade` | Alice quotes her own request | `CommandRejected(SelfTrade)` |
 | `attack_cancel_others_quote` | Carol cancels MM1's quote | `CommandRejected(Unauthorized)` |
 
-**Sandbox.** The accounts are funded ($1,000 each) and one contract is listed with long windows (close at +60 s, hard deadline at +120 s, dispute window 5 s), so manual play has room. Otherwise it uses `demo_config()`.
+**Sandbox.** The accounts are funded ($1,000 each) and one market is listed with long windows (close at +60 s, hard deadline at +120 s, dispute window 5 s), so manual play has room. Otherwise it uses `demo_config()`.
 
 **Take over.** At any point in a preset, the presenter can stop the script and continue by hand from the current state.
 
@@ -145,7 +145,7 @@ The buffers are `thread_local! RefCell<Vec<u8>>`. The crate has **no `unsafe` bl
 
 **Responses.** Every mutating op returns:
 - the appended trace entries (`seq`, `time`, command, events with audience);
-- a full `snapshot`: accounts, requests, quotes, contracts, positions, `now`, `seq`, `state_hash` (hex), the `check_invariants()` result, `next_timer`;
+- a full `snapshot`: accounts, requests, quotes, markets, positions, `now`, `seq`, `state_hash` (hex), the `check_invariants()` result, `next_timer`;
 - for presets, the step index and PASS or FAIL once finished.
 
 Errors come back as `{"error": "..."}`, never as a trap.
@@ -197,10 +197,10 @@ Errors come back as `{"error": "..."}`, never as a trap.
 **Direction.** A calm, light, ledger-like console that reads well on a projector, with a dark theme for screens (the "Theme" toggle). Minimal Swiss structure: flat surfaces, 1 px lines, 6 px radius, no shadows. These are the choices behind it:
 
 - **Light by default.** The design-system search proposed a near-black background with an acid-green accent. That's the generic trading-terminal look, and dark themes wash out on projectors.
-- **Money is the protagonist.** Every amount uses the same three bucket colours: **free** in slate, **reserved** in hatched amber (held, and can be released), **escrowed** in solid indigo (locked to the contract). The hatching keeps the buckets distinguishable without colour. The ledger's split bars animate their widths when money moves (320 ms, and disabled under `prefers-reduced-motion`). That is the page's one deliberate motion.
-- **Two sides of the trade around the contract.**
-  - The contract card holds the market question, its state, a resolution timeline with a "now" cursor, and the oracle and arbiter actions. It sits between **requesters** (left, green rule: they ask) and **market makers** (right, indigo rule: they answer with sealed quotes).
-  - Below 1720 px the contract spans the full width above the two sides.
+- **Money is the protagonist.** Every amount uses the same three bucket colours: **free** in slate, **reserved** in hatched amber (held, and can be released), **escrowed** in solid indigo (locked to the market). The hatching keeps the buckets distinguishable without colour. The ledger's split bars animate their widths when money moves (320 ms, and disabled under `prefers-reduced-motion`). That is the page's one deliberate motion.
+- **Two sides of the trade around the market.**
+  - The market card holds its question, its state, a resolution timeline with a "now" cursor, and the oracle and arbiter actions. It sits between **requesters** (left, green rule: they ask) and **market makers** (right, indigo rule: they answer with sealed quotes).
+  - Below 1720 px the market spans the full width above the two sides.
   - The admin **trace** is a sticky right sidebar (440 px) holding the command log and the object inspector. It stacks under the main column below 1100 px.
 - **The clock is data.** Engine time `t+…` shows only in the top bar and the timeline, and it moves only when a command is stamped.
 - **Sealed by default.** What a viewer may not see is replaced by an explicit lock and "sealed" marker, never left blank. Commands from other actors appear as "Public" events.
@@ -220,9 +220,9 @@ Errors come back as `{"error": "..."}`, never as a trap.
 | `b-bad` | rejected or broken | Rejected, FAIL, I1–I5 broken |
 
 **Components** (class names, for D6 and D7):
-- `.topbar`, `.scenario` (with `.chip.seen` expectation chips), `.arena` (`.requesters`, `.contract-col`, `.makers`);
+- `.topbar`, `.scenario` (with `.chip.seen` expectation chips), `.arena` (`.requesters`, `.market-col`, `.makers`);
 - `.party`, `.item`, `.bar` (`.seg.free/.reserved/.escrowed`), `.form-row`, `.field`, `.field-error`, `.toast` (auto-dismisses after 4 s), `.sealed`;
-- `.contract` (`.contract-main`, `.contract-side`, `.timeline`, `.roles`, `.positions`), `.ledger` (with `tr.changed` and `.delta.up/.down`);
+- `.market` (`.market-main`, `.market-side`, `.timeline`, `.roles`, `.positions`), `.ledger` (with `tr.changed` and `.delta.up/.down`);
 - `.trace` (`.log`, `.row` with `.is-new/.is-open/.is-rejected`, `.row-events`, `.aud`/`.aud-acct`, `.inspector`), `.tabs`/`.tabpanel`;
 - `.machine` (SVG `.sm-node.is-current/.is-terminal`, `.sm-edge.is-last`, `.sm-label`).
 
@@ -248,17 +248,17 @@ The in-browser (WASM) engine was to stay only as an **offline fallback**, labell
 
 1. Start the stack (`docker compose up -d aeron engine gateway`) and open `dist/rfq-dashboard.html`. The status bar shows "Connected to the gateway, engine up".
 2. Pick a scenario in the combo box (the 8 brief scenarios and 6 attacks) and press **Run**. The page then acts as every participant:
-   - the operator funds the accounts and lists the contract;
+   - the operator funds the accounts and lists the market;
    - Alice submits the request;
    - MM1 and MM2 quote;
    - Alice accepts (or doesn't);
    - the oracle proposes, Carol disputes, the arbiter rules, as the script says.
 
    Each step is a real command sent through the gateway. The page moves to the next step when the previous command's `result` arrives. A scripted wait (a deadline, an accept window) waits on the engine's clock, and the engine fires its own timers.
-3. Batches stream in. The page shows each request, quote and contract moving through its D1 states (Open → Presented → Filled, Active → Selected → Filled, Trading → … → Final), the events with their audiences, and money moving between free, reserved and escrowed. Money comes from the engine's `balances` in each batch.
+3. Batches stream in. The page shows each request, quote and market moving through its D1 states (Open → Presented → Filled, Active → Selected → Filled, Trading → … → Final), the events with their audiences, and money moving between free, reserved and escrowed. Money comes from the engine's `balances` in each batch.
 4. At the end: PASS or FAIL against the scenario's expected events (the same lists as the tests).
 5. **Timeline.** The whole run is recorded. A scrubber steps through it batch by batch, even if it took milliseconds. Every panel shows the state at the scrubbed position.
-6. **Runs.** **Run ×N**, **Run all**, and a concurrency setting for parallel runs. The Runs table shows each run's per-command latency (sent → result) as p50 / p95 / max. Runs are scoped like `rfq-demo` (per-run account ids = `t0 × 100 + id`, contract `t0`, or for a multi-leg run its markets `t0 × 10 + k`, k = 1..=9), so parallel and repeated runs never see each other's objects.
+6. **Runs.** **Run ×N**, **Run all**, and a concurrency setting for parallel runs. The Runs table shows each run's per-command latency (sent → result) as p50 / p95 / max. Runs are scoped like `rfq-demo` (per-run account ids = `t0 × 100 + id`, market `t0`, or for a multi-leg run its markets `t0 × 10 + k`, k = 1..=9), so parallel and repeated runs never see each other's objects.
 7. **Failures**, from a terminal: a "Failure drills" panel, at the bottom of the page under the D1–D5 tabs, lists the commands and what to watch for.
 
    | Drill | Command | What to watch |
@@ -274,17 +274,17 @@ The in-browser (WASM) engine was to stay only as an **offline fallback**, labell
 
 - **Data source.** The recorded stream of gateway frames replaces the WASM `snapshot`. Object states come from the events (each event is a transition). Balances come from `balances`. A requester's own limit comes from the command the page itself sent as that requester.
 - **The clock** is the engine's. The +100 ms / +1 s / Next timer buttons are gone in live mode.
-- **Kept:** lanes, contract card, trace, ledger, D1–D5 panels, view-as.
+- **Kept:** lanes, market card, trace, ledger, D1–D5 panels, view-as.
 - **Multi-leg requests** (engine.md §8) are drawn from the events and balances alone:
-  - A request card lists every leg: its market (the contract's question once the page knows the listing, else its id), side, qty, and the limit for its own requester only. The market makers' open-request cards list every leg and mark each limit sealed.
+  - A request card lists every leg: its market (its question once the page knows the listing, else its id), side, qty, and the limit for its own requester only. The market makers' open-request cards list every leg and mark each limit sealed.
   - A `Presented` request lists a pick per leg and a `Filled` one a position per leg. A quote shows its leg ("leg 2 of 3"): the leg of the page's own `SubmitQuote`, else the leg the presented picks name it with, else none, because `QuoteSubmitted` carries no leg and no leg is guessed.
-  - The contract area shows every market the run listed, side by side, each as a compact card that names its leg and holds its own position. Markets are ordered newest run first, then by contract id; a run's extra markets are `t0 * 10 + k`, so for both scenarios that is the order the run listed them. The compact card has no timeline: the contract's deadlines are in the inspector, one click away.
+  - The market area shows every market the run listed, side by side, each as a compact card that names its leg and holds its own position. Markets are ordered newest run first, then by market id; a run's extra markets are `t0 * 10 + k`, so for both scenarios that is the order the run listed them. The compact card has no timeline: the market's deadlines are in the inspector, one click away.
   - An `Expired` multi-leg request says in its card and in the trace row that no leg was filled and every hold was released, and the balances under that row show the release. The page adds nothing up.
   - Sealing is unchanged: an account view renders only its own connection's frames, so MM2's view of a multi-leg run has the public legs, its own quote and balance, and none of MM1's prices, Alice's limits or the markets' terms (`page.test.mjs`).
 - **New:** a connection and engine status bar, Run / Run ×N / Run all / concurrency, the timeline scrubber, the runs table, the failure drills panel.
-- **History on load** ([read-api.md](../../docs/specs/read-api.md) §8). A reload keeps no frames, so the page asks the gateway's HTTP read API for what it missed, next to its live WebSocket, which it never waits for: `GET /v1/status`, then the admin trace (`GET /v1/trace?view=admin`, pages of 1,000) from `last_seq − 5,000`, the newest 5,000 seqs at most. The base URL is `http://127.0.0.1:18081`, or `?http=` on the page URL (a bad one is ignored with a banner, as `?gateway=` is). The recorder seeds those batches as history (`seedHistory`): only seqs below the epoch's first live batch, so a batch that arrived during the fetch stays. A live frame that is a history batch again, the same seq, time and kind (the replica regenerates exactly what the node published), is ignored, so nothing is doubled. Before the epoch's first live batch, any other frame at or below the history's top seq is a new journal's (`docker compose down -v` after the page loaded) and starts a new epoch, and a history whose fetch saw the epoch change is not seeded at all, so the old history never hides a reset. History never counts as the newest batch, so chunk merging and the rest of the epoch detection of live frames (a seq that goes back) are unchanged. Each history batch carries the `command` that made it, which the model uses where the page has none of its own (same actor and nonce as the batch's origin): that restores the limits and quote sizes no event carries. Lanes, contracts, positions, ledger, trace and the timeline's run list come back, the accounts of those runs named by the scenarios' id scheme (`t0 × 100 + id`); the runs table does not (it is the page's own record of the runs it drove, with their timing), and neither do the account views, whose second connection starts when the view is chosen. If the history cannot load (an older gateway, the port closed, a bad response: every page is checked before anything is seeded), a dismissible banner says so and the page works as before, live only. A replica that is not `following` still gives its history, with a dismissible banner that it may be incomplete.
+- **History on load** ([read-api.md](../../docs/specs/read-api.md) §8). A reload keeps no frames, so the page asks the gateway's HTTP read API for what it missed, next to its live WebSocket, which it never waits for: `GET /v1/status`, then the admin trace (`GET /v1/trace?view=admin`, pages of 1,000) from `last_seq − 5,000`, the newest 5,000 seqs at most. The base URL is `http://127.0.0.1:18081`, or `?http=` on the page URL (a bad one is ignored with a banner, as `?gateway=` is). The recorder seeds those batches as history (`seedHistory`): only seqs below the epoch's first live batch, so a batch that arrived during the fetch stays. A live frame that is a history batch again, the same seq, time and kind (the replica regenerates exactly what the node published), is ignored, so nothing is doubled. Before the epoch's first live batch, any other frame at or below the history's top seq is a new journal's (`docker compose down -v` after the page loaded) and starts a new epoch, and a history whose fetch saw the epoch change is not seeded at all, so the old history never hides a reset. History never counts as the newest batch, so chunk merging and the rest of the epoch detection of live frames (a seq that goes back) are unchanged. Each history batch carries the `command` that made it, which the model uses where the page has none of its own (same actor and nonce as the batch's origin): that restores the limits and quote sizes no event carries. Lanes, markets, positions, ledger, trace and the timeline's run list come back, the accounts of those runs named by the scenarios' id scheme (`t0 × 100 + id`); the runs table does not (it is the page's own record of the runs it drove, with their timing), and neither do the account views, whose second connection starts when the view is chosen. If the history cannot load (an older gateway, the port closed, a bad response: every page is checked before anything is seeded), a dismissible banner says so and the page works as before, live only. A replica that is not `following` still gives its history, with a dismissible banner that it may be incomplete.
 - **Runs from the history.** `RfqScenarios.runsFromHistory` rebuilds the scenario runs the loaded history holds, one per `t0` (a batch names one of the run's accounts, `t0 × 100 + id` for a script's account), as the driver records a live run, so the page's run machinery takes them as they are (`history.test.mjs` plays runs through the real driver and checks the rebuild against its record):
-  - **Commands.** A command is the run's when its actor is one of the run's accounts, or, for the shared genesis roles, when its action names one of the run's accounts or contracts (`Deposit { to }`, `ListContract { id, oracle }`, a proposal, dispute or ruling on its contract). Each entry's `command` and `origin` say which. A retry repeats an earlier command exactly (actor, nonce and action) and is refused as a Duplicate: as live, it is shown and never counted. An attack's replay sends another action with a used nonce, so its Duplicate is the run's own.
+  - **Commands.** A command is the run's when its actor is one of the run's accounts, or, for the shared genesis roles, when its action names one of the run's accounts or markets (`Deposit { to }`, `ListMarket { id, oracle }`, a proposal, dispute or ruling on its market). Each entry's `command` and `origin` say which. A retry repeats an earlier command exactly (actor, nonce and action) and is refused as a Duplicate: as live, it is shown and never counted. An attack's replay sends another action with a used nonce, so its Duplicate is the run's own.
   - **Events.** The run's scope gets its accounts, then its commands, then every batch in seq order, up to where the driver stops listening: the script's last step (a wait's end, or a command's batch), then on until every expected event has come, 3 s at most. So its own events and batches are the driver's, and the markets that close or finalize after the run are not the run's.
   - **Name.** The scenario whose script sent those commands: the same actors (script account or genesis role) and action names, in order, retries left out, and the script, replayed against the history's seqs and picks, sends exactly these actions. The replay is always checked, since the shape says nothing of legs, prices or picks: a `multi_leg_happy` stopped after its second quote has `multi_leg_leg2_fails`'s shape, and the wrong-price and double accepts share one. With no single match (a run cut short by the 5,000-seq window or by a failure, or commands no script sends) the run is `run <time>`, with no verdict, and with no script to say where it ends, its events are all of its objects' in the history. A run that stopped long before the history ends, exactly where another script ends, cannot be told from that script, and takes its name: a `happy_path` whose quote was refused sent `no_quotes_expire`'s commands.
   - **Verdict.** The script's expect list on the run's own events: PASS or FAIL, as for a live run. A history run is never running. Its start and end are engine times (`t0`, and its last batch), so a Resume that came during it is in its timeline.
@@ -300,7 +300,7 @@ The in-browser (WASM) engine was to stay only as an **offline fallback**, labell
     - Incomplete runs are listed as `· incomplete`, with a strip that says why.
     - **A limit: a run whose page died well before the reload.** The cut is the reload, not the death, so a page that died in the middle of a run and was reloaded more than about 0.75 s later can name the dead run as a shorter script whose commands it had all sent. That is `HISTORY_LAG_MS` plus `LATE_MS` on a quiet engine, and less on a busy one, whose history ends later. A tab closed after a `happy_path`'s quotes and reopened later shows it as `requester_lapses`, judged on the lapse that follows. The history cannot tell that run from a real run of the shorter script.
     - If the rebuild throws, the history is still seeded, with a banner that only the runs are missing. The accounts are named before the rebuild, so they keep their names.
-  - **In the page.** The runs are `page.historyRuns`, never `page.runs` (the runs table and the perf numbers stay the page's own). The timeline's run list has them after the page's own runs, newest first, 200 runs at most in all, each labelled `history · …6789 <scenario> · <verdict>`. "Follow the newest run" is the newest of the page's own runs, else the newest history run, else every batch: a reload lands on the newest run, and a run started later takes over. "All batches" still shows everything, commands of no run included (the README's curl walk-through: accounts 10 and 21, contract 7). The runs are the epoch's the history was seeded into: after a journal reset they leave the list and are not followed.
+  - **In the page.** The runs are `page.historyRuns`, never `page.runs` (the runs table and the perf numbers stay the page's own). The timeline's run list has them after the page's own runs, newest first, 200 runs at most in all, each labelled `history · …6789 <scenario> · <verdict>`. "Follow the newest run" is the newest of the page's own runs, else the newest history run, else every batch: a reload lands on the newest run, and a run started later takes over. "All batches" still shows everything, commands of no run included (the README's curl walk-through: accounts 10 and 21, market 7). The runs are the epoch's the history was seeded into: after a journal reset they leave the list and are not followed.
 - **Scenario scripts** are declarative JS, one per preset, with the same steps, timings and expect lists as `rfq_testkit::scenarios` and the D3 attack presets.
 
 ### 11.3 Acceptance (live mode)

@@ -85,7 +85,7 @@ button, input, select { font: inherit; color: inherit; }
 .sealed { display: inline-flex; align-items: center; gap: 4px; color: var(--ink-3); font-style: italic; }
 .sealed svg { width: 12px; height: 12px; }
 
-/* Money: free / reserved (hatched: held, can come back) / escrowed (solid: locked to the contract) */
+/* Money: free / reserved (hatched: held, can come back) / escrowed (solid: locked to the market) */
 .bar { display: flex; height: 14px; border-radius: 3px; overflow: hidden; background: var(--inset); outline: 1px solid var(--line); }
 .seg { height: 100%; transition: width 320ms cubic-bezier(.2,.7,.2,1); }
 .seg.free { background: var(--free); }
@@ -125,7 +125,7 @@ button, input, select { font: inherit; color: inherit; }
 .progress { text-align: right; font-size: 13px; color: var(--ink-2); }
 .progress strong { color: var(--ink); }
 
-/* Arena: the two sides of the trade around the contract */
+/* Arena: the two sides of the trade around the market */
 .arena { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr) minmax(0, 1fr); gap: 16px; align-items: start; }
 .side { display: grid; gap: 12px; }
 .side-head { display: flex; align-items: baseline; justify-content: space-between; padding: 0 2px; }
@@ -152,11 +152,11 @@ button, input, select { font: inherit; color: inherit; }
 .toast { font-size: 13px; padding: 6px 10px; border-radius: var(--r); background: var(--bad-tint); color: var(--bad); }
 a.idlink, button.idlink { color: var(--accent); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 2px; background: none; border: 0; padding: 0; cursor: pointer; font-weight: 600; }
 
-/* Contract: the subject, in the middle */
-.contract { padding: 16px 18px; display: grid; gap: 14px 24px; }
-.contract-main, .contract-side { display: grid; gap: 14px; min-width: 0; }
-.contract-q { font-size: 21px; line-height: 1.3; font-weight: 600; letter-spacing: -0.015em; }
-.contract-meta { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; font-size: 13px; color: var(--ink-2); }
+/* Market: the subject, in the middle */
+.market { padding: 16px 18px; display: grid; gap: 14px 24px; }
+.market-main, .market-side { display: grid; gap: 14px; min-width: 0; }
+.market-q { font-size: 21px; line-height: 1.3; font-weight: 600; letter-spacing: -0.015em; }
+.market-meta { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; font-size: 13px; color: var(--ink-2); }
 .timeline { position: relative; height: 66px; margin: 4px 6px 0; }
 .tl-track { position: absolute; left: 0; right: 0; top: 30px; height: 6px; border-radius: 3px; background: var(--inset); outline: 1px solid var(--line); }
 .tl-trading { position: absolute; left: 0; top: 30px; height: 6px; border-radius: 3px 0 0 3px; background: var(--yes); opacity: .55; }
@@ -249,7 +249,7 @@ a.idlink, button.idlink { color: var(--accent); text-decoration: underline; text
 [data-view="mm1"] .only-admin { display: none !important; }
 [data-view="admin"] .only-mm1 { display: none !important; }
 
-@media (max-width: 1720px) { .arena { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } .arena .contract-col { grid-column: 1 / -1; order: -1; } .contract { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); align-items: start; } }
+@media (max-width: 1720px) { .arena { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } .arena .market-col { grid-column: 1 / -1; order: -1; } .market { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); align-items: start; } }
 @media (max-width: 1100px) { .app { grid-template-columns: 1fr; } .trace { position: static; height: auto; border-left: 0; border-top: 1px solid var(--line); } .log { max-height: 60vh; } }
 @media (max-width: 720px) { .arena { grid-template-columns: 1fr; } .form-row { grid-template-columns: 1fr 1fr; } .row-events { padding-left: 16px; } .health { margin-left: 0; } .steps3 { grid-template-columns: 1fr; } .ledger { overflow-x: auto; } }
 </style>
@@ -309,7 +309,7 @@ a.idlink, button.idlink { color: var(--accent); text-decoration: underline; text
   .progress { text-align: left; }
   .topbar .group, .health, .health dl { flex-wrap: wrap; }
   #preset { min-width: 0; max-width: 100%; }
-  .contract, .machines { grid-template-columns: minmax(0, 1fr); }
+  .market, .machines { grid-template-columns: minmax(0, 1fr); }
   .item-actions .btn { white-space: normal; }
   form.form-row { grid-template-columns: 1fr 1fr !important; } /* the request form sets five columns inline */
 }
@@ -338,11 +338,11 @@ a.idlink, button.idlink { color: var(--accent); text-decoration: underline; text
 .scrub-label { font-size: 13px; color: var(--ink-2); display: flex; flex-wrap: wrap; gap: 4px 14px; }
 .scrub-label b { color: var(--ink); font-weight: 600; }
 .btn[aria-pressed="true"] { background: var(--accent-tint); border-color: var(--accent); color: var(--escrow-ink); font-weight: 600; }
-/* Multi-leg (engine.md §8): the request's markets sit side by side, each a compact card; any other contract keeps the full width. */
-#contract { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
-#contract > * { grid-column: 1 / -1; }
-#contract > .contract.market { grid-column: auto; grid-template-columns: minmax(0, 1fr); align-content: start; padding: 14px 16px; }
-.contract.market .contract-q { font-size: 17px; }
+/* Multi-leg (engine.md §8): the request's markets sit side by side, each a compact card; any other market keeps the full width. */
+#market { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+#market > * { grid-column: 1 / -1; }
+#market > .market.compact { grid-column: auto; grid-template-columns: minmax(0, 1fr); align-content: start; padding: 14px 16px; }
+.market.compact .market-q { font-size: 17px; }
 .built { display: inline-flex; padding: 2px 8px; border-radius: 4px; border: 1px solid var(--ok); background: var(--ok-tint); color: var(--ok); font-size: 12.5px; font-weight: 600; }
 .row-note.is-release { color: var(--ok); }
 /* Trace: a Resume is the engine coming back, not a timer */
@@ -425,8 +425,8 @@ a.idlink, button.idlink { color: var(--accent); text-decoration: underline; text
     <div class="arena">
       <!-- Requesters: the side that asks -->
       <section class="side requesters" id="user-lane" aria-labelledby="req-h"></section>
-      <!-- The contract: the subject both sides trade -->
-      <section class="contract-col" id="contract" aria-label="Contract" style="display:grid;gap:16px"></section>
+      <!-- The market: the subject both sides trade -->
+      <section class="market-col" id="market" aria-label="Market" style="display:grid;gap:16px"></section>
       <!-- Market makers: the side that answers -->
       <section class="side makers" id="mm-lane" aria-labelledby="mm-h"></section>
     </div>
@@ -437,7 +437,7 @@ a.idlink, button.idlink { color: var(--accent); text-decoration: underline; text
         <div style="display:flex;gap:14px;flex-wrap:wrap">
           <span class="key"><i style="background:var(--free)"></i>Free</span>
           <span class="key"><i class="seg reserved"></i>Reserved (held, can be released)</span>
-          <span class="key"><i style="background:var(--escrow)"></i>Escrowed (locked to the contract)</span>
+          <span class="key"><i style="background:var(--escrow)"></i>Escrowed (locked to the market)</span>
         </div>
       </div>
       <div id="ledger-table"></div>
@@ -503,8 +503,8 @@ const TRACE_ROWS = 400;
 const RUN_OPTIONS = 200;
 /** In an account view, what stands in for the driver's own record (verdicts, details, steps, timing). */
 const ADMIN_ONLY = "Run results and timing are shown in the Admin view.";
-/** "All batches" after many runs: the lanes, contracts and ledger show the newest this many. */
-const LANE_CAP = 20, CONTRACT_CAP = 10, LEDGER_CAP = 60;
+/** "All batches" after many runs: the lanes, markets and ledger show the newest this many. */
+const LANE_CAP = 20, MARKET_CAP = 10, LEDGER_CAP = 60;
 const RENDER_EVERY_MS = 120;
 const MAX_N = 500;
 const MAX_K = 16;
@@ -904,17 +904,17 @@ function groupBy(list, key) {
 const legsOf = (r) => r.legs.flatMap((leg, i) => (leg ? [[leg, i]] : []));
 
 /**
- * The run a contract belongs to (its `t0`), to order contracts and to tell a multi-leg run's market from a
- * run's own contract: that is `t0` itself, and the markets are `t0 * 10 + k`. Display only: the page knows
- * the runs it started and the ones its history shows; a contract of no such run stands for itself.
+ * The run a market belongs to (its `t0`), to order markets and to tell a multi-leg run's extra markets from
+ * a run's own market: that is `t0` itself, and the extra markets are `t0 * 10 + k`. Display only: the page knows
+ * the runs it started and the ones its history shows; a market of no such run stands for itself.
  */
-function contractRun(id) {
+function marketRun(id) {
   if (knownRun(id)) return id;
   const t0 = Math.floor(id / 10);
   return id % 10 !== 0 && knownRun(t0) ? t0 : id;
 }
-/** Contracts newest run first, then by id: a run's extra markets are `t0 * 10 + k`, so the brief's scenarios list them in id order. */
-const newerContract = (a, b) => contractRun(b.id) - contractRun(a.id) || a.id - b.id;
+/** Markets newest run first, then by id: a run's extra markets are `t0 * 10 + k`, so the brief's scenarios list them in id order. */
+const newerMarket = (a, b) => marketRun(b.id) - marketRun(a.id) || a.id - b.id;
 
 function computeView() {
   const r = recordingNow();
@@ -925,16 +925,16 @@ function computeView() {
     requestById: new Map(M.requests.map((x) => [x.id, x])),
     requestsBy: groupBy(M.requests, (x) => x.requester),
     quotesBy: groupBy(M.quotes, (x) => x.mm),
-    positionsByContract: groupBy(M.positions, (x) => x.contract),
+    positionsByMarket: groupBy(M.positions, (x) => x.market),
     positionsByRequest: groupBy(M.positions, (x) => x.request),
-    contractById: new Map(M.contracts.map((x) => [x.id, x])),
+    marketById: new Map(M.markets.map((x) => [x.id, x])),
     quoteById: new Map(M.quotes.map((x) => [x.id, x])),
-    // Which legs of multi-leg requests are on each contract: its market's place in the request.
+    // Which legs of multi-leg requests are on each market: its place in the request.
     legsOn: groupBy(M.requests.flatMap((r) => {
       const legs = legsOf(r);
-      return legs.length > 1 ? legs.map(([leg, i]) => ({ request: r.id, leg: i, of: legs.length, contract: leg.contract })) : [];
-    }), (x) => x.contract),
-    proposed: M.contracts.filter((c) => RfqModel.variant(c.state) === "Proposed"),
+      return legs.length > 1 ? legs.map(([leg, i]) => ({ request: r.id, leg: i, of: legs.length, market: leg.market })) : [];
+    }), (x) => x.market),
+    proposed: M.markets.filter((c) => RfqModel.variant(c.state) === "Proposed"),
     // Open to quotes in this view: no event ended it, and its public deadline is still ahead of the engine time here.
     open: M.requests.filter((x) => RfqModel.variant(x.state) === "Open" && (M.now == null || M.now < x.response_deadline)),
   };
@@ -956,7 +956,7 @@ const clockOf = (ms) => {
   const d = new Date(ms);
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
 };
-/** Engine time relative to the selected run's t0 (its contract id), or the wall clock with no run. */
+/** Engine time relative to the selected run's t0 (its market id), or the wall clock with no run. */
 const fmtT = (ms) => (ms == null ? "—" : V?.T0 != null ? `t+${((ms - V.T0) / 1000).toFixed(3)} s` : clockOf(ms));
 const qty = (n) => (n == null ? "?" : n.toLocaleString("en-US"));
 const sideName = (s) => (s === "BuyYes" ? "YES" : s === "BuyNo" ? "NO" : "?");
@@ -1032,7 +1032,7 @@ function render() {
   renderScenario();
   renderTimeline();
   renderUsers();
-  renderContract();
+  renderMarket();
   renderMarketMakers();
   renderLedger();
   renderRuns();
@@ -1312,7 +1312,7 @@ function toastFor(actor) {
     const a = e.command?.User?.action;
     const kind = a ? variant(a) : "command";
     const args = a ? Object.values(a)[0] : null;
-    const field = ["quote", "request", "contract"].find((f) => args?.[f] != null);
+    const field = ["quote", "request", "market"].find((f) => args?.[f] != null);
     return `<p class="toast" role="status">Rejected: ${esc(ev.event.CommandRejected.reason)} (${esc(kind)}${field ? `, ${field} #${esc(args[field])}` : ""})</p>`;
   }).join("");
 }
@@ -1328,8 +1328,8 @@ function legTag(request, leg) {
   const n = legCount(request);
   return n > 1 ? `leg ${leg + 1} of ${n}` : n === 0 && leg > 0 ? `leg ${leg + 1}` : "";
 }
-/** A leg's market: the contract's question once the listing's terms are known (admin), else its id. Selects the contract. */
-const marketLink = (contract, where) => idlink("contract", contract, V.idx.contractById.get(contract)?.description ?? `Contract #${contract}`, where);
+/** A leg's market: its question once the listing's terms are known (admin), else its id. Selects the market. */
+const marketLink = (market, where) => idlink("market", market, V.idx.marketById.get(market)?.description ?? `Market #${market}`, where);
 
 const LIVE_QUOTE = ["Active", "Selected"];
 const LIVE_REQUEST = ["Open", "Presented"];
@@ -1362,8 +1362,8 @@ function requesterCard(a) {
   const theirs = [...(V.idx.requestsBy.get(a.id) ?? [])].sort(byIdDesc);
   const live = theirs.filter((r) => LIVE_REQUEST.includes(variant(r.state)));
   const ended = theirs.filter((r) => !LIVE_REQUEST.includes(variant(r.state)));
-  // A run's requester can dispute its own run's contract (an account's t0 is its run's t0, and the contract's).
-  const proposed = V.idx.proposed.filter((c) => contractRun(c.id) === Math.floor(a.id / PER_RUN));
+  // A run's requester can dispute its own run's market (an account's t0 is its run's t0, and the market's).
+  const proposed = V.idx.proposed.filter((c) => marketRun(c.id) === Math.floor(a.id / PER_RUN));
   const items = [...proposed.map((c) => disputeItem(a, c)), ...live.map((r) => requestItem(a, r)), ...ended.map((r) => requestItem(a, r))].join("");
   return `<article class="party" aria-label="${esc(a.name)}">
       ${partyHead(a)}
@@ -1385,10 +1385,10 @@ function requestItem(a, r) {
   // One row per leg: its market, side, qty, and the limit (the requester's own card only; sealed elsewhere).
   const rows = (legs.length ? legs : [[{}, 0]]).map(([leg, i]) => {
     const facts = [];
-    if (multi) facts.push(`<span><b>Leg ${i + 1} of ${legs.length}</b></span>`, `<span>${marketLink(leg.contract, `${where}r${r.id}l${i}`)}</span>`);
+    if (multi) facts.push(`<span><b>Leg ${i + 1} of ${legs.length}</b></span>`, `<span>${marketLink(leg.market, `${where}r${r.id}l${i}`)}</span>`);
     facts.push(`<span>Buy <b>${sideName(leg.side)}</b> × <b>${esc(qty(leg.qty))}</b></span>`);
     facts.push(leg.limit_price != null ? `<span>Limit <b>${fmtPrice(leg.limit_price)}</b></span>` : sealedMark("limit sealed"));
-    if (!multi && leg.contract != null) facts.push(`<span>${idlink("contract", leg.contract, `Contract #${leg.contract}`, `${where}r${r.id}`)}</span>`);
+    if (!multi && leg.market != null) facts.push(`<span>${idlink("market", leg.market, `Market #${leg.market}`, `${where}r${r.id}`)}</span>`);
     // The admin heard every quote: which legs have one is what "leg 2 of 3 fails" is about.
     if (multi && isAdmin()) {
       const qs = (leg.quotes ?? []).map((id) => `${idlink("quote", id, `#${id}`, `${where}r${r.id}l${i}`)} ${esc(V.idx.quoteById.get(id)?.state ?? "")}`);
@@ -1423,7 +1423,7 @@ function requestItem(a, r) {
 function disputeItem(a, c) {
   const { outcome, dispute_until } = c.state.Proposed;
   return `<div class="item">
-      <div class="item-head">${idlink("contract", c.id, `Contract #${c.id}`, `u${a.id}d`)}${badge("Proposed")}<span class="muted" style="font-size:13px">oracle says ${esc(outcomeName(outcome))}</span></div>
+      <div class="item-head">${idlink("market", c.id, `Market #${c.id}`, `u${a.id}d`)}${badge("Proposed")}<span class="muted" style="font-size:13px">oracle says ${esc(outcomeName(outcome))}</span></div>
       <div class="item-facts"><span>Anyone may dispute until <b>${esc(fmtT(dispute_until))}</b></span></div>
     </div>`;
 }
@@ -1456,13 +1456,13 @@ function makerCard(a) {
     </article>`;
 }
 
-/** An open request as every MM sees it: each leg's contract, side and qty, and the deadline. Never the limit, even as admin. */
+/** An open request as every MM sees it: each leg's market, side and qty, and the deadline. Never the limit, even as admin. */
 function openRequestItem(a, r) {
   const where = `m${a.id}`;
   const legs = legsOf(r), multi = legs.length > 1;
   const rows = (legs.length ? legs : [[{}, 0]]).map(([leg, i]) => {
-    const market = multi ? `<span><b>Leg ${i + 1} of ${legs.length}</b></span><span>${marketLink(leg.contract, `${where}r${r.id}l${i}`)}</span>`
-      : leg.contract != null ? `<span>${idlink("contract", leg.contract, `Contract #${leg.contract}`, `${where}r${r.id}`)}</span>` : "";
+    const market = multi ? `<span><b>Leg ${i + 1} of ${legs.length}</b></span><span>${marketLink(leg.market, `${where}r${r.id}l${i}`)}</span>`
+      : leg.market != null ? `<span>${idlink("market", leg.market, `Market #${leg.market}`, `${where}r${r.id}`)}</span>` : "";
     return `<div class="item-facts">${market}<span>Buy <b>${sideName(leg.side)}</b> × <b>${esc(qty(leg.qty))}</b></span>${sealedMark("limit sealed")}</div>`;
   });
   return `<div class="item">
@@ -1478,7 +1478,7 @@ function quoteItem(a, q) {
   const leg = r && q.leg != null ? r.legs[q.leg] : null;
   const tag = legTag(q.request, q.leg);
   const facts = [`<span>Sell ${leg ? sideName(leg.side) : ""} at <b>${fmtPrice(q.price)}</b> × <b>${esc(qty(q.size))}</b></span>`];
-  if (tag && leg) facts.push(`<span>${marketLink(leg.contract, `${where}q${q.id}`)}</span>`);
+  if (tag && leg) facts.push(`<span>${marketLink(leg.market, `${where}q${q.id}`)}</span>`);
   if (LIVE_QUOTE.includes(q.state)) facts.push(`<span>${q.state === "Selected" ? "Firm until" : "Expires"} ${esc(fmtT(q.expires_at))}</span>`);
   else if (q.state === "Filled") {
     // The maker's position on this quote's leg (an MM can back several legs of one request).
@@ -1493,18 +1493,18 @@ function quoteItem(a, q) {
     </div>`;
 }
 
-// ---- Contract card --------------------------------------------------------------------------------
+// ---- Market card --------------------------------------------------------------------------------
 
-function renderContract() {
-  const el = document.getElementById("contract");
-  const { shown, more } = newest(V.M.contracts, CONTRACT_CAP, "contracts", newerContract);
-  setHtml(el, shown.length ? [...shown].sort(newerContract).map(contractCard).join("") + more
-    : `<article class="panel contract"><div class="contract-main"><p class="empty">${V.n ? "No contract listed in these batches." : "No batches yet. Pick a scenario and press Run: the operator lists the run's contract (or markets) during setup."}</p></div></article>`);
+function renderMarket() {
+  const el = document.getElementById("market");
+  const { shown, more } = newest(V.M.markets, MARKET_CAP, "markets", newerMarket);
+  setHtml(el, shown.length ? [...shown].sort(newerMarket).map(marketCard).join("") + more
+    : `<article class="panel market"><div class="market-main"><p class="empty">${V.n ? "No market listed in these batches." : "No batches yet. Pick a scenario and press Run: the operator lists the run's market (or markets) during setup."}</p></div></article>`);
 }
 
 function timeline(c) {
   if (c.trading_close == null || c.resolution_deadline == null) return "";
-  const base = c.id; // a run's contract id is its t0 (a multi-leg run's markets have no timeline: see `contractCard`)
+  const base = c.id; // a run's market id is its t0 (a multi-leg run's markets have no timeline: see `marketCard`)
   const now = V.M.now ?? base;
   const span = Math.max(1, c.resolution_deadline - base);
   const rel = (t) => `t+${((t - base) / 1000).toFixed(3)} s`;
@@ -1529,16 +1529,16 @@ function timeline(c) {
   return `<div class="timeline" role="img" aria-label="${esc(label.join(" "))}">${parts.join("")}</div>`;
 }
 
-function contractCard(c) {
+function marketCard(c) {
   const st = variant(c.state);
-  // A market of a multi-leg run (one of its `t0 * 10 + k`, or a contract with a leg of such a request on it): a compact
-  // card. Its deadlines are one click away in the inspector; the single contract's timeline, which counts from its id
+  // A market of a multi-leg run (one of its `t0 * 10 + k`, or a market with a leg of such a request on it): a compact
+  // card. Its deadlines are one click away in the inspector; the single market's timeline, which counts from its id
   // (the run's t0), and its settlement notes stay on the full-width card.
-  const market = contractRun(c.id) !== c.id || V.idx.legsOn.has(c.id);
-  const meta = [badge(st), idlink("contract", c.id, `Contract #${c.id}`, "cc")];
-  // A market of a multi-leg request: which leg of it this contract is.
+  const compact = marketRun(c.id) !== c.id || V.idx.legsOn.has(c.id);
+  const meta = [badge(st), idlink("market", c.id, `Market #${c.id}`, "cc")];
+  // A market of a multi-leg request: which leg of it this market is.
   for (const l of V.idx.legsOn.get(c.id) ?? []) meta.push(`<span>Leg ${l.leg + 1} of ${l.of} of ${idlink("request", l.request, `request #${l.request}`, `cc${c.id}`)}</span>`);
-  if (c.oracle != null && !market) meta.push(`<span>Oracle: ${esc(name(c.oracle))}</span>`);
+  if (c.oracle != null && !compact) meta.push(`<span>Oracle: ${esc(name(c.oracle))}</span>`);
   if (st === "Proposed") meta.push(`<span>Proposed <b>${esc(outcomeName(c.state.Proposed.outcome))}</b>, dispute until ${esc(fmtT(c.state.Proposed.dispute_until))}</span>`);
   if (st === "Disputed") meta.push(`<span>Proposed <b>${esc(outcomeName(c.state.Disputed.proposed))}</b>, disputed by ${esc(name(c.dispute?.disputer))}</span>`);
   if (st === "Final") meta.push(`<span>Outcome <b>${esc(outcomeName(c.state.Final))}</b>${c.ruling ? ` (ruled by the arbiter, bond ${c.ruling.bond_returned ? "returned" : "forfeited"})` : ""}</span>`);
@@ -1547,19 +1547,19 @@ function contractCard(c) {
     ? `${sealedMark("terms unknown")} Another client listed it (or this page wasn't connected yet): its question, oracle and deadlines travel in that listing command, which this page didn't send.`
     : `${sealedMark("terms not sent to this view")} The question, oracle and deadlines travel in the operator's listing command, whose origin the gateway forwards to the operator only.`;
   const terms = known
-    ? `<h2 class="contract-q" id="contract-q-${c.id}">${esc(c.description)}</h2>`
-    : `<h2 class="contract-q" id="contract-q-${c.id}">Contract #${esc(c.id)}</h2><p class="muted" style="font-size:13px">${why}</p>`;
+    ? `<h2 class="market-q" id="market-q-${c.id}">${esc(c.description)}</h2>`
+    : `<h2 class="market-q" id="market-q-${c.id}">Market #${esc(c.id)}</h2><p class="muted" style="font-size:13px">${why}</p>`;
   const windowS = c.dispute_window != null ? (c.dispute_window / 1000).toLocaleString("en-US", { maximumFractionDigits: 3 }) : null;
-  return `<article class="panel contract${market ? " market" : ""}">
-      <div class="contract-main">
+  return `<article class="panel market${compact ? " compact" : ""}">
+      <div class="market-main">
         <div>
-          <div class="contract-meta" style="margin-bottom:6px">${meta.join("")}</div>
+          <div class="market-meta" style="margin-bottom:6px">${meta.join("")}</div>
           ${terms}
         </div>
-        ${market ? "" : timeline(c)}
-        ${known && !market ? `<p class="muted" style="font-size:13px">After close the oracle proposes; anyone can dispute for ${windowS} s with a bond. If the oracle never proposes by the hard deadline, it ends INVALID and each side gets its lock back. The scenario script plays the oracle, the disputer and the arbiter.</p>` : ""}
+        ${compact ? "" : timeline(c)}
+        ${known && !compact ? `<p class="muted" style="font-size:13px">After close the oracle proposes; anyone can dispute for ${windowS} s with a bond. If the oracle never proposes by the hard deadline, it ends INVALID and each side gets its lock back. The scenario script plays the oracle, the disputer and the arbiter.</p>` : ""}
       </div>
-      <div class="contract-side">
+      <div class="market-side">
         ${toastFor(c.oracle)}
         <div class="positions">
           <h3 style="margin-bottom:6px">Positions</h3>
@@ -1570,10 +1570,10 @@ function contractCard(c) {
 }
 
 function positionsTable(c) {
-  const list = V.idx.positionsByContract.get(c.id) ?? [];
+  const list = V.idx.positionsByMarket.get(c.id) ?? [];
   if (!list.length) {
     return isAdmin() ? '<p class="empty">No positions yet. One opens when a requester accepts a quote.</p>'
-      : '<p class="empty">You hold no positions in this contract. Other parties\' fills stay private.</p>';
+      : '<p class="empty">You hold no positions in this market. Other parties\' fills stay private.</p>';
   }
   const line = (text) => `<span class="muted" style="display:block">${text}</span>`;
   // Payouts are PositionSettled's fields; the engine names both holders only there.
@@ -1683,7 +1683,7 @@ function renderRuns() {
       <tbody>${rows}</tbody>
     </table></div>${page.runs.length > shown.length ? `<p class="runs-empty">… and ${page.runs.length - shown.length} earlier runs (pick them in the timeline).</p>` : ""}
     <p class="runs-empty">Latency is the gateway's <code class="mono">latency_us</code>: from receiving a command to receiving its batch. A command that waited out an outage is not a sample.</p>`
-    : '<p class="runs-empty">No runs yet. Each run plays its scenario as every participant through the gateway, with its own accounts (<code class="mono">t0 × 100 + id</code>) and contract (<code class="mono">t0</code>, or markets <code class="mono">t0 × 10 + k</code> for a multi-leg run).</p>');
+    : '<p class="runs-empty">No runs yet. Each run plays its scenario as every participant through the gateway, with its own accounts (<code class="mono">t0 × 100 + id</code>) and market (<code class="mono">t0</code>, or markets <code class="mono">t0 × 10 + k</code> for a multi-leg run).</p>');
 
   const run = V.run ?? page.runs.at(-1);
   const log = document.getElementById("runlog");
@@ -1797,14 +1797,14 @@ function actionParts(kind, a) {
     switch (kind) {
       case "Deposit": return [`${fmtUsd(a.amount)} to ${esc(name(a.to))}`];
       case "Withdraw": return [fmtUsd(a.amount)];
-      case "ListContract": return [`#${esc(a.id)}`, `closes ${esc(fmtT(a.trading_close))}`, `hard deadline ${esc(fmtT(a.resolution_deadline))}`];
+      case "ListMarket": return [`#${esc(a.id)}`, `closes ${esc(fmtT(a.trading_close))}`, `hard deadline ${esc(fmtT(a.resolution_deadline))}`];
       case "SubmitRequest": return [...a.legs.map((l, i) => `${a.legs.length > 1 ? `leg ${i + 1}: ` : ""}Buy ${sideName(l.side)} × ${esc(qty(l.qty))} · limit ${fmtPrice(l.limit_price)}`), `due ${esc(fmtT(a.response_deadline))}`];
       case "CancelRequest": case "Reject": return [`req #${esc(a.request)}`];
       case "SubmitQuote": return [`req #${esc(a.request)}`, ...legParts(a.request, a.leg), `${fmtPrice(a.price)} × ${esc(qty(a.size))}`, `exp ${esc(fmtT(a.expires_at))}`];
       case "CancelQuote": return [`quote #${esc(a.quote)}`];
       case "Accept": return [`req #${esc(a.request)}`, ...a.picks.map((p) => `${a.picks.length > 1 ? `leg ${p.leg + 1}: ` : ""}#${esc(p.quote)} at ${fmtPrice(p.price)}`)];
-      case "ProposeOutcome": case "Rule": return [`#${esc(a.contract)}`, esc(outcomeName(a.outcome))];
-      case "Dispute": return [`#${esc(a.contract)}`];
+      case "ProposeOutcome": case "Rule": return [`#${esc(a.market)}`, esc(outcomeName(a.outcome))];
+      case "Dispute": return [`#${esc(a.market)}`];
       default: throw new Error("unknown action");
     }
   }, a);
@@ -1818,8 +1818,8 @@ function eventParts(ev, ref) {
       case "CommandRejected": return [esc(d.reason)];
       case "Deposited": return [`${fmtUsd(d.amount)} to ${esc(name(d.account))}`];
       case "Withdrawn": return [`${fmtUsd(d.amount)} from ${esc(name(d.account))}`];
-      case "ContractListed": case "ContractClosed": return [ref("contract", d.contract)];
-      case "RequestOpened": return [ref("request", d.request), ...legParts(d.request, d.leg), `Buy ${sideName(d.side)} × ${esc(qty(d.qty))} on ${ref("contract", d.contract)}`, `due ${esc(fmtT(d.response_deadline))}`];
+      case "MarketListed": case "MarketClosed": return [ref("market", d.market)];
+      case "RequestOpened": return [ref("request", d.request), ...legParts(d.request, d.leg), `Buy ${sideName(d.side)} × ${esc(qty(d.qty))} on ${ref("market", d.market)}`, `due ${esc(fmtT(d.response_deadline))}`];
       case "RequestCancelled": return [ref("request", d.request)];
       case "RequestExpired": return [ref("request", d.request), ...(legCount(d.request) > 1 ? [`none of its ${legCount(d.request)} legs filled, every hold released`] : [])];
       case "RequestPresented": return [ref("request", d.request), ...d.picks.map((p) => `${legTag(d.request, p.leg) ? `${legTag(d.request, p.leg)}: ` : ""}pick ${ref("quote", p.quote)} at ${fmtPrice(p.price)}`), `accept by ${esc(fmtT(d.accept_by))}`];
@@ -1829,12 +1829,12 @@ function eventParts(ev, ref) {
       case "QuoteReplaced": return [`${ref("quote", d.old)} → ${ref("quote", d.new)}`];
       case "QuoteCancelled": case "QuoteExpired": case "QuoteLost": case "QuoteSelected": case "QuoteReleased": return [ref("quote", d.quote)];
       case "QuoteFilled": return [ref("quote", d.quote), `position #${esc(d.position)}`];
-      case "OutcomeProposed": return [ref("contract", d.contract), esc(outcomeName(d.outcome)), `dispute until ${esc(fmtT(d.dispute_until))}`];
-      case "Disputed": return [ref("contract", d.contract), `by ${esc(name(d.disputer))}`];
-      case "Ruled": return [ref("contract", d.contract), esc(outcomeName(d.outcome)), d.bond_returned ? "bond returned" : "bond forfeited"];
-      case "ContractFinalized": return [ref("contract", d.contract), esc(outcomeName(d.outcome))];
+      case "OutcomeProposed": return [ref("market", d.market), esc(outcomeName(d.outcome)), `dispute until ${esc(fmtT(d.dispute_until))}`];
+      case "Disputed": return [ref("market", d.market), `by ${esc(name(d.disputer))}`];
+      case "Ruled": return [ref("market", d.market), esc(outcomeName(d.outcome)), d.bond_returned ? "bond returned" : "bond forfeited"];
+      case "MarketFinalized": return [ref("market", d.market), esc(outcomeName(d.outcome))];
       case "PositionSettled": return [`#${esc(d.position)}`, `${esc(name(d.yes_holder))} paid ${fmtUsd(d.yes_payout)}`, `${esc(name(d.no_holder))} paid ${fmtUsd(d.no_payout)}`];
-      case "DisputeBondReturned": return [ref("contract", d.contract), `${fmtUsd(d.amount)} to ${esc(name(d.disputer))}`];
+      case "DisputeBondReturned": return [ref("market", d.market), `${fmtUsd(d.amount)} to ${esc(name(d.disputer))}`];
       default: throw new Error("unknown event");
     }
   }, d);
@@ -1972,9 +1972,9 @@ function followLog() {
 
 // ---- Inspector ------------------------------------------------------------------------------------
 
-const REF_FIELDS = ["request", "quote", "contract", "old", "new", "id"];
-const REF_KIND = { request: "request", quote: "quote", old: "quote", new: "quote", contract: "contract" };
-const KIND_TITLE = { request: "Request", quote: "Quote", contract: "Contract" };
+const REF_FIELDS = ["request", "quote", "market", "old", "new", "id"];
+const REF_KIND = { request: "request", quote: "quote", old: "quote", new: "quote", market: "market" };
+const KIND_TITLE = { request: "Request", quote: "Quote", market: "Market" };
 
 function refers(v, id) {
   if (Array.isArray(v)) return v.some((x) => refers(x, id));
@@ -1993,7 +1993,7 @@ function currentState(sel) {
     return r ? variant(r.state) : null;
   }
   if (sel.kind === "quote") return V.M.quotes.find((q) => q.id === sel.id)?.state ?? null;
-  const c = V.M.contracts.find((x) => x.id === sel.id);
+  const c = V.M.markets.find((x) => x.id === sel.id);
   return c ? variant(c.state) : null;
 }
 
@@ -2007,7 +2007,7 @@ function inspectorFacts(sel) {
     const legs = legsOf(r);
     for (const [leg, i] of legs) {
       const tag = legs.length > 1 ? `<b>Leg ${i + 1} of ${legs.length}</b>: ` : "";
-      facts.push(`<span>${tag}Buy <b>${sideName(leg.side)}</b> × <b>${esc(qty(leg.qty))}</b> on ${idlink("contract", leg.contract, `#${leg.contract}`, where)}</span>`);
+      facts.push(`<span>${tag}Buy <b>${sideName(leg.side)}</b> × <b>${esc(qty(leg.qty))}</b> on ${idlink("market", leg.market, `#${leg.market}`, where)}</span>`);
       facts.push(`<span>Limit ${leg.limit_price != null ? `<b>${fmtPrice(leg.limit_price)}</b>` : sealed}</span>`);
     }
     facts.push(`<span>Quotes due <b>${esc(fmtT(r.response_deadline))}</b></span>`);
@@ -2025,7 +2025,7 @@ function inspectorFacts(sel) {
         + `<span>Sells at <b>${fmtPrice(q.price)}</b> × <b>${esc(qty(q.size))}</b></span><span>${q.state === "Selected" ? "Firm until" : "Expires"} <b>${esc(fmtT(q.expires_at))}</b></span>`,
     };
   }
-  const c = V.M.contracts.find((x) => x.id === sel.id);
+  const c = V.M.markets.find((x) => x.id === sel.id);
   if (!c) return { badge: "", facts: "<span>Not in these batches.</span>" };
   const st = variant(c.state);
   const facts = c.trading_close != null
@@ -2045,7 +2045,7 @@ function historyItem(e, sel) {
   const evs = e.events.map((ev) => {
     const d = evData(ev), v = evName(ev);
     if (v === "QuoteReplaced") return `${esc(v)} ${ref("old", d.old)} → ${ref("new", d.new)}`;
-    const field = ["quote", "request", "contract"].find((f) => typeof d[f] === "number");
+    const field = ["quote", "request", "market"].find((f) => typeof d[f] === "number");
     return `<span${rejectionOf(ev) ? ' class="check-bad"' : ""}>${esc(v)}${field ? ` ${ref(field, d[field])}` : ""}${rejectionOf(ev) ? ` (${esc(rejectionOf(ev))})` : ""}</span>`;
   }).join(", ");
   return `<li><button class="idlink" type="button" data-action="reveal-row" data-row="${esc(e.key)}" data-key="insp-seq-${esc(e.key)}">seq ${e.seq}</button> <b>${esc(who)}</b>${what ? ` ${esc(what)}` : ""}${evs ? ` → ${evs}` : ""}</li>`;
@@ -2054,7 +2054,7 @@ function historyItem(e, sel) {
 function renderInspector() {
   const el = document.getElementById("inspector");
   if (!selected) {
-    setHtml(el, '<h2 id="insp-h" tabindex="-1">Inspector</h2><p class="empty">Click any request, quote or contract id to trace it up to this position.</p>');
+    setHtml(el, '<h2 id="insp-h" tabindex="-1">Inspector</h2><p class="empty">Click any request, quote or market id to trace it up to this position.</p>');
     return;
   }
   const { badge: b, facts } = inspectorFacts(selected);
@@ -2118,7 +2118,7 @@ const MACHINES = [
     ],
   },
   {
-    kind: "contract", title: "Contract", view: "0 0 520 240", start: [65, 26],
+    kind: "market", title: "Market", view: "0 0 520 240", start: [65, 26],
     caption: "Final settles every position in the same command. Resume can extend an open dispute window after downtime.",
     nodes: [
       ["Trading", 30, 96, 70, "Trading"], ["Closed", 140, 96, 70, "Closed"], ["Proposed", 262, 96, 90, "Proposed"],
@@ -2148,14 +2148,14 @@ const QUOTE_STEPS = {
   QuoteFilled: ["fill", "Filled"], QuoteReleased: ["release", "Released"],
 };
 
-function contractStep(v, at, entry) {
+function marketStep(v, at, entry) {
   switch (v) {
-    case "ContractListed": return ["start", "Trading"];
-    case "ContractClosed": return ["close", "Closed"];
+    case "MarketListed": return ["start", "Trading"];
+    case "MarketClosed": return ["close", "Closed"];
     case "OutcomeProposed": return entry.kind === "resume" || at === "Proposed" ? ["resume", "Proposed"] : ["propose", "Proposed"];
     case "Disputed": return ["dispute", "Disputed"];
     case "Ruled": return ["rule", "FinalB"];
-    case "ContractFinalized":
+    case "MarketFinalized":
       if (at === "Proposed") return ["window", "FinalA"];
       if (at === "Disputed") return ["hardDisputed", "FinalB"];
       if (at === "Closed") return ["hardClosed", "FinalA"];
@@ -2173,7 +2173,7 @@ function transitionsOf(sel) {
       let step = null;
       if (sel.kind === "request" && d.request === sel.id) step = REQUEST_STEPS[v];
       else if (sel.kind === "quote" && (v === "QuoteReplaced" ? d.old : d.quote) === sel.id) step = QUOTE_STEPS[v];
-      else if (sel.kind === "contract" && d.contract === sel.id) step = contractStep(v, at, e);
+      else if (sel.kind === "market" && d.market === sel.id) step = marketStep(v, at, e);
       if (step) {
         out.push({ edge: step[0], to: step[1], seq: e.seq });
         at = step[1];
@@ -2185,7 +2185,7 @@ function transitionsOf(sel) {
 
 /**
  * The object each diagram lights: the one the presenter clicked, else the run's own from the model
- * (its newest request, that request's picked quote or its newest quote, its contract).
+ * (its newest request, that request's picked quote or its newest quote, its market).
  */
 function litObject(kind) {
   if (selected?.kind === kind) return selected;
@@ -2200,7 +2200,7 @@ function litObject(kind) {
     const q = M.quotes.find((x) => x.id === picked) ?? M.quotes.at(-1);
     return q ? { kind, id: q.id, auto: true } : null;
   }
-  const c = M.contracts.at(-1);
+  const c = M.markets.at(-1);
   return c ? { kind, id: c.id, auto: true } : null;
 }
 
@@ -2273,7 +2273,7 @@ function multiLegPanel() {
       <li>Selection is all-or-nothing: every leg needs an eligible quote, or the request expires and every hold is released.</li>
       <li>Acceptance is one command: all legs are validated first, then all escrows applied.</li>
       <li>A presented request stays whole: selected quotes are firm, so no leg drops out inside the window.</li>
-      <li>Every leg's contract outlives the request: the trading-close guard runs per leg.</li>
+      <li>Every leg's market outlives the request: the trading-close guard runs per leg.</li>
     </ol>`;
 }
 
@@ -2358,7 +2358,7 @@ function d4Panel() {
         + `<td>${esc(what)}${test ? `<br><span class="muted">Test:</span> <code>${esc(test)}</code>` : ""}</td><td>${esc(funds)}</td>`
         + `${runCell(scenario, `d4-${i}`, "test only")}</tr>`).join("")}</tbody>
     </table></div>
-    <p class="muted" style="font-size:13px;margin-top:8px">Funds unlock only when the contract is Final, which settles every position in the same command: YES pays the YES holder both locks, NO pays the NO holder, INVALID returns each side its own lock. A timeout never turns a proposal into INVALID.</p>`;
+    <p class="muted" style="font-size:13px;margin-top:8px">Funds unlock only when the market is Final, which settles every position in the same command: YES pays the YES holder both locks, NO pays the NO holder, INVALID returns each side its own lock. A timeout never turns a proposal into INVALID.</p>`;
 }
 
 function d5Panel() {

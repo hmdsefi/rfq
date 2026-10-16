@@ -85,7 +85,7 @@ button, input, select { font: inherit; color: inherit; }
 .sealed { display: inline-flex; align-items: center; gap: 4px; color: var(--ink-3); font-style: italic; }
 .sealed svg { width: 12px; height: 12px; }
 
-/* Money: free / reserved (hatched: held, can come back) / escrowed (solid: locked to the contract) */
+/* Money: free / reserved (hatched: held, can come back) / escrowed (solid: locked to the market) */
 .bar { display: flex; height: 14px; border-radius: 3px; overflow: hidden; background: var(--inset); outline: 1px solid var(--line); }
 .seg { height: 100%; transition: width 320ms cubic-bezier(.2,.7,.2,1); }
 .seg.free { background: var(--free); }
@@ -125,7 +125,7 @@ button, input, select { font: inherit; color: inherit; }
 .progress { text-align: right; font-size: 13px; color: var(--ink-2); }
 .progress strong { color: var(--ink); }
 
-/* Arena: the two sides of the trade around the contract */
+/* Arena: the two sides of the trade around the market */
 .arena { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr) minmax(0, 1fr); gap: 16px; align-items: start; }
 .side { display: grid; gap: 12px; }
 .side-head { display: flex; align-items: baseline; justify-content: space-between; padding: 0 2px; }
@@ -152,11 +152,11 @@ button, input, select { font: inherit; color: inherit; }
 .toast { font-size: 13px; padding: 6px 10px; border-radius: var(--r); background: var(--bad-tint); color: var(--bad); }
 a.idlink, button.idlink { color: var(--accent); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 2px; background: none; border: 0; padding: 0; cursor: pointer; font-weight: 600; }
 
-/* Contract: the subject, in the middle */
-.contract { padding: 16px 18px; display: grid; gap: 14px 24px; }
-.contract-main, .contract-side { display: grid; gap: 14px; min-width: 0; }
-.contract-q { font-size: 21px; line-height: 1.3; font-weight: 600; letter-spacing: -0.015em; }
-.contract-meta { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; font-size: 13px; color: var(--ink-2); }
+/* Market: the subject, in the middle */
+.market { padding: 16px 18px; display: grid; gap: 14px 24px; }
+.market-main, .market-side { display: grid; gap: 14px; min-width: 0; }
+.market-q { font-size: 21px; line-height: 1.3; font-weight: 600; letter-spacing: -0.015em; }
+.market-meta { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; font-size: 13px; color: var(--ink-2); }
 .timeline { position: relative; height: 66px; margin: 4px 6px 0; }
 .tl-track { position: absolute; left: 0; right: 0; top: 30px; height: 6px; border-radius: 3px; background: var(--inset); outline: 1px solid var(--line); }
 .tl-trading { position: absolute; left: 0; top: 30px; height: 6px; border-radius: 3px 0 0 3px; background: var(--yes); opacity: .55; }
@@ -250,7 +250,7 @@ a.idlink, button.idlink { color: var(--accent); text-decoration: underline; text
 [data-view="mm1"] .only-admin { display: none !important; }
 [data-view="admin"] .only-mm1 { display: none !important; }
 
-@media (max-width: 1720px) { .arena { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } .arena .contract-col { grid-column: 1 / -1; order: -1; } .contract { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); align-items: start; } }
+@media (max-width: 1720px) { .arena { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } .arena .market-col { grid-column: 1 / -1; order: -1; } .market { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); align-items: start; } }
 @media (max-width: 1100px) { .app { grid-template-columns: 1fr; } .trace { position: static; height: auto; border-left: 0; border-top: 1px solid var(--line); } .log { max-height: 60vh; } }
 @media (max-width: 720px) { .arena { grid-template-columns: 1fr; } .form-row { grid-template-columns: 1fr 1fr; } .row-events { padding-left: 16px; } .health { margin-left: 0; } .steps3 { grid-template-columns: 1fr; } .ledger { overflow-x: auto; } }
 </style>
@@ -329,7 +329,7 @@ a.idlink, button.idlink { color: var(--accent); text-decoration: underline; text
           <span class="badge b-live">Brief scenario</span>
           <span class="badge b-warn">Taken over</span>
         </div>
-        <p>Two market makers quote, the best price is presented, Alice accepts, the oracle proposes YES and the contract settles.</p>
+        <p>Two market makers quote, the best price is presented, Alice accepts, the oracle proposes YES and the market settles.</p>
       </div>
       <div class="progress">
         <div>Script stopped after step <strong>8</strong> of 13</div>
@@ -338,8 +338,8 @@ a.idlink, button.idlink { color: var(--accent); text-decoration: underline; text
       <div class="expect" aria-label="Expected events, in order">
         <span class="chip seen">RequestOpened</span><span class="chip seen">QuoteSubmitted</span><span class="chip seen">QuoteSubmitted</span>
         <span class="chip seen">QuoteLost</span><span class="chip seen">QuoteSelected</span><span class="chip seen">RequestPresented</span>
-        <span class="chip">QuoteFilled</span><span class="chip">RequestFilled</span><span class="chip">ContractClosed</span>
-        <span class="chip">OutcomeProposed</span><span class="chip">ContractFinalized</span><span class="chip">PositionSettled</span>
+        <span class="chip">QuoteFilled</span><span class="chip">RequestFilled</span><span class="chip">MarketClosed</span>
+        <span class="chip">OutcomeProposed</span><span class="chip">MarketFinalized</span><span class="chip">PositionSettled</span>
       </div>
     </section>
 
@@ -356,7 +356,7 @@ a.idlink, button.idlink { color: var(--accent); text-decoration: underline; text
           </div>
           <div class="item">
             <div class="item-head"><button class="idlink" type="button">Request #7</button><span class="badge b-live">Presented</span></div>
-            <div class="item-facts"><span>Buy <b>YES</b> × <b>1,000</b></span><span>Limit <b>0.70</b></span><span>Contract #1000</span></div>
+            <div class="item-facts"><span>Buy <b>YES</b> × <b>1,000</b></span><span>Limit <b>0.70</b></span><span>Market #1000</span></div>
             <div class="item-facts"><span>Best quote <button class="idlink" type="button">#9</button> at <b>0.60</b></span><span>Accept within <span class="countdown">2.000 s</span> (t+3.600 s)</span></div>
             <div class="item-actions"><button class="btn btn-primary" type="button">Accept at 0.60</button><button class="btn" type="button">Reject</button></div>
           </div>
@@ -392,13 +392,13 @@ a.idlink, button.idlink { color: var(--accent); text-decoration: underline; text
         </article>
       </section>
 
-      <!-- The contract: the subject both sides trade -->
-      <section class="contract-col" aria-labelledby="contract-q">
-        <article class="panel contract">
-          <div class="contract-main">
+      <!-- The market: the subject both sides trade -->
+      <section class="market-col" aria-labelledby="market-q">
+        <article class="panel market">
+          <div class="market-main">
           <div>
-            <div class="contract-meta" style="margin-bottom:6px"><span class="badge b-live">Trading</span><span>Contract #1000</span><span>Oracle: account 4</span></div>
-            <h2 class="contract-q" id="contract-q">Will it rain in Paris on 2026-11-01?</h2>
+            <div class="market-meta" style="margin-bottom:6px"><span class="badge b-live">Trading</span><span>Market #1000</span><span>Oracle: account 4</span></div>
+            <h2 class="market-q" id="market-q">Will it rain in Paris on 2026-11-01?</h2>
           </div>
 
           <div class="timeline" role="img" aria-label="Now t+1.600 s. Trading closes t+5.000 s. Hard deadline t+15.000 s.">
@@ -410,7 +410,7 @@ a.idlink, button.idlink { color: var(--accent); text-decoration: underline; text
           </div>
           <p class="muted" style="font-size:13px">After close the oracle proposes; anyone can dispute for 2 s with a $100 bond. If nobody resolves it by the hard deadline, it ends INVALID and everyone is refunded.</p>
           </div>
-          <div class="contract-side">
+          <div class="market-side">
 
           <div class="roles">
             <div class="role">
@@ -484,7 +484,7 @@ a.idlink, button.idlink { color: var(--accent); text-decoration: underline; text
         <div style="display:flex;gap:14px;flex-wrap:wrap">
           <span class="key"><i style="background:var(--free)"></i>Free</span>
           <span class="key"><i class="seg reserved"></i>Reserved (held, can be released)</span>
-          <span class="key"><i style="background:var(--escrow)"></i>Escrowed (locked to the contract)</span>
+          <span class="key"><i style="background:var(--escrow)"></i>Escrowed (locked to the market)</span>
         </div>
       </div>
       <table>
@@ -530,8 +530,8 @@ a.idlink, button.idlink { color: var(--accent); text-decoration: underline; text
             <p class="muted caption">Every end state except Filled releases the quote's hold.</p>
           </div>
           <div class="machine">
-            <h3>Contract <span class="muted" style="font-weight:400;font-size:13px">#1000 is Trading</span></h3>
-            <svg viewBox="0 0 520 206" role="img" aria-label="Contract state machine. Current state Trading."><defs><marker id="ah" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8z" style="fill:var(--ink-3)"/></marker><marker id="ah-last" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L8 4L0 8z" style="fill:var(--accent)"/></marker></defs><path class="sm-edge" d="M80 102 H138" marker-end="url(#ah)"/><path class="sm-edge" d="M216 102 H274" marker-end="url(#ah)"/><path class="sm-edge" d="M366 102 H438" marker-end="url(#ah)"/><path class="sm-edge" d="M321 118 V166" marker-end="url(#ah)"/><path class="sm-edge" d="M366 184 H438" marker-end="url(#ah)"/><path class="sm-edge" d="M178 86 C178 34, 478 34, 478 84" marker-end="url(#ah)"/><text class="sm-label" x="86" y="84">close</text><text class="sm-label" x="86" y="96">(clock)</text><text class="sm-label" x="222" y="84">Propose</text><text class="sm-label" x="222" y="96">(oracle)</text><text class="sm-label" x="372" y="84">window ends</text><text class="sm-label" x="372" y="96">(clock)</text><text class="sm-label" x="314" y="136" text-anchor="end">Dispute</text><text class="sm-label" x="314" y="148" text-anchor="end">(anyone, bond)</text><text class="sm-label" x="370" y="148">Rule (arbiter)</text><text class="sm-label" x="370" y="161">or hard deadline</text><text class="sm-label" x="196" y="30">hard deadline with no proposal: INVALID (clock)</text><g class="sm-node is-current"><rect x="4" y="86" width="76" height="32" rx="6"/><text x="42" y="107" text-anchor="middle">Trading</text></g><g class="sm-node"><rect x="140" y="86" width="76" height="32" rx="6"/><text x="178" y="107" text-anchor="middle">Closed</text></g><g class="sm-node"><rect x="276" y="86" width="90" height="32" rx="6"/><text x="321" y="107" text-anchor="middle">Proposed</text></g><g class="sm-node is-terminal"><rect x="440" y="86" width="76" height="32" rx="6"/><text x="478" y="107" text-anchor="middle">Final</text></g><g class="sm-node"><rect x="276" y="168" width="90" height="32" rx="6"/><text x="321" y="189" text-anchor="middle">Disputed</text></g><g class="sm-node is-terminal"><rect x="440" y="168" width="76" height="32" rx="6"/><text x="478" y="189" text-anchor="middle">Final</text></g></svg>
+            <h3>Market <span class="muted" style="font-weight:400;font-size:13px">#1000 is Trading</span></h3>
+            <svg viewBox="0 0 520 206" role="img" aria-label="Market state machine. Current state Trading."><defs><marker id="ah" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8z" style="fill:var(--ink-3)"/></marker><marker id="ah-last" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L8 4L0 8z" style="fill:var(--accent)"/></marker></defs><path class="sm-edge" d="M80 102 H138" marker-end="url(#ah)"/><path class="sm-edge" d="M216 102 H274" marker-end="url(#ah)"/><path class="sm-edge" d="M366 102 H438" marker-end="url(#ah)"/><path class="sm-edge" d="M321 118 V166" marker-end="url(#ah)"/><path class="sm-edge" d="M366 184 H438" marker-end="url(#ah)"/><path class="sm-edge" d="M178 86 C178 34, 478 34, 478 84" marker-end="url(#ah)"/><text class="sm-label" x="86" y="84">close</text><text class="sm-label" x="86" y="96">(clock)</text><text class="sm-label" x="222" y="84">Propose</text><text class="sm-label" x="222" y="96">(oracle)</text><text class="sm-label" x="372" y="84">window ends</text><text class="sm-label" x="372" y="96">(clock)</text><text class="sm-label" x="314" y="136" text-anchor="end">Dispute</text><text class="sm-label" x="314" y="148" text-anchor="end">(anyone, bond)</text><text class="sm-label" x="370" y="148">Rule (arbiter)</text><text class="sm-label" x="370" y="161">or hard deadline</text><text class="sm-label" x="196" y="30">hard deadline with no proposal: INVALID (clock)</text><g class="sm-node is-current"><rect x="4" y="86" width="76" height="32" rx="6"/><text x="42" y="107" text-anchor="middle">Trading</text></g><g class="sm-node"><rect x="140" y="86" width="76" height="32" rx="6"/><text x="178" y="107" text-anchor="middle">Closed</text></g><g class="sm-node"><rect x="276" y="86" width="90" height="32" rx="6"/><text x="321" y="107" text-anchor="middle">Proposed</text></g><g class="sm-node is-terminal"><rect x="440" y="86" width="76" height="32" rx="6"/><text x="478" y="107" text-anchor="middle">Final</text></g><g class="sm-node"><rect x="276" y="168" width="90" height="32" rx="6"/><text x="321" y="189" text-anchor="middle">Disputed</text></g><g class="sm-node is-terminal"><rect x="440" y="168" width="76" height="32" rx="6"/><text x="478" y="189" text-anchor="middle">Final</text></g></svg>
             <p class="muted caption">Final settles every position in the same command. Resume can extend an open dispute window after downtime.</p>
           </div>
         </div>
@@ -604,7 +604,7 @@ a.idlink, button.idlink { color: var(--accent); text-decoration: underline; text
       <div class="row only-admin"><button class="row-head" type="button" aria-expanded="false"><span class="seq">1</span><span class="t">start</span><span class="what"><b>Genesis</b> FullHold, SealedAtDeadline</span><span class="count">1</span></button></div>
       <div class="row only-admin"><button class="row-head" type="button" aria-expanded="false"><span class="seq">2</span><span class="t">t+0.000</span><span class="what"><b>Operator</b> Deposit $1,000.00 to Alice</span><span class="count">1</span></button></div>
       <div class="row only-admin"><button class="row-head" type="button" aria-expanded="false"><span class="seq">3–5</span><span class="t">t+0.000</span><span class="what"><b>Operator</b> Deposit $1,000.00 to MM1, MM2, Carol</span><span class="count">3</span></button></div>
-      <div class="row"><button class="row-head" type="button" aria-expanded="false"><span class="seq">6</span><span class="t">t+0.000</span><span class="what"><b>Operator</b> ListContract #1000</span><span class="count">1</span></button></div>
+      <div class="row"><button class="row-head" type="button" aria-expanded="false"><span class="seq">6</span><span class="t">t+0.000</span><span class="what"><b>Operator</b> ListMarket #1000</span><span class="count">1</span></button></div>
       <div class="row"><button class="row-head" type="button" aria-expanded="false"><span class="seq">7</span><span class="t">t+0.100</span><span class="what"><span class="only-admin"><b>Alice</b> SubmitRequest Buy YES × 1,000, limit 0.70</span><span class="only-mm1"><b>Public</b> RequestOpened #7, Buy YES × 1,000</span></span><span class="count">1</span></button></div>
       <div class="row"><button class="row-head" type="button" aria-expanded="false"><span class="seq">8</span><span class="t">t+0.300</span><span class="what"><b>MM1</b> SubmitQuote on #7 at 0.62 × 1,000</span><span class="count">1</span></button></div>
       <div class="row only-admin"><button class="row-head" type="button" aria-expanded="false"><span class="seq">9</span><span class="t">t+0.400</span><span class="what"><b>MM2</b> SubmitQuote on #7 at 0.60 × 1,000</span><span class="count">1</span></button></div>

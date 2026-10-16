@@ -164,15 +164,15 @@ const gw = G.connect("ws://wasm", { WebSocket: server.Socket, connectTimeoutMs: 
 await gw.ready;
 const driver = S.createDriver(gw, { onRunStart: (run) => names.set(run.id, run.name) });
 
-/** The README's curl walk-through, by hand, in the middle of the runs: accounts 10 and 21, contract 7, all below a run's ids. */
+/** The README's curl walk-through, by hand, in the middle of the runs: accounts 10 and 21, market 7, all below a run's ids. */
 async function walkThrough() {
   const now = Math.round(gw.engineNow());
   const seqs = [];
   const send = async (actor, action) => seqs.push((await gw.command({ actor, action })).result.seq);
   await send(1, { Deposit: { to: 10, amount: 1_000_000_000 } });
   await send(1, { Deposit: { to: 21, amount: 1_000_000_000 } });
-  await send(1, { ListContract: { id: 7, description: "Will it rain in Paris on 2026-11-01?", oracle: 4, trading_close: now + 60_000, resolution_deadline: now + 120_000, dispute_window: 2_000 } });
-  await send(10, { SubmitRequest: { legs: [{ contract: 7, side: "BuyYes", qty: 100, limit_price: 7_000 }], response_deadline: now + 1_000 } });
+  await send(1, { ListMarket: { id: 7, description: "Will it rain in Paris on 2026-11-01?", oracle: 4, trading_close: now + 60_000, resolution_deadline: now + 120_000, dispute_window: 2_000 } });
+  await send(10, { SubmitRequest: { legs: [{ market: 7, side: "BuyYes", qty: 100, limit_price: 7_000 }], response_deadline: now + 1_000 } });
   await send(21, { SubmitQuote: { request: seqs.at(-1), leg: 0, price: 6_000, size: 100, expires_at: now + 10_000 } });
   return seqs;
 }
@@ -221,7 +221,7 @@ await test("each run has its scenario's name, and the one cut short has the neut
   assert.match(partial.name, /^run \d\d:\d\d:\d\d$/);
   assert.equal(partial.pass, null);
   assert.equal(partial.detail, null);
-  assert.deepEqual(partial.commands.map((c) => c.action), ["Deposit", "Deposit", "Deposit", "Deposit", "ListContract", "SubmitRequest", "SubmitQuote"]);
+  assert.deepEqual(partial.commands.map((c) => c.action), ["Deposit", "Deposit", "Deposit", "Deposit", "ListMarket", "SubmitRequest", "SubmitQuote"]);
 });
 
 await test("the two scripts that send the same kinds in the same order are told apart by their actions: the wrong price and the double accept", () => {
@@ -251,16 +251,16 @@ await test("own events, batches and labels are exactly what the driver recorded 
   }
 });
 
-await test("not vacuous: the history goes on after the runs (the markets close, the contracts finalize), and none of it is the runs'", () => {
+await test("not vacuous: the history goes on after the runs (the markets close and finalize), and none of it is the runs'", () => {
   const multi = liveOf("multi_leg_happy");
   const market = multi.t0 * 10 + 1;
-  const after = history.filter((e) => e.events.some((x) => ["ContractClosed", "ContractFinalized"].includes(R.eventName(x)) && R.eventBody(x).contract === market));
+  const after = history.filter((e) => e.events.some((x) => ["MarketClosed", "MarketFinalized"].includes(R.eventName(x)) && R.eventBody(x).market === market));
   assert.equal(after.length, 2, "the market closed and finalized in the history");
   const r = rebuilt.find((x) => x.t0 === multi.t0);
   for (const e of after) assert.ok(!r.batches.includes(e.seq), `seq ${e.seq} is not the run's`);
 });
 
-await test("a command that belongs to no run is in no run: the curl walk-through's accounts and contract are below a run's ids", () => {
+await test("a command that belongs to no run is in no run: the curl walk-through's accounts and market are below a run's ids", () => {
   assert.equal(curl.length, 5);
   for (const r of rebuilt) {
     for (const seq of curl) assert.ok(!r.batches.includes(seq), `seq ${seq} in ${r.name}`);
@@ -327,7 +327,7 @@ await test("a history cut after a run's last command leaves it open; the batches
     const r = rebuiltIn(fetched, happy);
     // Its last entry alone does not say the history was whole until the reload: then it is not even open.
     assert.equal(S.runsFromHistory(cut).find((x) => x.t0 === happy.t0).pass, null, `+${ms}, by its last entry`);
-    // The proposal at +5.2 s was its last command; the contract finalizes at +7.2 s.
+    // The proposal at +5.2 s was its last command; the market finalizes at +7.2 s.
     assert.deepEqual([r.name, r.incomplete, r.open, r.pass], ["happy_path", true, true, null], `+${ms}: ${r.detail}`);
     // Before the end of its window (its last wait, +7.3 s, and WAIT_GRACE_MS), it stays open.
     const early = S.settleRun(r, [...cut, ...after.filter((b) => b.time <= happy.t0 + 7_500)], happy.t0 + 7_500);
@@ -351,19 +351,19 @@ await test("an open run that gets a command after the history (the live stream c
   assert.deepEqual([done.incomplete, done.open, done.pass], [true, false, null], done.detail);
 });
 
-await test("a genesis role's command is the run's when it names the run's contract or market, as the arbiter's ruling does", () => {
+await test("a genesis role's command is the run's when it names the run's own market or an extra one, as the arbiter's ruling does", () => {
   const t0 = 1_790_000_000_456;
   const alice = t0 * 100 + 10;
   const user = (seq, actor, nonce, action, events = []) => ({ seq, time: t0 + seq, kind: "User", origin: { actor, nonce }, events, balances: [], command: { actor, nonce, action } });
   const entries = [
     user(2, 1, 2, { Deposit: { to: alice, amount: 5 } }, [{ audience: { Account: alice }, event: { Deposited: { account: alice, amount: 5 } } }]),
-    // A market of the run's, with an oracle that is not one of its accounts: only the contract id says whose it is.
-    user(3, 1, 3, { ListContract: { id: t0 * 10 + 2, description: "d", oracle: 4, trading_close: t0 + 5_000, resolution_deadline: t0 + 15_000, dispute_window: 2_000 } }),
-    user(4, 2, 2, { Rule: { contract: t0, outcome: "Invalid" } }),
-    user(5, 2, 3, { Rule: { contract: 7, outcome: "Invalid" } }), // the curl walk-through's contract: no run's
+    // A market of the run's, with an oracle that is not one of its accounts: only the market id says whose it is.
+    user(3, 1, 3, { ListMarket: { id: t0 * 10 + 2, description: "d", oracle: 4, trading_close: t0 + 5_000, resolution_deadline: t0 + 15_000, dispute_window: 2_000 } }),
+    user(4, 2, 2, { Rule: { market: t0, outcome: "Invalid" } }),
+    user(5, 2, 3, { Rule: { market: 7, outcome: "Invalid" } }), // the curl walk-through's market: no run's
   ];
   const [run] = S.runsFromHistory(entries);
-  assert.deepEqual(run.commands.map((c) => [c.seq, c.action]), [[2, "Deposit"], [3, "ListContract"], [4, "Rule"]]);
+  assert.deepEqual(run.commands.map((c) => [c.seq, c.action]), [[2, "Deposit"], [3, "ListMarket"], [4, "Rule"]]);
 });
 
 await test("a history with nothing but one deposit of a run gets the neutral label, no verdict, and that one batch", () => {
