@@ -146,7 +146,7 @@ Lanes, contracts, positions, ledger and trace come back after a reload, and so d
 - `rfq-infra`: an `#[ignore]`d live test against the Docker `ArchivingMediaDriver`: the follower delivers every command in order, across a journal restart (a new recording).
 - `rfq-gateway`: routing, statuses, CORS and the JSON shapes against a replica built in the test; the write path through a real `HubLoop` with a fake venue.
 - End to end: `scripts/http-smoke.mjs` against the Docker stack: fund, list, request, two quotes and accept over HTTP; then positions, balances and the trace over HTTP, the trace equal to the WebSocket's batches.
-- Dashboard: the recorder's history seeding and the model's command fallback (unit), the page loading history (page test with a stubbed `fetch`).
+- Dashboard: the recorder's history seeding and the model's command fallback (unit), the page loading history (page test with a stubbed `fetch`). Also the runs rebuilt from the history (`history.test.mjs`): runs played through the real driver to the wasm engine, checked against the driver's own record of each, and histories cut in the middle of a run.
 - Existing suites stay green; `scripts/demo.sh` still prints `RECOVERY OK`.
 
 ## 11. Acceptance
