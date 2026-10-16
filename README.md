@@ -96,44 +96,40 @@ Recorded runs of five scenarios (the happy path, a dispute, a silent oracle, no 
 
 The gateway also serves plain HTTP on `http://127.0.0.1:18081`, next to the WebSocket on 18080 and, like it, published on the host's loopback only (`RFQ_HTTP_PORT` moves it). `GET`s read a **replica**: a read-only copy of the engine that the gateway keeps by following the Archive journal, so a read never touches the engine. `POST`s go through the same hub as the WebSocket's commands, with the same nonces and safety rules. Every read says which `seq` it reflects (`as_of_seq`), and `?min_seq=N` makes it wait for a write you just made. There is no authentication: whoever can reach the port can act as, or read, any account, the admin trace included ([read-api.md §9](docs/specs/read-api.md)).
 
-With the stack up (`docker compose up -d aeron engine gateway`), paste this whole block: one trade, written and read back over HTTP. Amounts are micro-USD, prices basis points, times engine milliseconds. The demo node's accept window is 2 s, so step 5 has to follow step 4 at once.
+With the stack up (`docker compose up -d aeron engine gateway`), paste this whole block into a shell: one trade, written and read back over HTTP. It has no comments, so it pastes into zsh as it is. `get` and `post` are `curl` with the base URL, and `post` keeps the reply's `seq` in `SEQ` (a request's or quote's id is its `seq`). Amounts are micro-USD, prices basis points, times engine milliseconds: the engine stamps the wall clock, so `T` is now (Docker's clock follows the host's). The steps:
+
+0. `get /v1/status`: the stack is up when it says `"engine":"up"` and the replica `"following"`. The engine needs a few seconds after `docker compose up`: if it is not yet, wait and run the block again.
+1. The operator (account 1) funds Alice (10) and MM2 (21) with $1,000 each and lists contract 7. Run the block again and the listing is refused (`InvalidInput`, contract 7 exists), which is harmless.
+2. Alice asks to buy 1,000 YES at 0.70 or better (7000 basis points); quotes are due in 3 s.
+3. MM2 quotes 0.60 for all 1,000.
+4. At the deadline the engine presents the best quote to Alice, and her request shows it as `selected`. The loop waits up to 10 s for that.
+5. Alice accepts what she was shown. Both stakes go to escrow. The demo node's accept window is 2 s, so this has to follow step 4 at once: that is why it is one block.
+6. Read it back. `min_seq` makes a read wait until the replica has applied that `seq`.
 
 ```bash
 H=http://127.0.0.1:18081
 get() { curl -s "$H$1"; echo; }
-post() {  # POST body $2 to $1; print the reply; keep its seq in $SEQ (a request's or quote's id is its seq)
-  R=$(curl -s -X POST "$H$1" -H 'content-type: application/json' -d "$2")
-  printf '%s\n' "$R"
-  SEQ=$(printf '%s' "$R" | sed 's/^{"seq":\([0-9]*\).*/\1/')
-}
+post() { R=$(curl -s -X POST "$H$1" -H 'content-type: application/json' -d "$2"); printf '%s\n' "$R"; SEQ=$(printf '%s' "$R" | sed 's/^{"seq":\([0-9]*\).*/\1/'); }
 
-# 0. Is the stack up? Expect "engine":"up" and the replica "following".
 get /v1/status
 
-# 1. The operator (account 1) funds Alice (10) and MM2 (21) with $1,000 each and lists contract 7
-#    (run it again and the listing is refused, contract 7 exists: harmless).
-T=$(date +%s)000                          # engine time is the wall clock in ms; Docker's follows the host's
+T=$(date +%s)000
 post /v1/commands '{"actor":1,"action":{"Deposit":{"to":10,"amount":1000000000}}}'
 post /v1/commands '{"actor":1,"action":{"Deposit":{"to":21,"amount":1000000000}}}'
 post /v1/commands '{"actor":1,"action":{"ListContract":{"id":7,"description":"Rain in Paris tomorrow?","oracle":4,"trading_close":'$((T+3600000))',"resolution_deadline":'$((T+7200000))',"dispute_window":60000}}}'
 
-# 2. Alice asks to buy 1,000 YES at 0.70 or better (7000 basis points); quotes are due in 3 s.
 T=$(date +%s)000
 post /v1/requests '{"actor":10,"legs":[{"contract":7,"side":"BuyYes","qty":1000,"limit_price":7000}],"response_deadline":'$((T+3000))'}'
 REQ=$SEQ
 
-# 3. MM2 quotes 0.60 for all 1,000.
 post /v1/quotes '{"actor":21,"request":'$REQ',"leg":0,"price":6000,"size":1000,"expires_at":'$((T+60000))'}'
 QUOTE=$SEQ
 
-# 4. At the deadline the engine presents the best quote to Alice: her request now has "selected".
-until get /v1/accounts/10/requests | grep -q '"state":{"Presented"'; do sleep 0.5; done
+for i in $(seq 20); do get /v1/accounts/10/requests | grep -q '"state":{"Presented"' && break; [ $i = 20 ] && echo "the request was not presented within 10 s"; sleep 0.5; done
 get /v1/accounts/10/requests
 
-# 5. Alice accepts what she was shown. Both stakes go to escrow.
 post /v1/commands '{"actor":10,"action":{"Accept":{"request":'$REQ',"picks":[{"leg":0,"quote":'$QUOTE',"price":6000}]}}}'
 
-# 6. Read it back; min_seq makes a read wait until the replica has applied the write it follows.
 get "/v1/accounts/10/positions?min_seq=$SEQ"
 get "/v1/trace?view=10&limit=20"
 ```
@@ -144,7 +140,7 @@ Each `POST` answers `200` with its command's batch as its actor sees it (`seq`, 
 {"as_of_seq":11,"positions":[{"contract":7,"id":1,"payout":null,"qty":1000,"request":7,"settled":false,"side":"Yes","stake":600000000}]}
 ```
 
-`view=10` is what Alice's own connection would have received: her commands and what the engine told her, nothing of MM2's quote or balance (`view=admin` is the operator's, every command). The other endpoints (balances, quotes, open requests, contracts, status), the error statuses, the limits and the trace paging are in [read-api.md](docs/specs/read-api.md). To publish the API on another host port, set `RFQ_HTTP_PORT` and change `H`. `node scripts/http-smoke.mjs` runs a whole trade over HTTP and checks every reply and read, including that the trace equals the batches the WebSocket delivered; it prints `HTTP SMOKE OK` (it takes the HTTP base and the WebSocket URL as arguments, or `RFQ_HTTP_URL` and `RFQ_GATEWAY_URL`).
+`view=10` is what Alice's own connection would have received: her commands and what the engine told her, nothing of MM2's quote or balance (`view=admin` is the operator's view, every command). The other endpoints (balances, quotes, open requests, contracts, status), the error statuses, the limits and the trace paging are in [read-api.md](docs/specs/read-api.md). If you moved the port, change `H`. `node scripts/http-smoke.mjs` runs a whole trade over HTTP and checks every reply and read, and that the trace equals the batches the WebSocket delivered; it prints `HTTP SMOKE OK`. Its arguments are the HTTP base and the WebSocket URL, or `RFQ_HTTP_URL` and `RFQ_GATEWAY_URL`.
 
 ## Layout
 

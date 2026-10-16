@@ -1,6 +1,6 @@
 # Gateway: the client edge (WebSocket)
 
-Status: approved by the PO on 2026-10-15.
+Status: approved by the PO on 2026-10-15. This document specifies the WebSocket edge. The same process also serves an HTTP API on port 18081, specified in [read-api.md](read-api.md).
 
 ## 1. Why
 
@@ -10,9 +10,9 @@ The engine's inputs and outputs only exist on Aeron streams inside the venue:
 
 A client outside the venue needs one place to send commands and get its own results back, filtered so it sees only what it may see. engine.md §7 already assigns that filtering to "gateways". This component builds it.
 
-The gateway holds no business state and makes no business decisions. It moves `ClientCommand`s in and `EventBatch`es out, and filters the output per viewer. Every number a client sees was produced by the engine.
+The gateway makes no business decisions, and its write path holds no business state. It moves `ClientCommand`s in and `EventBatch`es out, and filters the output per viewer. Every number a client sees was produced by the engine.
 
-This WebSocket only pushes: a client sees what happens while it is connected. Asking for current state (positions, balances, requests, the trace of what it missed) and sending commands without a WebSocket are the **HTTP API** on port 18081, which the same process serves ([read-api.md](read-api.md)). Its writes enter the hub like a WebSocket command, so everything below (nonces §5, engine status and `outcome unknown` §6) applies to them unchanged. Its reads come from a read-only replica of the engine that the gateway builds from the journal; the replica takes no part in a write, so the hub still holds no business state.
+This WebSocket only pushes: a client sees what happens while it is connected. Asking for current state (positions, balances, requests, the trace of what it missed) and sending commands without a WebSocket are the **HTTP API** on port 18081, which the same process serves ([read-api.md](read-api.md)). Its writes enter the hub like a WebSocket command, so everything below (nonces §5, engine status and `outcome unknown` §6) applies to them unchanged. Its reads come from a read-only replica of the engine that the gateway builds from the journal. The replica makes no decision and no write consults it, so the hub still holds no business state.
 
 ```
 client (dashboard, scripts) ──WebSocket JSON──► rfq-gateway ──ClientCommand──► ingress 1001 ──► rfq-node
