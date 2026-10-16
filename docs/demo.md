@@ -37,7 +37,7 @@ Pick a scenario, press **Run**. The same scenarios also run without the page: `d
 
 ![happy_path](media/happy_path.gif)
 
-- **Setup:** the stack starts (`docker compose up`), the page is built (`build.sh`), and the logs show the engine replaying its journal from the Archive (`replayed seq=… hash=…`).
+- **Setup:** the stack starts (`docker compose up`), the page is built (`build.sh`), and the logs show the engine replaying its journal from the Archive (`replayed seq=… hash=…`; a fresh journal holds only Genesis, seq 1) and the gateway listening on :18080 (WebSocket) and :18081 (HTTP). When it opens, the page reads the history over HTTP.
 - **Request:** Alice asks for 1,000 YES with a sealed $0.70 limit, so $700 is reserved.
 - **Quotes:** MM1 quotes $0.62 and MM2 quotes $0.60. Each quote is sealed: only its own MM receives `QuoteSubmitted`.
 - **Deadline:** a `Tick` opens the quotes. MM2 wins, MM1 gets its $380 back, and Alice is presented the price.
