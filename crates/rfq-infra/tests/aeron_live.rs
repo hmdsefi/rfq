@@ -1,14 +1,16 @@
 //! The Aeron adapters against a real `ArchivingMediaDriver`. Ignored by default: they need the
 //! driver's directory in `AERON_DIR` (default `/dev/shm/aeron`), and an archive no node uses,
-//! because they record the log stream (the follower tests start by purging the log's recordings,
-//! so each begins with no recording). In Docker, from the repository root:
+//! because they record the log stream. The follower tests start by purging every recording of the
+//! log, so each begins with no recording: that destroys the journal of whatever Archive they run
+//! against, so they refuse to run unless `RFQ_LIVE_TEST_MAY_PURGE=1` says the Archive is a
+//! throwaway one (never the compose stack's). In Docker, from the repository root:
 //!
 //! ```sh
 //! docker build -t rfq-aeron docker/aeron
 //! docker build -f docker/rust.Dockerfile --target toolchain -t rfq-toolchain .
 //! docker run -d --name rfq-test-aeron --ipc=shareable --shm-size=512m rfq-aeron
 //! docker run --rm --ipc=container:rfq-test-aeron -v "$PWD":/src -w /src \
-//!   -e CARGO_TARGET_DIR=/tmp/target rfq-toolchain \
+//!   -e CARGO_TARGET_DIR=/tmp/target -e RFQ_LIVE_TEST_MAY_PURGE=1 rfq-toolchain \
 //!   cargo test -p rfq-infra --features aeron --test aeron_live -- --ignored --test-threads=1
 //! docker rm -f rfq-test-aeron
 //! ```
@@ -268,7 +270,16 @@ fn archive(aeron: &Aeron) -> AeronArchive {
 /// Empties the log: stops any recording of stream 1002 that is still active (a journal dropped a
 /// moment ago may not have stopped yet) and purges every recording. Each follower test starts
 /// from "no recording yet", whatever ran before it on this Archive.
+///
+/// This destroys the journal of the Archive it runs against, so it runs only when
+/// `RFQ_LIVE_TEST_MAY_PURGE=1` says that Archive is a throwaway one.
 fn empty_log(aeron: &Aeron) {
+    assert!(
+        std::env::var("RFQ_LIVE_TEST_MAY_PURGE").is_ok_and(|v| v == "1"),
+        "this test purges every recording of the log (stream 1002) on the Archive it runs against, \
+         which destroys that journal. Set RFQ_LIVE_TEST_MAY_PURGE=1 only when the driver is a \
+         throwaway one that no node uses (see the header of this file), never the compose stack's"
+    );
     let archive = archive(aeron);
     let start = Instant::now();
     loop {
@@ -349,6 +360,20 @@ fn follow_for(follower: &mut JournalFollower, how_long: Duration) -> Vec<Sequenc
     got
 }
 
+/// Polls until `follower` says it has caught up (and nothing is delivered on the way: callers
+/// have received what they expect), or fails after [`PATIENCE`].
+fn wait_caught_up(follower: &mut JournalFollower) {
+    let start = Instant::now();
+    while !follower.caught_up() {
+        assert!(start.elapsed() < PATIENCE, "the follower never caught up");
+        let mut extra = 0;
+        if follower.poll(&mut |_| extra += 1).unwrap() == 0 {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(extra, 0, "commands arrived that the test did not expect");
+    }
+}
+
 /// A node as `rfq-node` starts one: connect, replay what is there, then (the caller) append.
 fn start_node(aeron: &Aeron) -> ArchiveJournal {
     let mut journal = ArchiveJournal::new(aeron).unwrap();
@@ -365,13 +390,17 @@ fn follower_delivers_every_recorded_command_in_order() {
     let mut journal = start_node(&aeron);
     // One follower opens before the first append, one after the first ten.
     let mut early = JournalFollower::open(&aeron).unwrap();
+    assert!(!early.caught_up(), "it follows nothing yet");
     append_durably(&mut journal, &log[..10]);
     let mut late = JournalFollower::open(&aeron).unwrap();
+    assert!(!late.caught_up(), "it follows nothing yet");
     for chunk in log[10..].chunks(10) {
         append_durably(&mut journal, chunk);
     }
     assert_delivered(&follow(&mut early, 50), &log);
     assert_delivered(&follow(&mut late, 50), &log);
+    wait_caught_up(&mut early);
+    wait_caught_up(&mut late);
     // Nothing more: not a repeat, not an extra.
     assert!(follow_for(&mut early, Duration::from_millis(300)).is_empty());
     assert!(follow_for(&mut late, Duration::from_millis(300)).is_empty());
@@ -382,19 +411,22 @@ fn follower_delivers_every_recorded_command_in_order() {
 fn follower_follows_appends_made_while_it_follows() {
     let aeron = client();
     empty_log(&aeron);
-    let log = commands(1..=30);
+    let log = commands(1..=35);
     let mut journal = start_node(&aeron);
     append_durably(&mut journal, &log[..10]);
     let mut follower = JournalFollower::open(&aeron).unwrap();
+    assert!(!follower.caught_up(), "nothing is replayed yet");
     assert_delivered(&follow(&mut follower, 10), &log[..10]);
+    wait_caught_up(&mut follower);
     assert!(
         follow_for(&mut follower, Duration::from_millis(300)).is_empty(),
         "caught up: nothing more until the node appends"
     );
+    assert!(follower.caught_up(), "and it stays caught up");
 
     // 20 more, offered one by one while the follower polls: it never runs ahead of the appends.
     let mut got = Vec::new();
-    for (i, sc) in log[10..].iter().enumerate() {
+    for (i, sc) in log[10..30].iter().enumerate() {
         journal.append(sc).unwrap();
         follower.poll(&mut |sc| got.push(sc)).unwrap();
         assert!(
@@ -410,7 +442,14 @@ fn follower_follows_appends_made_while_it_follows() {
             std::thread::sleep(Duration::from_millis(1));
         }
     }
-    assert_delivered(&got, &log[10..]);
+    assert_delivered(&got, &log[10..30]);
+    wait_caught_up(&mut follower);
+
+    // Recorded and not yet polled: not caught up, until the follower has delivered it.
+    append_durably(&mut journal, &log[30..]);
+    assert!(!follower.caught_up(), "5 recorded commands are unread");
+    assert_delivered(&follow(&mut follower, 5), &log[30..]);
+    wait_caught_up(&mut follower);
 }
 
 #[test]
@@ -422,15 +461,19 @@ fn follower_moves_to_the_next_recording_after_a_restart() {
     let mut first = start_node(&aeron);
     append_durably(&mut first, &log[..10]);
     let mut follower = JournalFollower::open(&aeron).unwrap();
-    // The first recording, still active.
+    // The first recording, still active: caught up once it has been delivered.
     assert_delivered(&follow(&mut follower, 10), &log[..10]);
+    wait_caught_up(&mut follower);
 
     drop(first); // the node stops: its recording ends
     let mut second = start_node(&aeron); // the restart records anew
     append_durably(&mut second, &log[10..]);
-    // The second recording.
+    // The second recording exists and is unread: not caught up.
+    assert!(!follower.caught_up(), "a later recording is unread");
     assert_delivered(&follow(&mut follower, 10), &log[10..]);
+    wait_caught_up(&mut follower);
     assert!(follow_for(&mut follower, Duration::from_millis(300)).is_empty());
+    assert!(follower.caught_up());
 }
 
 #[test]
@@ -443,13 +486,16 @@ fn follower_moves_on_after_a_node_crashed() {
     append_durably(&mut first, &log[..10]);
     let mut follower = JournalFollower::open(&aeron).unwrap();
     assert_delivered(&follow(&mut follower, 10), &log[..10]);
+    wait_caught_up(&mut follower);
 
     // A crash: the publication stays open and the recording active, until the restarted node's
     // replay stops it.
     std::mem::forget(first);
     let mut second = start_node(&aeron);
     append_durably(&mut second, &log[10..]);
+    assert!(!follower.caught_up(), "a later recording is unread");
     assert_delivered(&follow(&mut follower, 10), &log[10..]);
+    wait_caught_up(&mut follower);
 }
 
 #[test]
@@ -458,11 +504,13 @@ fn follower_starts_with_no_recording_and_picks_up_the_first() {
     let aeron = client();
     empty_log(&aeron);
     let mut follower = JournalFollower::open(&aeron).unwrap();
-    // Nothing is recorded yet: every poll is Ok(0), for longer than its listing interval.
+    // Nothing is recorded yet: every poll is Ok(0), for longer than its listing interval, and
+    // there is nothing to be caught up with.
     let start = Instant::now();
     let mut delivered = 0;
     while start.elapsed() < Duration::from_millis(500) {
         assert_eq!(follower.poll(&mut |_| delivered += 1).unwrap(), 0);
+        assert!(!follower.caught_up(), "it follows nothing");
         std::thread::sleep(Duration::from_millis(1));
     }
     assert_eq!(delivered, 0);
@@ -471,6 +519,7 @@ fn follower_starts_with_no_recording_and_picks_up_the_first() {
     let mut journal = start_node(&aeron);
     append_durably(&mut journal, &log);
     assert_delivered(&follow(&mut follower, 5), &log);
+    wait_caught_up(&mut follower);
 }
 
 /// What the node opens at its first append, before it offers anything: a recording of a new
@@ -487,7 +536,33 @@ fn start_empty_recording(aeron: &Aeron, archive: &AeronArchive) -> (AeronExclusi
     archive
         .start_recording(&channel, LOG, SOURCE_LOCATION_LOCAL, true)
         .unwrap();
-    (publication, channel)
+    // The Archive creates the recording once the publication's image reaches it: wait for it,
+    // as stopping a recording that does not exist yet would leave none.
+    let start = Instant::now();
+    loop {
+        let mut count = 0;
+        let mut listed = 0;
+        archive
+            .list_recordings_for_uri_fn(
+                &mut count,
+                0,
+                i32::MAX,
+                IPC,
+                LOG,
+                |_: AeronArchiveRecordingDescriptor| {
+                    listed += 1;
+                },
+            )
+            .unwrap();
+        if listed > 0 {
+            return (publication, channel);
+        }
+        assert!(
+            start.elapsed() < PATIENCE,
+            "the archive never created the recording"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }
 
 /// The window the node opens at its first append: the recording exists, active, and holds nothing
@@ -502,6 +577,7 @@ fn follower_follows_a_recording_that_holds_nothing_yet() {
 
     let mut follower = JournalFollower::open(&aeron).unwrap();
     assert!(follow_for(&mut follower, Duration::from_millis(500)).is_empty());
+    assert!(follower.caught_up(), "active, and nothing recorded to deliver");
     let log = commands(1..=3);
     let start = Instant::now();
     for sc in &log {
@@ -515,6 +591,7 @@ fn follower_follows_a_recording_that_holds_nothing_yet() {
         }
     }
     assert_delivered(&follow(&mut follower, 3), &log);
+    wait_caught_up(&mut follower);
 }
 
 /// A node that died right after it started its recording leaves one that holds nothing and has
@@ -561,9 +638,14 @@ fn follower_skips_a_stopped_recording_that_holds_nothing() {
     let log = commands(1..=5);
     let mut follower = JournalFollower::open(&aeron).unwrap();
     assert!(follow_for(&mut follower, Duration::from_millis(300)).is_empty());
+    assert!(
+        !follower.caught_up(),
+        "the only recording was passed over: nothing to follow"
+    );
     let mut journal = start_node(&aeron);
     append_durably(&mut journal, &log);
     assert_delivered(&follow(&mut follower, 5), &log);
+    wait_caught_up(&mut follower);
 }
 
 /// A follower that opens late, as the gateway does when it rebuilds: the log already holds
@@ -583,7 +665,15 @@ fn follower_replays_stopped_recordings_then_follows_the_active_one() {
     append_durably(&mut node, &log[20..30]);
 
     let mut follower = JournalFollower::open(&aeron).unwrap();
-    assert_delivered(&follow(&mut follower, 30), &log[..30]);
+    assert!(!follower.caught_up(), "nothing is replayed yet");
+    // The first recording has stopped and later ones exist: not caught up, though all of it has
+    // been delivered.
+    assert_delivered(&follow(&mut follower, 10), &log[..10]);
+    assert!(!follower.caught_up(), "later recordings are unread");
+    assert_delivered(&follow(&mut follower, 20), &log[10..30]);
+    wait_caught_up(&mut follower);
     append_durably(&mut node, &log[30..]);
+    assert!(!follower.caught_up(), "5 recorded commands are unread");
     assert_delivered(&follow(&mut follower, 5), &log[30..]);
+    wait_caught_up(&mut follower);
 }

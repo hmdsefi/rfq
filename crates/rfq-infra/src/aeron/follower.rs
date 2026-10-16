@@ -20,11 +20,11 @@
 use std::time::{Duration, Instant};
 
 use rfq_domain::SequencedCommand;
-use rusteron_archive::{Aeron, AeronArchive};
+use rusteron_archive::{Aeron, AeronArchive, AeronCountersReader, RecordingPos};
 
 use super::archive::{
-    ARCHIVE_TIMEOUT, Decoder, NULL_POSITION, Recording, Replay, connect_archive, list_recordings,
-    start_replay,
+    ARCHIVE_TIMEOUT, Decoder, NULL_COUNTER_ID, NULL_POSITION, Recording, Replay, connect_archive,
+    list_recordings, start_replay,
 };
 use super::{AeronError, FOLLOW};
 
@@ -41,6 +41,8 @@ pub struct JournalFollower {
     // the client they belong to.
     state: State,
     decoder: Decoder,
+    /// The driver's counters: where the recording's position is read, as `ArchiveJournal` does.
+    counters: AeronCountersReader,
     archive: AeronArchive,
     aeron: Aeron,
 }
@@ -58,7 +60,10 @@ enum State {
 
 /// One recording being replayed.
 struct Following {
+    /// As listed when its replay started: `stop` is [`NULL_POSITION`] if it was active then.
     recording: Recording,
+    /// Whether that listing showed a recording after this one.
+    later: bool,
     replay: Replay,
     /// Set once the replay has ended while the catalog still showed the recording active.
     ended: Option<Ended>,
@@ -83,16 +88,56 @@ impl JournalFollower {
                 listed: None,
             },
             decoder: Decoder::new(),
+            counters: aeron.counters_reader(),
             archive: connect_archive(aeron)?,
             aeron: aeron.clone(),
         })
     }
 
+    /// Whether the follower has delivered everything the Archive has recorded: it follows the
+    /// log's last recording, still active, and its replay has reached the recorded position (read
+    /// from the recording's position counter, as `ArchiveJournal::wait_durable` does).
+    ///
+    /// `false` while the follower is idle (no recording yet, or waiting for the next one), while
+    /// it follows a recording that has stopped, while the last listing shows a later recording,
+    /// and while the replay is behind the recorded position. Ask between polls; a poll that
+    /// returned `Ok(0)` says nothing about it. A command the Archive has recorded only in part
+    /// (a fragmented one) is not yet a recorded command.
+    pub fn caught_up(&self) -> bool {
+        let State::Following(following) = &self.state else {
+            return false;
+        };
+        let image = &following.replay.image;
+        if following.recording.stop != NULL_POSITION
+            || following.later
+            || image.is_end_of_stream()
+            || image.is_closed()
+        {
+            return false;
+        }
+        // The replay's position first: the recorded position read after it can only be larger, so
+        // `recorded <= consumed` holds only if the replay had caught up when it was read.
+        let consumed = image.position();
+        let id = following.recording.id;
+        let counter_id = RecordingPos::find_counter_id_by_recording_id(&self.counters, id);
+        if counter_id == NULL_COUNTER_ID {
+            return false; // no active recording has this id: it has stopped
+        }
+        let recorded = self.counters.get_counter_value(counter_id);
+        // A stopped recording frees its counter, which may be reused: trust the value only while
+        // the counter is still this recording's.
+        RecordingPos::is_active(&self.counters, counter_id, id).unwrap_or(false) && recorded <= consumed
+    }
+
     /// Delivers the next recorded commands in journal order, at most one poll's worth of
-    /// fragments, and returns how many it delivered (`0` when caught up or waiting for a
-    /// recording). Also polls the Archive control session. Never blocks for long: the one wait is
-    /// for a replay to start, which takes milliseconds from a healthy Archive and fails with a
-    /// timeout after 10 s from a broken one.
+    /// fragments, and returns how many it delivered. Also polls the Archive control session.
+    /// Never blocks for long: the one wait is for a replay to start, which takes milliseconds
+    /// from a healthy Archive and fails with a timeout after 10 s from a broken one.
+    ///
+    /// `Ok(0)` means only that this call delivered nothing: the follower may be caught up, but it
+    /// may also be waiting for a recording, have just started the next recording's replay, or
+    /// have stopped in the middle of a fragmented command. [`caught_up`](Self::caught_up) says
+    /// whether it has delivered everything recorded.
     ///
     /// Any error ends the follower: the caller opens a new one.
     pub fn poll(&mut self, sink: &mut dyn FnMut(SequencedCommand)) -> Result<usize, AeronError> {
@@ -207,6 +252,7 @@ impl JournalFollower {
                 self.decoder = Decoder::new();
                 self.state = State::Following(Following {
                     recording: *r,
+                    later: recordings.iter().any(|later| later.id > r.id),
                     replay,
                     ended: None,
                 });

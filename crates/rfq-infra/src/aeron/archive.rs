@@ -48,7 +48,7 @@ use crate::fragment::Reassembler;
 /// Aeron's "no position": the stop position of a recording that is still active.
 pub(crate) const NULL_POSITION: i64 = -1;
 /// Aeron's "no counter".
-const NULL_COUNTER_ID: i32 = -1;
+pub(crate) const NULL_COUNTER_ID: i32 = -1;
 /// How long an offer to the log may stay back-pressured or unconnected.
 const LOG_PATIENCE: Duration = Duration::from_secs(10);
 /// How long the Archive may take to record an appended command.
