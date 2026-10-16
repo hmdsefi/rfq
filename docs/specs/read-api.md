@@ -45,7 +45,7 @@ JSON in and out. Units as on the WebSocket: prices in basis points, money in mic
 
 ### Reads (served by the replica)
 
-Every read response has `as_of_seq`: the last `seq` the replica has applied. Any read takes `?min_seq=N`: it waits up to 2 s for the replica to reach `N`, else answers `503 {"error":"replica behind","as_of_seq":…}`. A client that wants to read its own write passes the `seq` its `POST` returned.
+Every read response has `as_of_seq`: the last `seq` the replica has applied. Any read takes `?min_seq=N`: it waits up to 2 s for the replica to reach `N`, else answers `503 {"error":"replica behind","as_of_seq":…}`; a `200` always has `as_of_seq >= N`, a journal reset during the wait included. A client that wants to read its own write passes the `seq` its `POST` returned.
 
 | Endpoint | Returns |
 |---|---|

@@ -7,7 +7,8 @@
 //!
 //! Every `200` body is a JSON object with `as_of_seq`, the replica's `last_seq` at the read, plus
 //! the fields the spec names. Any read takes `?min_seq=N` and waits up to a deadline for the
-//! replica to reach it (read-your-writes), else answers `503`. A bad id or query value is `400`
+//! replica to reach it (read-your-writes), else answers `503`; the read checks it again under its
+//! lock, so a `200` never has `as_of_seq` below `N`. A bad id or query value is `400`
 //! and is refused before any wait.
 //!
 //! The locks survive a panic in the thread that held them (a poisoned lock is taken as it is):
@@ -207,12 +208,24 @@ pub fn get(read: &ReadSide, engine: &EngineStatus, path: &str, query: &str, min_
     if let Some(seq) = min_seq
         && !read.wait_for(seq, min_seq_wait)
     {
-        let mut o = Map::new();
-        o.insert("error".into(), "replica behind".into());
-        o.insert("as_of_seq".into(), read.last_seq().into());
-        return Reply::object(503, o);
+        return behind(read.last_seq());
     }
-    read.read(|replica, state| answer(replica, state, engine, &what))
+    read.read(|replica, state| {
+        // Checked again under the lock: a reset between the wait and the read takes the replica
+        // back below `min_seq`, and a 200 always has `as_of_seq >= min_seq`.
+        match min_seq {
+            Some(seq) if replica.last_seq() < seq => behind(replica.last_seq()),
+            _ => answer(replica, state, engine, &what),
+        }
+    })
+}
+
+/// `503`: the replica has not reached `min_seq`; it is at `as_of_seq`.
+fn behind(as_of_seq: u64) -> Reply {
+    let mut o = Map::new();
+    o.insert("error".into(), "replica behind".into());
+    o.insert("as_of_seq".into(), as_of_seq.into());
+    Reply::object(503, o)
 }
 
 /// The answer to any method but `GET` on `path`: `405` for a path the API has, else `404`.
@@ -1055,6 +1068,32 @@ mod tests {
             let (status, _) = call(&read, &EngineStatus::new(), target, WAIT);
             assert_eq!(status, 503, "{target}");
         }
+    }
+
+    /// The wait and the read are two steps: a journal reset between them (`apply_or_reset` of a new
+    /// seq 1) leaves the replica below `min_seq` at the read. The read still never answers `200`
+    /// below `min_seq`. Here the wait is made to pass by setting what it waits on.
+    #[test]
+    fn min_seq_is_checked_again_at_the_read() {
+        let log = happy_log();
+        let read = read_side(&log, 9);
+        // As if `wait_for` had seen the old journal at 10 just before the reset.
+        *read.published.lock().unwrap() = 10;
+        assert!(read.wait_for(10, Duration::ZERO));
+        for target in [
+            "/v1/accounts/10?min_seq=10",
+            "/v1/status?min_seq=10",
+            "/v1/trace?view=admin&min_seq=10",
+        ] {
+            let (status, body) = call(&read, &EngineStatus::new(), target, WAIT);
+            assert_eq!(
+                (status, body),
+                (503, json!({"error": "replica behind", "as_of_seq": 9})),
+                "{target}"
+            );
+        }
+        // At or below what the replica has: served.
+        assert_eq!(ok(&read, "/v1/status?min_seq=9")["as_of_seq"], 9);
     }
 
     #[test]
