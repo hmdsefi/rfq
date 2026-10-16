@@ -1030,6 +1030,21 @@ await test("after a reload, Follow the newest run shows the newest history run: 
   }
 });
 
+await test("a Resume during a history run is in its timeline, as a live run's is: by engine time, from its t0 to its last batch", async () => {
+  const run = scriptedRun(RUN_B, 10, 8, "expire");
+  const expiry = run.pop();
+  const resume = (seq, time) => ({ seq, time, kind: "Resume", origin: null, events: [], balances: [], command: null });
+  // The engine came back at +1 s, before the request expired; another Resume, at +20 s, is after the run.
+  const history = [...run, resume(expiry.seq, RUN_B + 1_000), { ...expiry, seq: expiry.seq + 1 }, resume(expiry.seq + 2, RUN_B + 20_000)];
+  const page = await reloaded(history);
+  try {
+    assert.equal(page.val("V.run.id"), `h${RUN_B}`);
+    assert.deepEqual(page.val("V.r.batches.map((b) => [b.seq, b.kind])").slice(-3), [[15, "User"], [16, "Resume"], [17, "Tick"]]);
+  } finally {
+    teardown(page);
+  }
+});
+
 await test("a live run started after the reload becomes the followed run, listed before the history's", async () => {
   const page = await reloaded(TWO_RUNS);
   const { run, val, document } = page;

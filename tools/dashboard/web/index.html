@@ -766,8 +766,10 @@ function runFilter(run) {
   const seqs = new Set(run.batches);
   const lo = run.t0 * PER_RUN;
   const mine = (a) => (a >= lo && a < lo + PER_RUN) || GENESIS[a] != null;
-  // A Resume (the engine restarted or stalled) is everyone's: it belongs to the runs active when it came.
-  const during = (b) => b.kind === "Resume" && b.firstAt >= run.startedAt && (!run.done || b.firstAt <= run.startedAt + run.wall_ms);
+  // A Resume (the engine restarted or stalled) is everyone's: it belongs to the runs active when it came. A
+  // history batch was never received here, so its engine time stands in (a history run's times are engine times).
+  const at = (b) => b.firstAt ?? b.time;
+  const during = (b) => b.kind === "Resume" && at(b) >= run.startedAt && (!run.done || at(b) <= run.startedAt + run.wall_ms);
   return (b) => {
     if (!seqs.has(b.seq) && !during(b)) return null;
     const fromRun = b.origin != null && origins.has(`${b.origin.actor}:${b.origin.nonce}`);
