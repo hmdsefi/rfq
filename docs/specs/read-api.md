@@ -114,7 +114,7 @@ Paging: entries with `seq > after_seq` (default 0), ascending, at most `limit` (
 
 ## 7. Consistency
 
-- **The replica equals the node.** It applies the same commands in the same order through the same code, so at the same `seq` its `state_hash` equals the node's, and its batches equal what the node published. A test pins both.
+- **The replica equals the node.** It applies the same commands in the same order through the same code, so at the same `seq` its `state_hash` equals the node's, and every batch the node published is identical in the replica's trace. The trace also holds what the node applied without publishing: the `Genesis` batch at `seq` 1, and batches the node replayed after a restart. A test pins both.
 - **It lags.** It sees a command once the Archive has recorded it, usually within milliseconds of the node. `min_seq` gives read-your-writes.
 - **A sequence break** (a `seq` that is not `last + 1`) triggers a rebuild. `seq` 1 after a higher `seq` means a new journal (`docker compose down -v`): the rebuilt replica starts empty.
 
