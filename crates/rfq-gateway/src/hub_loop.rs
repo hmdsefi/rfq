@@ -29,7 +29,9 @@
 //!   already refuses anything over the node's ingress limit, far below the publication's.)
 //! - **A slow client** whose outbox is full is closed (its outbox dropped), never waited for.
 //! - **Fatal** (`Err` out of [`HubLoop::run`]): the venue fails (a dead driver, a closed
-//!   publication or subscription), or the WebSocket server has stopped.
+//!   publication or subscription). A closed inbox is fatal too, but only as a guard: the inbox has
+//!   two long-lived senders, the WebSocket acceptor and the HTTP writer, each held for the
+//!   process's life, so every sender being gone does not happen in practice.
 use std::collections::{BTreeMap, VecDeque};
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -135,7 +137,8 @@ impl<V: Venue> HubLoop<V> {
                     self.inbox_item(conn, item)?;
                 }
                 Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => bail!("the WebSocket server has stopped"),
+                // A guard: the WebSocket acceptor and the HTTP writer hold senders for good.
+                Err(TryRecvError::Disconnected) => bail!("every inbox sender is gone"),
             }
         }
 
@@ -647,8 +650,10 @@ mod tests {
         assert!(drain(&frames).is_empty(), "nothing to a closed connection");
     }
 
+    /// A closed inbox is a guard, not a path the process takes: the WebSocket acceptor and the
+    /// HTTP writer each hold a sender for the process's life.
     #[test]
-    fn a_failed_venue_or_a_stopped_server_is_fatal() {
+    fn a_failed_venue_or_a_closed_inbox_is_fatal() {
         let mut rig = Rig::new();
         rig.hub.venue.fail = true;
         assert!(rig.hub.turn().is_err());
@@ -656,7 +661,7 @@ mod tests {
         let mut rig = Rig::new();
         drop(rig.inbox);
         let err = rig.hub.turn().unwrap_err();
-        assert!(err.to_string().contains("WebSocket server"), "{err}");
+        assert_eq!(err.to_string(), "every inbox sender is gone");
     }
 
     /// The HTTP API's `GET /v1/status` reads what the hub loop stores after each turn.
