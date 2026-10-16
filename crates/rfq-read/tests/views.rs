@@ -643,3 +643,76 @@ fn contracts_and_contract_show_terms_and_state() {
     );
     assert_eq!(contracts(&Engine::new()), vec![]);
 }
+
+// ---- the public JSON ----
+
+/// The JSON clients read states and sides from, as the views emit it. These shapes come from
+/// `rfq-domain`'s serde derives, and the README's walk-through greps `"state":{"Presented"`: a
+/// change there must show here first.
+#[test]
+fn the_views_json_of_request_states_and_sides_is_pinned() {
+    let state_of = |e: &Engine| serde_json::to_value(requests_of(e, ALICE)).unwrap()[0]["state"].clone();
+
+    // Alice's own request: Open, then Presented with its accept_by, then Filled.
+    let open = engine_through(scenario("happy_path"), |s| is_send(s, "q2"));
+    assert_eq!(state_of(&open), json!("Open"));
+    let presented = engine_through(scenario("happy_path"), is_tick);
+    assert_eq!(
+        state_of(&presented),
+        json!({"Presented": {"accept_by": T0 + 1_500 + 2_000}})
+    );
+    let body = serde_json::to_string(&requests_of(&presented, ALICE)).unwrap();
+    assert!(
+        body.contains(r#""state":{"Presented""#),
+        "what the README greps for: {body}"
+    );
+    let filled = engine_through(scenario("happy_path"), |s| is_send(s, "accept"));
+    assert_eq!(state_of(&filled), json!("Filled"));
+    // Rejected carries its cause: Alice let the accept window lapse.
+    assert_eq!(
+        state_of(&engine_after("requester_lapses")),
+        json!({"Rejected": "Lapsed"})
+    );
+
+    // A leg's side is the engine's `Side`, on the requester's own view and on the public one.
+    let json = serde_json::to_value(requests_of(&open, ALICE)).unwrap();
+    assert_eq!(json[0]["legs"][0]["side"], json!("BuyYes"));
+    let json = serde_json::to_value(open_requests(&open, None)).unwrap();
+    assert_eq!(json[0]["legs"][0]["side"], json!("BuyYes"));
+    let mut h = Harness::new(demo_config());
+    h.fund(ALICE, 1_000);
+    h.set_time(1_000);
+    h.user(
+        OPERATOR,
+        Action::ListContract {
+            id: ContractId(1),
+            description: "x".into(),
+            oracle: ORACLE,
+            trading_close: 60_000,
+            resolution_deadline: 120_000,
+            dispute_window: 2_000,
+        },
+    );
+    let out = h.user(
+        ALICE,
+        Action::SubmitRequest {
+            legs: vec![LegSpec {
+                contract: ContractId(1),
+                side: Side::BuyNo,
+                qty: 100,
+                limit_price: price(5_000),
+            }],
+            response_deadline: 3_000,
+        },
+    );
+    assert_eq!(rejection(&out), None);
+    let json = serde_json::to_value(requests_of(&h.engine, ALICE)).unwrap();
+    assert_eq!(json[0]["legs"][0]["side"], json!("BuyNo"));
+    let json = serde_json::to_value(open_requests(&h.engine, None)).unwrap();
+    assert_eq!(json[0]["legs"][0]["side"], json!("BuyNo"));
+
+    // A position's side is the holder's own: "Yes" for the buyer of YES, "No" for its maker.
+    let settled = engine_after("happy_path");
+    let side_of = |a| serde_json::to_value(positions_of(&settled, a)).unwrap()[0]["side"].clone();
+    assert_eq!((side_of(ALICE), side_of(MM2)), (json!("Yes"), json!("No")));
+}
