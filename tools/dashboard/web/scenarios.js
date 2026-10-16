@@ -5,6 +5,7 @@
 //
 //   const driver = RfqScenarios.createDriver(gateway);              // gateway: RfqGateway.connect(...)
 //   const { runs, perf } = await driver.runMany(["happy_path"], 20, 4);
+//   const earlier = RfqScenarios.runsFromHistory(entries);          // the runs in a read API admin trace
 //
 // A step is `{ at, label, actor, action: (ctx) => Action, nonce? }` (a command, sent when the engine's
 // clock reaches `t0 + at`) or `{ at, wait: true }` (a former `tick`: the engine fires its own timers,
@@ -494,6 +495,23 @@ const RfqScenarios = (() => {
   const unconsumed = (events) =>
     events.some((e) => R.eventName(e) === "CommandRejected" && ["Duplicate", "NonceGap"].includes(R.eventBody(e).reason));
 
+  /**
+   * One batch into a run's record (`result`), the same for a live run and one rebuilt from the history: the
+   * run's own events go into `own`, and the batch's seq into `batches` when it is one of the run's commands'
+   * or holds an event of the run. A retry's Duplicate (`artifact`) keeps the scope's bookkeeping and owns
+   * nothing, so it cannot satisfy an expect.
+   */
+  function takeBatch(scope, result, frame, artifact) {
+    let mine = frame.origin != null && scope.origins.has(`${frame.origin.actor}:${frame.origin.nonce}`);
+    for (const e of frame.events) {
+      if (scope.owns(frame, e) && !artifact) {
+        mine = true;
+        result.own.push({ seq: frame.seq, time: frame.time, kind: frame.kind, audience: e.audience, event: e.event });
+      }
+    }
+    if (mine && result.batches.at(-1) !== frame.seq) result.batches.push(frame.seq);
+  }
+
   /** Connections that have a driver: one driver per connection (and so per page) until `dispose()`. */
   const DRIVEN = new WeakSet();
 
@@ -722,19 +740,9 @@ const RfqScenarios = (() => {
         onBatch(frame) {
           ctx.observe(frame.events);
           const origin = frame.origin == null ? null : `${frame.origin.actor}:${frame.origin.nonce}`;
-          let mine = origin != null && scope.origins.has(origin);
-          if (origin != null && run.artifacts.has(origin) && unconsumed(frame.events)) {
-            run.artifacts.delete(origin);
-            for (const e of frame.events) scope.owns(frame, e); // keeps the scope's bookkeeping; owns nothing new
-          } else {
-            for (const e of frame.events) {
-              if (scope.owns(frame, e)) {
-                mine = true;
-                result.own.push({ seq: frame.seq, time: frame.time, kind: frame.kind, audience: e.audience, event: e.event });
-              }
-            }
-          }
-          if (mine && result.batches.at(-1) !== frame.seq) result.batches.push(frame.seq);
+          const artifact = origin != null && run.artifacts.has(origin) && unconsumed(frame.events);
+          if (artifact) run.artifacts.delete(origin);
+          takeBatch(scope, result, frame, artifact);
         },
         fail(e) {
           run.failure ??= e instanceof Error ? e : new Error(String(e));
@@ -1039,10 +1047,248 @@ const RfqScenarios = (() => {
     };
   }
 
+  // ---- history: the runs a reloaded page finds in the read API's trace ----------------------------------
+
+  /** The scripts' own accounts (all but the genesis roles), which a run's scope maps to `t0 * 100 + id`. */
+  const RUN_ACCOUNTS = Object.keys(ACCOUNT_NAMES).map(Number).filter((a) => !R.GENESIS_ROLES.includes(a));
+  const PER_RUN = R.ACCOUNTS_PER_RUN;
+
+  /** `v` as JSON with every object's keys sorted: two actions compare equal whatever order their fields came in. */
+  const canonical = (v) =>
+    JSON.stringify(v, (_, x) => (x && typeof x === "object" && !Array.isArray(x) ? Object.fromEntries(Object.keys(x).sort().map((k) => [k, x[k]])) : x));
+
+  /** A wall-clock time as the page shows one, `14:03:12`. */
+  const clockOf = (ms) => new Date(ms).toTimeString().slice(0, 8);
+
+  /** The accounts and contracts an action names besides its actor (a request or quote is named by a seq). */
+  function named(action) {
+    const [name, b] = Object.entries(action ?? {})[0] ?? [];
+    switch (name) {
+      case "Deposit":
+        return { accounts: [b.to], contracts: [] };
+      case "ListContract":
+        return { accounts: [b.oracle], contracts: [b.id] };
+      case "SubmitRequest":
+        return { accounts: [], contracts: (b.legs ?? []).map((l) => l.contract) };
+      case "ProposeOutcome":
+      case "Dispute":
+      case "Rule":
+        return { accounts: [], contracts: [b.contract] };
+      default:
+        return { accounts: [], contracts: [] };
+    }
+  }
+
+  /**
+   * The runs (`t0`) a history shows: every account its batches name (an actor, an account a command names,
+   * a balance) that is a script's account of a run, `t0 * 100 + id`. Accounts below 100, like the README's
+   * curl walk-through's, belong to no run.
+   */
+  function runT0s(entries) {
+    const t0s = new Set();
+    const note = (a) => {
+      if (Number.isSafeInteger(a) && a >= PER_RUN && RUN_ACCOUNTS.includes(a % PER_RUN)) t0s.add(Math.floor(a / PER_RUN));
+    };
+    for (const e of entries) {
+      note(e.origin?.actor);
+      if (e.command) [e.command.actor, ...named(e.command.action).accounts].forEach(note);
+      for (const b of e.balances ?? []) note(b.account);
+    }
+    return t0s;
+  }
+
+  /** Whether `cmd` is the run's: its actor is the run's, or a shared genesis role acts on the run's accounts or contracts. */
+  function isRunCommand(scope, cmd) {
+    if (scope.accounts.has(cmd.actor)) return true;
+    if (!R.GENESIS_ROLES.includes(cmd.actor)) return false;
+    const { accounts, contracts } = named(cmd.action);
+    return accounts.some((a) => scope.accounts.has(a)) || contracts.some((c) => scope.ownsContract(c));
+  }
+
+  /** A script's commands as `"<actor> <action>"`, the actor a script account or genesis role, in order. */
+  function shapeOf(scenario) {
+    const ctx = new Ctx(0);
+    return scenario.steps
+      .filter((s) => !s.wait)
+      .map((step, i) => {
+        const shape = `${step.actor} ${actionName(step.action(ctx))}`;
+        ctx.recordLabel(step.label, i + 1); // a later step may name this one's request or quote
+        return shape;
+      });
+  }
+
+  /**
+   * Whether `scenario`'s script, played as the driver plays it against what the history says the engine
+   * answered (its seqs, the picks it presented), sends exactly the run's commands (`steps`).
+   */
+  function replays(scenario, t0, steps, batches) {
+    const scope = new R.Scope(t0);
+    const ctx = new Ctx(t0, (a) => scope.account(a));
+    const lastNonce = new Map();
+    let heard = 0;
+    let i = 0;
+    for (const step of scenario.steps) {
+      if (step.wait) continue;
+      const { cmd, seq } = steps[i++];
+      // What the driver had heard when it sent this step: every batch before it.
+      for (; heard < batches.length && batches[heard].seq < seq; heard++) ctx.observe(batches[heard].events);
+      let want;
+      try {
+        want = resolveStep(step, ctx, (actor) => lastNonce.get(actor));
+      } catch {
+        return false;
+      }
+      if (want.actor !== cmd.actor || canonical(want.action) !== canonical(cmd.action)) return false;
+      if (want.nonce !== undefined && want.nonce !== cmd.nonce) return false;
+      if (want.nonce === undefined) lastNonce.set(cmd.actor, cmd.nonce);
+      ctx.recordLabel(step.label, seq);
+    }
+    return true;
+  }
+
+  /**
+   * The scenario whose script sent the run's commands (`steps`, retries left out): the one with the same
+   * actors (as script accounts or genesis roles) and actions, in the same order. Two scripts share that
+   * (the wrong-price accept and the double accept); then the one whose script, replayed, sends exactly
+   * these actions. Null when no single script matches: a run cut short, or one no script sent.
+   */
+  function scriptOf(t0, steps, batches) {
+    const role = (a) => (R.GENESIS_ROLES.includes(a) ? a : a - t0 * PER_RUN);
+    const shape = steps.map(({ cmd }) => `${role(cmd.actor)} ${actionName(cmd.action)}`).join(",");
+    const alike = scenarios.filter((s) => shapeOf(s).join(",") === shape);
+    if (alike.length < 2) return alike[0] ?? null;
+    const exact = alike.filter((s) => replays(s, t0, steps, batches));
+    return exact.length === 1 ? exact[0] : null;
+  }
+
+  /**
+   * Where the driver stopped listening to a run of `scenario` (see `play`): at its last step (a wait's end
+   * is `WAIT_GRACE_MS` after its time; a command's, its batch, a retry's if it had one), then on while its
+   * expected events have not all come, `GRACE_MS` at most. Returns whether the run takes batch `b`, given
+   * the events it owns so far; batches come in seq order, so the first it does not take ends the run.
+   */
+  function listening(scenario, t0, cmds) {
+    const last = scenario.steps.at(-1);
+    const lastCmd = cmds.at(-1);
+    const endTime = last.wait ? t0 + last.at + WAIT_GRACE_MS : lastCmd.time;
+    return (b, own) => {
+      if (last.wait ? b.time <= endTime : b.seq <= lastCmd.seq) return true;
+      return b.time <= endTime + GRACE_MS && !R.containsInOrder(own, scenario.expect).ok;
+    };
+  }
+
+  /** Run `t0` of a history (`batches` ascending by seq), rebuilt as the driver records a live run. */
+  function historyRun(t0, batches) {
+    const scope = new R.Scope(t0);
+    const accounts = {};
+    for (const a of RUN_ACCOUNTS) accounts[ACCOUNT_NAMES[a]] = scope.account(a);
+    // The run's commands, in seq order, each sent as the driver sends one. A retry repeats an earlier
+    // command exactly (actor, nonce and action) and is refused as a Duplicate (or a NonceGap): a recovery
+    // artifact, like the driver's. An attack's replay sends another action with a used nonce: the run's own.
+    const cmds = [];
+    const before = new Set();
+    for (const b of batches) {
+      const cmd = b.command;
+      if (!cmd || !isRunCommand(scope, cmd)) continue;
+      const key = canonical([cmd.actor, cmd.nonce, cmd.action]);
+      cmds.push({ cmd, seq: b.seq, time: b.time, events: b.events, retry: before.has(key) && unconsumed(b.events) });
+      before.add(key);
+      scope.sent(cmd.actor, cmd.nonce);
+      if (R.GENESIS_ROLES.includes(cmd.actor)) accounts[ACCOUNT_NAMES[cmd.actor]] = cmd.actor;
+    }
+    const steps = cmds.filter((c) => !c.retry);
+    const retries = new Set(cmds.filter((c) => c.retry).map((c) => c.seq));
+    const scenario = scriptOf(t0, steps, batches);
+    const result = { own: [], batches: [] };
+    // Nothing before the run's first command is about its accounts or contracts.
+    const from = cmds.length ? batches.findIndex((b) => b.seq === cmds[0].seq) : 0;
+    const takes = scenario ? listening(scenario, t0, cmds) : () => true;
+    let lastTime = t0;
+    for (const b of batches.slice(from)) {
+      if (!takes(b, result.own)) break;
+      takeBatch(scope, result, b, retries.has(b.seq));
+      if (result.batches.at(-1) === b.seq) lastTime = b.time;
+    }
+    const script = scenario ? scenario.steps.filter((s) => !s.wait) : [];
+    const commands = steps.map((c, i) => ({
+      step: script[i]?.label ?? null,
+      at: script[i]?.at ?? null,
+      actor: c.cmd.actor,
+      action: actionName(c.cmd.action),
+      nonce: c.cmd.nonce,
+      seq: c.seq,
+      late_ms: null,
+      latency_us: null,
+      rtt_ms: null,
+      rejected: rejectionOf(c.events),
+      recovered: cmds.some((r) => r.retry && r.cmd.actor === c.cmd.actor && r.cmd.nonce === c.cmd.nonce),
+    }));
+    const unclassified = [...scope.unclassified];
+    const verdict = scenario ? R.containsInOrder(result.own, scenario.expect) : null;
+    const detail = !scenario
+      ? null
+      : unclassified.length
+        ? `the engine emitted ${unclassified.join(", ")}, which the scope has no rule for (update recorder.js)`
+        : verdict.error;
+    const pass = scenario ? !unclassified.length && verdict.ok : null;
+    const name = scenario?.name ?? `run ${clockOf(t0)}`;
+    const seqs = result.batches;
+    return {
+      id: `h${t0}`,
+      history: true,
+      name,
+      kind: scenario?.kind ?? null,
+      t0,
+      contract: t0,
+      accounts,
+      expect: scenario?.expect ?? [],
+      pass,
+      stopped: false,
+      detail,
+      error: null,
+      step: scenario ? scenario.steps.length : steps.length,
+      steps: scenario ? scenario.steps.length : steps.length,
+      own: result.own,
+      batches: seqs,
+      labels: Object.fromEntries(commands.filter((c) => c.step).map((c) => [c.step, c.seq])),
+      commands,
+      recoveries: [],
+      log: [
+        `${name}: t0=${t0}, rebuilt from the history: ${commands.length} command${commands.length === 1 ? "" : "s"}, batches ${seqs[0]}..${seqs.at(-1)}`,
+        !scenario ? "no verdict: its commands are not one scenario's script" : pass ? "PASS" : `FAIL: ${detail}`,
+      ],
+      // Engine time: the run's first step is due at t0, and its last batch ends it.
+      startedAt: t0,
+      wall_ms: Math.max(0, lastTime - t0),
+      perf: null,
+      done: true,
+    };
+  }
+
+  /**
+   * The scenario runs in a history (`entries`: the read API's admin trace, ascending by seq, each with its
+   * `origin` and `command`), one per `t0` that `runT0s` finds, by `t0`. Each is rebuilt as the driver
+   * records a live run, so the page's run machinery takes it as it is: a scope fed the run's accounts, its
+   * commands (`sent`) and then every batch in seq order gives its `own` events and `batches`, up to where
+   * the driver would have stopped listening; its name is the scenario whose script matches its commands
+   * (`scriptOf`), else the neutral `run <time>`; its verdict is the script's expect list on `own` (`pass`
+   * true or false), or none (`null`) without a name. Marked `history: true`, with the id `h<t0>`, and never
+   * running. A run with no batch is left out.
+   */
+  function runsFromHistory(entries) {
+    const batches = [...entries].sort((a, b) => a.seq - b.seq);
+    return [...runT0s(batches)]
+      .sort((a, b) => a - b)
+      .map((t0) => historyRun(t0, batches))
+      .filter((r) => r.batches.length > 0);
+  }
+
   return {
     scenarios,
     byName,
     names: () => scenarios.map((s) => s.name),
+    runsFromHistory,
+    runT0s,
     Ctx,
     remap,
     resolveStep,

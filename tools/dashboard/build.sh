@@ -25,6 +25,8 @@ node web/model.test.mjs
 node web/driver.test.mjs
 node web/page.test.mjs
 node web/scenarios.test.mjs "$WASM"
+# The runs a reload brings back from the history, against the driver's own record of them (wasm engine).
+node web/history.test.mjs "$WASM"
 mkdir -p dist
 # Each NAME=file.js fills the template's /*__NAME_JS__*/ marker (web/inline.mjs). The page template
 # carries one marker per file listed here, no more and no fewer; `-` means no wasm in the page.
