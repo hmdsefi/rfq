@@ -20,7 +20,11 @@
 //!   [`ReadSide`] directly.
 //! - **A dead Aeron client is fatal for the gateway,** as the hub loop's is: the thread logs it
 //!   and exits the process with status 1 (docker-compose restarts it).
+//! - **So is a panic in the thread** (a bug, in `Engine::apply` say), which could leave a
+//!   half-applied replica: [`Dying`] marks the replica `unavailable`, logs it at error and exits
+//!   the process with status 1, so the replica is never left unfollowed.
 use std::convert::Infallible;
+use std::sync::Arc;
 use std::time::Duration;
 
 use rfq_domain::SequencedCommand;
@@ -193,6 +197,25 @@ fn transition(read: &ReadSide, to: ReplicaState) {
     }
 }
 
+/// Held by the replica thread for its whole life. If the thread ends by a panic, the replica is
+/// marked `unavailable`, then the process exits with status 1 and Docker restarts the gateway, as
+/// for every other gateway thread that dies. (The thread's other way out, a dead Aeron client,
+/// exits without unwinding.)
+struct Dying(Arc<ReadSide>);
+
+impl Drop for Dying {
+    fn drop(&mut self) {
+        transition(&self.0, ReplicaState::Unavailable);
+        if std::thread::panicking() {
+            tracing::error!(
+                last_seq = self.0.last_seq(),
+                "the replica thread panicked: the gateway exits"
+            );
+            std::process::exit(1);
+        }
+    }
+}
+
 #[cfg(feature = "aeron")]
 mod aeron {
     use std::io;
@@ -201,10 +224,10 @@ mod aeron {
 
     use anyhow::{Context, ensure};
     use rfq_domain::SequencedCommand;
-    use rfq_gateway::read_api::{ReadSide, ReplicaState};
+    use rfq_gateway::read_api::ReadSide;
     use rfq_infra::aeron::{self, JournalFollower};
 
-    use super::{Journal, TIMING, run};
+    use super::{Dying, Journal, TIMING, run};
 
     impl Journal for JournalFollower {
         fn poll(&mut self, sink: &mut dyn FnMut(SequencedCommand)) -> anyhow::Result<usize> {
@@ -213,16 +236,6 @@ mod aeron {
 
         fn caught_up(&self) -> bool {
             JournalFollower::caught_up(self)
-        }
-    }
-
-    /// Marks the replica `unavailable` if the thread ends by a panic: the replica then still serves
-    /// what it had, and says it is no longer followed.
-    struct Dying(Arc<ReadSide>);
-
-    impl Drop for Dying {
-        fn drop(&mut self) {
-            self.0.set_state(ReplicaState::Unavailable);
         }
     }
 
@@ -704,6 +717,47 @@ mod tests {
                     }),
                 ]),
             ],
+        );
+    }
+
+    /// A panic in the replica thread (a bug, in `Engine::apply` say) ends the gateway with status
+    /// 1, as a dead Aeron client does, after marking the replica `unavailable`: a half-applied
+    /// replica is not served for good, and Docker restarts the gateway. Run in a child process of
+    /// this test binary, since it exits.
+    #[test]
+    fn a_panic_in_the_replica_thread_ends_the_process() {
+        const CHILD: &str = "RFQ_GATEWAY_TEST_REPLICA_PANIC";
+        if std::env::var_os(CHILD).is_some() {
+            tracing_subscriber::fmt()
+                .with_writer(std::io::stderr)
+                .with_ansi(false)
+                .without_time()
+                .with_target(false)
+                .init();
+            let read = ReadSide::new();
+            let thread = std::thread::spawn(move || {
+                let _dying = Dying(read);
+                panic!("a bug in the replica thread");
+            });
+            let _ = thread.join();
+            return; // not reached once the panic ends the process
+        }
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "read_side::tests::a_panic_in_the_replica_thread_ends_the_process",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{stderr}");
+        let unavailable = stderr.find("replica state=unavailable");
+        let exiting = stderr.find("the replica thread panicked");
+        assert!(
+            unavailable.is_some() && exiting.is_some() && unavailable < exiting,
+            "unavailable first, then the exit:\n{stderr}"
         );
     }
 }

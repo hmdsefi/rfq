@@ -13,7 +13,7 @@
 //!
 //! The locks survive a panic in the thread that held them (a poisoned lock is taken as it is):
 //! the replica thread marks the replica `unavailable` when it dies, and reads go on serving what
-//! it had.
+//! it had until the process exits (the binary's `read_side` ends it on such a panic).
 use std::fmt::Write as _;
 use std::sync::{Arc, Condvar, Mutex, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant};

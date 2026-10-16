@@ -97,7 +97,7 @@ The HTTP handler keeps the batch whose `origin` is `(actor, nonce)` from `sent`,
 3. Reassemble fragments and decode each `SequencedCommand` (the same codec as the node's replay; a message torn at a crash's stop position never completes, so it is never delivered).
 4. When a stopped recording's replay ends, move to the next recording, waiting for the node to create it if needed (the node starts a new recording on every start).
 5. Poll the Archive control session (`poll_for_recording_signals`) every loop, so the Archive keeps it open.
-6. On any Aeron or Archive failure: log it, set the replica state to `unavailable`, reconnect with back-off, and rebuild (step 7).
+6. On any Aeron or Archive failure: log it and set the replica state to `unavailable`; then retry every 1 s with a fresh follower, which rebuilds a replica on the side (step 7). A dead Aeron client is not retried: the gateway exits with status 1 and Docker restarts it. So does a panic in the replica thread, after setting `unavailable`.
 7. **Rebuild:** a fresh replica replays from the first recording. The old replica keeps serving until the new one reaches the old one's last `seq`, then the new one is swapped in. After a journal reset (§7) the swap is immediate.
 
 Only recorded data is replayed, and the Archive records with `aeron.archive.file.sync.level=2` (fsync before the recording position moves), so **the replica never shows a command that was not durable**: the same rule as the node's write-ahead gate.
