@@ -7,7 +7,9 @@
 //! `http-<conn>`). The nonce book, the per-account queue, back pressure, the unresolved-nonce hold
 //! and `outcome unknown` are the hub's, the same as for a WebSocket command. The handler then
 //! feeds what the hub sends back to the connection's outbox into a [`write_api::Answer`], until it
-//! has the reply or [`WAIT`] has passed (`504`).
+//! has the reply or [`WAIT`] has passed (`504`). If it gives up (the wait runs out, a frame does not
+//! decode, the hub drops the outbox) after the hub sent the command, the command may be on ingress:
+//! the answer is `504 {"error": "outcome unknown: …", "nonce": N}`, the nonce to resend it with.
 //!
 //! The connection is always closed (`Close`), whichever way the handler ends: an answer, an error
 //! sentence, the wait running out, the hub dropping the outbox, or a panic. A client that has gone
@@ -97,7 +99,7 @@ impl Writer {
                     }
                     Err(e) => {
                         tracing::error!(conn = conn.0, error = %e, "a frame from the hub did not decode");
-                        return internal();
+                        return gave_up(&answer, "a frame from the gateway did not decode", internal());
                     }
                 },
                 Err(RecvTimeoutError::Timeout) => {
@@ -106,12 +108,14 @@ impl Writer {
                         wait_s = self.wait.as_secs(),
                         "no answer from the hub"
                     );
-                    return Reply::error(504, "no answer from the gateway");
+                    let unsent = Reply::error(504, "no answer from the gateway");
+                    return gave_up(&answer, "no answer from the gateway", unsent);
                 }
                 Err(RecvTimeoutError::Disconnected) => {
                     // The hub loop dropped this outbox: it did not keep up (or is going down).
                     tracing::warn!(conn = conn.0, "the hub closed a write's connection");
-                    return Reply::error(500, "internal error: the gateway closed the connection");
+                    let unsent = Reply::error(500, "internal error: the gateway closed the connection");
+                    return gave_up(&answer, "the gateway closed the connection", unsent);
                 }
             }
         }
@@ -144,6 +148,20 @@ fn encode(msg: &ClientMsg) -> Option<String> {
     }
 }
 
+/// The answer when the handler gives up on its command for `reason`. Once the hub has sent it (its
+/// nonce is known), the command may be on ingress: `504` with the nonce to resend it with, as for
+/// the hub's own `outcome unknown` (spec §3). Before that, `unsent`.
+fn gave_up(answer: &Answer, reason: &str, unsent: Reply) -> Reply {
+    let Some(nonce) = answer.nonce() else {
+        return unsent;
+    };
+    let body = serde_json::json!({"error": format!("outcome unknown: {reason}"), "nonce": nonce});
+    Reply {
+        status: 504,
+        body: body.to_string(),
+    }
+}
+
 fn internal() -> Reply {
     Reply::error(500, "internal error")
 }
@@ -151,4 +169,47 @@ fn internal() -> Reply {
 /// The hub loop is gone: the process is ending.
 fn stopping() -> Reply {
     Reply::error(503, "the gateway is stopping")
+}
+
+#[cfg(test)]
+mod tests {
+    use rfq_domain::AccountId;
+    use rfq_gateway::protocol::ServerMsg;
+    use serde_json::{Value, json};
+
+    use super::*;
+
+    /// Every way the handler gives up (the wait, a frame that does not decode, the hub dropping
+    /// the outbox): once the hub has sent the command it may be on ingress, so the answer is an
+    /// unknown outcome with the nonce to resend it with; before that, what it always was.
+    #[test]
+    fn giving_up_after_sent_is_an_unknown_outcome_with_the_nonce() {
+        let mut answer = Answer::new(AccountId(10), "http-1".into());
+        assert_eq!(answer.nonce(), None);
+        let unsent = || Reply::error(500, "internal error: the gateway closed the connection");
+        assert_eq!(
+            gave_up(&answer, "the gateway closed the connection", unsent()),
+            unsent()
+        );
+
+        let sent = ServerMsg::Sent {
+            id: "http-1".into(),
+            actor: AccountId(10),
+            nonce: 7,
+        };
+        assert_eq!(answer.on_frame(&sent), None);
+        assert_eq!(answer.nonce(), Some(7));
+        for reason in [
+            "no answer from the gateway",
+            "a frame from the gateway did not decode",
+            "the gateway closed the connection",
+        ] {
+            let reply = gave_up(&answer, reason, unsent());
+            assert_eq!(reply.status, 504, "{reason}");
+            assert_eq!(
+                serde_json::from_str::<Value>(&reply.body).unwrap(),
+                json!({"error": format!("outcome unknown: {reason}"), "nonce": 7})
+            );
+        }
+    }
 }

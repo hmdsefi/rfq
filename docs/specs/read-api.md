@@ -78,7 +78,7 @@ The call returns once the command's batch is back, or the hub gives up on it:
 | `413` | body over 64 KiB | `{error}` |
 | `429` | `ingress back-pressured, try again` | `{error}` |
 | `503` | `engine unavailable`, or `nonce sync failed for account N` | `{error}` |
-| `504` | `outcome unknown: …`: resend with the nonce in the body to retry safely | `{error, nonce}` |
+| `504` | `outcome unknown: …`, from the hub or from the gateway giving up after it sent the command (§4): resend with the nonce in the body to retry safely | `{error, nonce}` |
 
 Other statuses: `404` unknown route, `405` wrong method, `500` an internal failure (logged).
 
@@ -88,7 +88,7 @@ A reply holds the first chunk of its batch only: the hub sends the `result` righ
 
 A `POST` opens a short-lived connection on the hub's inbox, exactly as a WebSocket connection would: `Open` with its own outbox, a `hello` with the actor's account view, the command with a fresh id, then `Close` once the answer is in. So an HTTP command gets the same nonce book, per-account queue, back-pressure, unresolved-nonce hold and `outcome unknown` handling as a WebSocket one (gateway.md §5, §6), and the hub needs no HTTP code. Connection ids come from one counter shared by the WebSocket acceptor and the HTTP server.
 
-The HTTP handler keeps the batch whose `origin` is `(actor, nonce)` from `sent`, and answers on the matching `result` or `error`. The hub sends the `result` right after the first chunk of the batch, so the reply holds that chunk only (§3); the handler would merge later chunks of the same `seq` that came before the `result`, but none do. It waits at most 75 s, the dashboard's command timeout, which outlasts the hub's 60 s unresolved-nonce hold; past that it answers `504 {"error":"no answer from the gateway"}`.
+The HTTP handler keeps the batch whose `origin` is `(actor, nonce)` from `sent`, and answers on the matching `result` or `error`. The hub sends the `result` right after the first chunk of the batch, so the reply holds that chunk only (§3); the handler would merge later chunks of the same `seq` that came before the `result`, but none do. It waits at most 75 s, the dashboard's command timeout, which outlasts the hub's 60 s unresolved-nonce hold. Past that, once the hub has sent the command (it may be on ingress), it answers `504 {"error":"outcome unknown: no answer from the gateway","nonce":N}`, and the same `outcome unknown` with the nonce if the hub drops the connection or sends a frame that does not decode; a command never sent (still queued behind another of its actor's) gets `504 {"error":"no answer from the gateway"}` (or `500` for those two).
 
 ## 5. The journal follower
 

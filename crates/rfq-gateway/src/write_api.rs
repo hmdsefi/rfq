@@ -130,6 +130,12 @@ impl Answer {
         }
     }
 
+    /// The nonce the hub gave the command, once its `sent` came; `None` while it was never sent
+    /// (still queued behind another command of its actor, say).
+    pub fn nonce(&self) -> Option<u64> {
+        self.nonce
+    }
+
     /// Takes one frame. `Some(reply)` once the answer is complete: the command's `result`, or an
     /// `error` for its id. Every other frame (the `welcome` and `status`, another command's
     /// frames, batches that are not this command's) changes nothing.

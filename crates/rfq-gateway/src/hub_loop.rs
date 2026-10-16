@@ -1067,7 +1067,8 @@ mod tests {
         );
     }
 
-    /// No batch within the wait: 504, and the hub connection is closed all the same.
+    /// No batch within the wait, for a command that was sent: it may be on ingress, so 504 with
+    /// the nonce to resend it with; and the hub connection is closed all the same.
     #[test]
     fn the_wait_times_out_with_504() {
         let mut rig = Rig::new();
@@ -1082,10 +1083,39 @@ mod tests {
         let (status, body) = client.join().unwrap();
         assert_eq!(
             (status, body),
-            (504, json!({"error": "no answer from the gateway"}))
+            (
+                504,
+                json!({"error": "outcome unknown: no answer from the gateway", "nonce": 5})
+            )
         );
         rig.turn_until("the hub connection closed", |r| r.hub.outboxes.is_empty());
         assert_eq!(rig.hub.hub.view(ConnId(1)), None);
+    }
+
+    /// A command still queued behind another of its actor's when the wait runs out was never
+    /// sent: it has no nonce to give, and the 504 says only that no answer came.
+    #[test]
+    fn a_command_never_sent_times_out_with_504_and_no_nonce() {
+        let mut rig = Rig::new();
+        rig.engine_up();
+        let addr = rig.http(Duration::from_millis(300));
+        let first = post(addr, "/v1/commands", &withdraw_body(ALICE, 5, 1));
+        rig.turn_until("the first command on ingress", |r| r.offered() == 1);
+        let second = post(
+            addr,
+            "/v1/commands",
+            &json!({"actor": ALICE.0, "action": {"Withdraw": {"amount": 2}}}),
+        );
+        rig.turn_until_alices_post(2);
+        rig.turn_until("both answers", |_| first.is_finished() && second.is_finished());
+        assert_eq!(rig.offered(), 1, "the second command never left the queue");
+        let (status, body) = first.join().unwrap();
+        assert_eq!((status, &body["nonce"]), (504, &json!(5)), "{body}");
+        let (status, body) = second.join().unwrap();
+        assert_eq!(
+            (status, body),
+            (504, json!({"error": "no answer from the gateway"}))
+        );
     }
 
     /// The hub gives up on a command the engine never answered: 504 with the nonce to resend with.
