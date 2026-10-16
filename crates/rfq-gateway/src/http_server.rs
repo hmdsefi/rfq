@@ -96,13 +96,23 @@ pub type Handler = Arc<dyn Fn(&Request) -> Reply + Send + Sync>;
 /// Starts the acceptor thread on `listener`. Each accepted connection gets a thread, up to
 /// `limits.max_connections`.
 pub fn spawn(listener: TcpListener, limits: HttpLimits, handler: Handler) -> io::Result<JoinHandle<()>> {
-    std::thread::Builder::new()
-        .name("http-accept".into())
-        .spawn(move || accept(&listener, limits, &handler))
+    spawn_counting(listener, limits, handler, Arc::new(AtomicUsize::new(0)))
 }
 
-fn accept(listener: &TcpListener, limits: HttpLimits, handler: &Handler) {
-    let live = Arc::new(AtomicUsize::new(0));
+/// [`spawn`], with the connections being served counted in `live`: the count the acceptor holds
+/// against `limits.max_connections`, which a test can read.
+fn spawn_counting(
+    listener: TcpListener,
+    limits: HttpLimits,
+    handler: Handler,
+    live: Arc<AtomicUsize>,
+) -> io::Result<JoinHandle<()>> {
+    std::thread::Builder::new()
+        .name("http-accept".into())
+        .spawn(move || accept(&listener, limits, &handler, &live))
+}
+
+fn accept(listener: &TcpListener, limits: HttpLimits, handler: &Handler, live: &Arc<AtomicUsize>) {
     let writes = Arc::new(AtomicUsize::new(0));
     let mut next = 0u64;
     for stream in listener.incoming() {
@@ -125,7 +135,7 @@ fn accept(listener: &TcpListener, limits: HttpLimits, handler: &Handler) {
             continue;
         }
         next += 1;
-        let guard = Live::enter(&live);
+        let guard = Live::enter(live);
         let handler = Arc::clone(handler);
         let writes = Arc::clone(&writes);
         let spawned = std::thread::Builder::new()
@@ -616,11 +626,32 @@ mod tests {
         }
     }
 
-    fn start_with(limits: HttpLimits, handler: Handler) -> std::net::SocketAddr {
+    /// The server's address, and its count of the connections being served.
+    fn start_counted(limits: HttpLimits, handler: Handler) -> (std::net::SocketAddr, Arc<AtomicUsize>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
-        spawn(listener, limits, handler).unwrap();
-        addr
+        let live = Arc::new(AtomicUsize::new(0));
+        spawn_counting(listener, limits, handler, Arc::clone(&live)).unwrap();
+        (addr, live)
+    }
+
+    fn start_with(limits: HttpLimits, handler: Handler) -> std::net::SocketAddr {
+        start_counted(limits, handler).0
+    }
+
+    /// Waits until `want` connections are being served. A connection's slot is freed when its
+    /// thread sees the client close, just after the client has read the end of the answer, and a
+    /// client cannot tell when that is: a test that needs a slot free waits for the count.
+    fn wait_for_live(live: &AtomicUsize, want: usize, what: &str) {
+        let started = Instant::now();
+        while live.load(Ordering::SeqCst) != want {
+            assert!(
+                started.elapsed() < Duration::from_secs(3),
+                "{what}: {} connections live, not {want}",
+                live.load(Ordering::SeqCst)
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
     }
 
     fn start(limits: HttpLimits) -> std::net::SocketAddr {
@@ -1173,7 +1204,7 @@ mod tests {
                 echo(request)
             })
         };
-        let addr = start_with(
+        let (addr, live) = start_counted(
             HttpLimits {
                 max_connections: 4,
                 max_writes: 2,
@@ -1215,8 +1246,14 @@ mod tests {
             "a refused write never reaches the handler"
         );
 
-        // The two connections left are the reads': one idle, one answered.
+        // The two connections left are the reads': one idle, one answered. The gate is still
+        // closed, so the two writes keep their slots; but a refused write's connection frees its
+        // own only when its thread sees the client close, just after `exchange` has returned. Wait
+        // until only the writes are counted, so that `idle` is let in (not silently refused) and
+        // the `GET` after it has the last slot, however the threads are scheduled.
+        wait_for_live(&live, 2, "the refused writes' connections");
         let idle = connect(addr);
+        wait_for_live(&live, 3, "the idle connection");
         let r = exchange(addr, &get("/v1/status", ""));
         assert_eq!(r.status, 200, "{}", r.raw);
         drop(idle);
