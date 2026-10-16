@@ -289,6 +289,16 @@ impl Hub {
         self.views.get(&conn).copied()
     }
 
+    /// Whether the engine is taking commands (gateway.md §6).
+    pub fn engine(&self) -> EngineState {
+        self.engine
+    }
+
+    /// The newest `seq` seen on egress; `None` before the first batch.
+    pub fn last_seq(&self) -> Option<u64> {
+        self.last_seq
+    }
+
     fn close(&mut self, conn: ConnId) {
         self.views.remove(&conn);
         self.unknown.retain(|_, u| u.conn != conn);

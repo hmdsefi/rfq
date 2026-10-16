@@ -14,6 +14,9 @@
 //! and performs each effect in order: `Offer` puts the command on ingress, `Send` queues a text
 //! frame on its connection's outbox. A turn with nothing to do ends with a 1 ms sleep.
 //!
+//! After each turn the hub's engine state and newest `seq` go to the shared
+//! [`EngineStatus`], which the HTTP API reads (`GET /v1/status`).
+//!
 //! - **Back pressure.** Each turn has [`OFFER_BUDGET`] for retrying back-pressured offers, all
 //!   offers together. An offer still back-pressured when it runs out is refused: the hub gets
 //!   `OfferFailed { BackPressure }` and the sender `ingress back-pressured, try again`. Later
@@ -28,6 +31,7 @@
 //!   publication or subscription), or the WebSocket server has stopped.
 use std::collections::{BTreeMap, VecDeque};
 use std::convert::Infallible;
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -36,7 +40,8 @@ use std::net::SocketAddr;
 use anyhow::bail;
 use rfq_app::{ClientCommand, EventBatch};
 use rfq_gateway::hub::{ConnId, Effect, Hub, Input, OfferFailure};
-use rfq_gateway::protocol::{ServerMsg, encode_server};
+use rfq_gateway::protocol::{EngineState, ServerMsg, encode_server};
+use rfq_gateway::status::EngineStatus;
 use rfq_gateway::view::View;
 
 use crate::ws::InboxItem;
@@ -78,6 +83,8 @@ pub struct HubLoop<V> {
     hub: Hub,
     venue: V,
     inbox: Receiver<(ConnId, InboxItem)>,
+    /// What the HTTP API reports of the engine: the hub's state, stored after every turn.
+    status: Arc<EngineStatus>,
     outboxes: BTreeMap<ConnId, SyncSender<String>>,
     /// Each open connection's peer, for the close log.
     peers: BTreeMap<ConnId, SocketAddr>,
@@ -91,12 +98,13 @@ pub struct HubLoop<V> {
 }
 
 impl<V: Venue> HubLoop<V> {
-    pub fn new(venue: V, inbox: Receiver<(ConnId, InboxItem)>) -> Self {
+    pub fn new(venue: V, inbox: Receiver<(ConnId, InboxItem)>, status: Arc<EngineStatus>) -> Self {
         let now = Instant::now();
         HubLoop {
             hub: Hub::new(),
             venue,
             inbox,
+            status,
             outboxes: BTreeMap::new(),
             peers: BTreeMap::new(),
             connected: false,
@@ -151,6 +159,8 @@ impl<V: Venue> HubLoop<V> {
             self.last_tick = Instant::now();
             self.feed(Input::Tick)?;
         }
+        self.status
+            .store(self.hub.engine() == EngineState::Up, self.hub.last_seq());
         Ok(busy)
     }
 
@@ -319,14 +329,17 @@ mod tests {
     struct Rig {
         hub: HubLoop<FakeVenue>,
         inbox: Sender<(ConnId, InboxItem)>,
+        status: Arc<EngineStatus>,
     }
 
     impl Rig {
         fn new() -> Rig {
             let (inbox, items) = mpsc::channel();
+            let status = Arc::new(EngineStatus::new());
             Rig {
-                hub: HubLoop::new(FakeVenue::default(), items),
+                hub: HubLoop::new(FakeVenue::default(), items, Arc::clone(&status)),
                 inbox,
+                status,
             }
         }
 
@@ -633,6 +646,38 @@ mod tests {
         drop(rig.inbox);
         let err = rig.hub.turn().unwrap_err();
         assert!(err.to_string().contains("WebSocket server"), "{err}");
+    }
+
+    /// The HTTP API's `GET /v1/status` reads what the hub loop stores after each turn.
+    #[test]
+    fn the_engine_status_follows_the_hub_after_each_turn() {
+        let mut rig = Rig::new();
+        assert_eq!(
+            rig.status.snapshot(),
+            (false, None),
+            "nothing is known before a turn"
+        );
+        rig.hub.venue.connected = true;
+        let _frames = rig.open(1, 64);
+        rig.turn();
+        assert_eq!(
+            rig.status.snapshot(),
+            (true, None),
+            "the first connection marks the engine up"
+        );
+
+        // Anyone's batch moves `engine_last_seq`, a command of ours or not.
+        rig.hub.venue.egress.push_back(answer(7, ALICE, 5));
+        rig.turn();
+        assert_eq!(rig.status.snapshot(), (true, Some(7)));
+
+        rig.hub.venue.connected = false;
+        rig.turn();
+        assert_eq!(
+            rig.status.snapshot(),
+            (false, Some(7)),
+            "down, and the last seq stays"
+        );
     }
 
     #[test]

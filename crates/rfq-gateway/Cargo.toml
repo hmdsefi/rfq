@@ -18,12 +18,16 @@ rfq-domain = { path = "../rfq-domain" }
 # The codec, always: the hub refuses a command whose encoding exceeds the node's ingress limit.
 # With feature `aeron`, also the Aeron adapter's `aeron::{connect, offer, ...}` and `Reassembler`.
 rfq-infra = { path = "../rfq-infra" }
+# The read side: the replica the HTTP API reads, and the views it serves.
+rfq-read = { path = "../rfq-read" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
 tungstenite = { workspace = true }
+# The HTTP server's request parser. Already in the lock through tungstenite (same version).
+httparse = "1.10.1"
 
 [dev-dependencies]
 # The scripted scenarios and the well-known accounts, for the sealing test.

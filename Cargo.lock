@@ -936,9 +936,11 @@ name = "rfq-gateway"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "httparse",
  "rfq-app",
  "rfq-domain",
  "rfq-infra",
+ "rfq-read",
  "rfq-testkit",
  "serde",
  "serde_json",
