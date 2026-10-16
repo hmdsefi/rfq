@@ -740,9 +740,13 @@ let V = null; // this render's { r, run, n, pos, M, T0 }
  */
 const historyRunsNow = () => page.historyRuns.filter((r) => r.epoch === rec.epoch);
 
+/**
+ * The run the timeline shows, or null for every batch. "Follow" is the newest of the page's own runs, else
+ * the newest the history brought back, so a reload lands on the newest run, not on every batch.
+ */
 function selectedRun() {
   if (ui.sel === "all") return null;
-  if (ui.sel === "follow") return page.runs.at(-1) ?? null;
+  if (ui.sel === "follow") return page.runs.at(-1) ?? historyRunsNow().at(-1) ?? null;
   const run = page.runsById.get(ui.sel) ?? historyRunsNow().find((r) => r.id === ui.sel);
   if (run) return run;
   // A history run that a reset took out of the list: follow again.

@@ -1011,6 +1011,60 @@ await test("after a reload whose history holds two runs, the run list has both, 
   }
 });
 
+await test("after a reload, Follow the newest run shows the newest history run: its batches, not every batch recorded", async () => {
+  const page = await reloaded(TWO_RUNS);
+  const { val, document } = page;
+  try {
+    assert.equal(val("ui.sel"), "follow");
+    assert.equal(val("V.run.id"), `h${RUN_B}`);
+    // Its seven batches: four deposits, the listing, the request and its expiry.
+    assert.deepEqual(val("V.r.batches.map((b) => b.seq)"), seqs(10, 16));
+    const label = text(document, "tl-label");
+    assert.match(label, /Batch 7 of 7/);
+    assert.ok(label.includes(`Over the batches of history · …${tail(RUN_B)} no_quotes_expire.`), label);
+    assert.ok(!label.includes("every batch recorded"), label);
+    const strip = text(document, "scenario");
+    assert.ok(strip.includes("no_quotes_expire") && strip.includes("PASS"), strip);
+  } finally {
+    teardown(page);
+  }
+});
+
+await test("a live run started after the reload becomes the followed run, listed before the history's", async () => {
+  const page = await reloaded(TWO_RUNS);
+  const { run, val, document } = page;
+  try {
+    document.getElementById("scenario-pick").value = "happy_path";
+    await run('startRuns("one", "happy_path")'); // the fake engine FAILs it on Alice's request
+    run("render()");
+    assert.equal(val("V.run.id"), "r1");
+    assert.ok(text(document, "tl-label").includes(`Over the batches of r1 · …${tail(val("page.runs[0].t0"))} happy_path.`), text(document, "tl-label"));
+    assert.deepEqual(runOptions(document).map(([v]) => v), ["follow", "all", "r1", `h${RUN_B}`, `h${RUN_A}`]);
+    // The live batches went on in the history's epoch: the history's runs stay pickable.
+    assert.equal(run("rec.epoch"), 0);
+    run(`ui.sel = "h${RUN_A}"; render()`);
+    assert.deepEqual(val("V.r.batches.map((b) => b.seq)"), seqs(2, 8));
+  } finally {
+    teardown(page);
+  }
+});
+
+await test("after a new journal (a new epoch), Follow does not show the old history's newest run: every batch instead", async () => {
+  const page = await reloaded(TWO_RUNS);
+  const { run, val, document, server } = page;
+  try {
+    assert.equal(val("V.run.id"), `h${RUN_B}`);
+    server.sockets[0].onmessage({ data: JSON.stringify({ type: "batch", seq: 3, time: 9_003, kind: "Tick", origin: null, events: [hPub({ RequestExpired: { request: 3 } })], balances: [] }) });
+    assert.equal(run("rec.epoch"), 1);
+    run("render()");
+    assert.equal(val("ui.sel"), "follow");
+    assert.equal(val("V.run"), null);
+    assert.match(text(document, "tl-label"), /Over every batch recorded\./);
+  } finally {
+    teardown(page);
+  }
+});
+
 await test("picking a history run shows its batches, its verdict and its log; All batches shows everything, the curl walk-through too", async () => {
   const page = await reloaded(TWO_RUNS);
   const { run, val, document } = page;
