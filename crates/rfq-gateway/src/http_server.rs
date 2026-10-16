@@ -4,8 +4,10 @@
 //!
 //! - **One request per connection.** Every answer carries `Connection: close` and the server then
 //!   closes: what the client sent after its first request is not read as a second one.
-//! - **Limits** ([`LIMITS`]): at most `max_connections` at once (the next gets `503`), a head of at
-//!   most [`MAX_HEAD`] bytes (`431`) that must complete within `head_timeout` (else the
+//! - **Limits** ([`LIMITS`]): at most `max_connections` at once (the next gets `503`), of which at
+//!   most `max_writes` are `POST`s (the next `POST` gets the same `503`, before its body is read:
+//!   a write can wait long for its answer, and the other connections are left to reads), a head of
+//!   at most [`MAX_HEAD`] bytes (`431`) that must complete within `head_timeout` (else the
 //!   connection is closed, unanswered), a body of at most `max_body` bytes.
 //! - **Bodies** only for `POST`, and only with a `Content-Length` (`411` without one, or with
 //!   `Transfer-Encoding`; `413` over the limit, before the body is read; `408` if it stalls for
@@ -52,18 +54,26 @@ const DRAIN_REFUSED: Duration = Duration::from_millis(25);
 pub struct HttpLimits {
     /// Connections served at once; one thread each.
     pub max_connections: usize,
+    /// `POST`s served at once, among those connections.
+    pub max_writes: usize,
     /// How long a request's head may take to arrive; also how long its body may stall.
     pub head_timeout: Duration,
     /// The largest request body, in bytes.
     pub max_body: usize,
 }
 
-/// The gateway's limits (read-api.md §9): 64 connections, a head within 10 s, a 64 KiB body.
+/// The gateway's limits (read-api.md §9): 64 connections, of which 48 writes, so that writes
+/// waiting on the engine always leave 16 to reads; a head within 10 s; a 64 KiB body.
 pub const LIMITS: HttpLimits = HttpLimits {
     max_connections: 64,
+    max_writes: 48,
     head_timeout: Duration::from_secs(10),
     max_body: MAX_TEXT,
 };
+const _: () = assert!(
+    LIMITS.max_writes < LIMITS.max_connections,
+    "writes must leave room for reads"
+);
 
 /// One request, as the handler sees it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -93,6 +103,7 @@ pub fn spawn(listener: TcpListener, limits: HttpLimits, handler: Handler) -> io:
 
 fn accept(listener: &TcpListener, limits: HttpLimits, handler: &Handler) {
     let live = Arc::new(AtomicUsize::new(0));
+    let writes = Arc::new(AtomicUsize::new(0));
     let mut next = 0u64;
     for stream in listener.incoming() {
         let mut stream = match stream {
@@ -116,11 +127,12 @@ fn accept(listener: &TcpListener, limits: HttpLimits, handler: &Handler) {
         next += 1;
         let guard = Live::enter(&live);
         let handler = Arc::clone(handler);
+        let writes = Arc::clone(&writes);
         let spawned = std::thread::Builder::new()
             .name(format!("http-{next}"))
             .spawn(move || {
                 let _guard = guard;
-                connection(stream, limits, &*handler);
+                connection(stream, limits, &writes, &*handler);
             });
         if let Err(e) = spawned {
             tracing::warn!(error = %e, "http refused: no thread");
@@ -128,13 +140,24 @@ fn accept(listener: &TcpListener, limits: HttpLimits, handler: &Handler) {
     }
 }
 
-/// Counts a connection's thread while it lives.
+/// Counts a connection's thread (or a write) while it lives.
 struct Live(Arc<AtomicUsize>);
 
 impl Live {
     fn enter(count: &Arc<AtomicUsize>) -> Live {
         count.fetch_add(1, Ordering::Relaxed);
         Live(Arc::clone(count))
+    }
+
+    /// [`enter`](Live::enter), unless `max` are counted already. Connection threads race for
+    /// it, so the check and the count are one step.
+    fn try_enter(count: &Arc<AtomicUsize>, max: usize) -> Option<Live> {
+        count
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+                (n < max).then_some(n + 1)
+            })
+            .ok()?;
+        Some(Live(Arc::clone(count)))
     }
 }
 
@@ -257,12 +280,13 @@ fn is_timeout(e: &io::Error) -> bool {
 fn connection(
     mut stream: TcpStream,
     limits: HttpLimits,
+    writes: &Arc<AtomicUsize>,
     handler: &(dyn Fn(&Request) -> Reply + Send + Sync),
 ) {
     let started = Instant::now();
     let _ = stream.set_nodelay(true);
     let _ = stream.set_write_timeout(Some(WRITE_TIMEOUT));
-    match serve(&mut stream, &limits, handler) {
+    match serve(&mut stream, &limits, writes, handler) {
         Some(served) => {
             let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
             tracing::info!(
@@ -294,10 +318,11 @@ enum Failure {
 }
 
 /// Reads one request, has it answered, and writes the answer. `None` if the connection ended
-/// before there was a request to answer.
+/// before there was a request to answer. A `POST` is counted in `writes` while it is served.
 fn serve(
     stream: &mut TcpStream,
     limits: &HttpLimits,
+    writes: &Arc<AtomicUsize>,
     handler: &(dyn Fn(&Request) -> Reply + Send + Sync),
 ) -> Option<Served> {
     let (buf, head) = match read_head(stream, limits.head_timeout) {
@@ -339,14 +364,23 @@ fn serve(
         };
         return respond(stream, &reply, preflight);
     }
-    let body = if head.method == "POST" {
+    // A write's slot is taken before its body is read, and held until it is answered.
+    let (_write, body) = if head.method == "POST" {
+        let Some(write) = Live::try_enter(writes, limits.max_writes) else {
+            tracing::warn!(
+                peer = %peer_of(stream),
+                max = limits.max_writes,
+                "http refused: too many writes"
+            );
+            return respond(stream, &Reply::error(503, "too many connections"), cors);
+        };
         match read_body(stream, &buf, &head, limits) {
-            Ok(body) => body,
+            Ok(body) => (Some(write), body),
             Err(Failure::Closed) => return None,
             Err(Failure::Refused(reply)) => return respond(stream, &reply, cors),
         }
     } else {
-        Vec::new()
+        (None, Vec::new())
     };
 
     let request = Request {
@@ -546,6 +580,7 @@ fn read_body(
 mod tests {
     use std::collections::BTreeMap;
     use std::sync::atomic::AtomicUsize;
+    use std::sync::{Condvar, Mutex};
 
     use serde_json::{Value, json};
 
@@ -554,6 +589,7 @@ mod tests {
     fn limits() -> HttpLimits {
         HttpLimits {
             max_connections: 8,
+            max_writes: 6,
             head_timeout: Duration::from_secs(5),
             max_body: 1024,
         }
@@ -1112,6 +1148,96 @@ mod tests {
             assert!(
                 started.elapsed() < Duration::from_secs(3),
                 "the slots never freed"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Writes that wait (a hung engine, an actor held behind an unresolved nonce) take at most
+    /// `max_writes` of the connections: the rest are always there for reads.
+    #[test]
+    fn writes_over_their_cap_get_503_and_reads_still_get_in() {
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let entered = Arc::new(AtomicUsize::new(0));
+        let handler: Handler = {
+            let (gate, entered) = (Arc::clone(&gate), Arc::clone(&entered));
+            Arc::new(move |request: &Request| {
+                if request.method == "POST" {
+                    entered.fetch_add(1, Ordering::SeqCst);
+                    let (open, opened) = &*gate;
+                    let mut open = open.lock().unwrap();
+                    while !*open {
+                        open = opened.wait(open).unwrap();
+                    }
+                }
+                echo(request)
+            })
+        };
+        let addr = start_with(
+            HttpLimits {
+                max_connections: 4,
+                max_writes: 2,
+                ..limits()
+            },
+            handler,
+        );
+        let write = |extra: &str| format!("{}{{}}", post("/v1/commands", Some(2), extra));
+
+        // Two writes that wait fill the writes' share.
+        let held: Vec<TcpStream> = (0..2)
+            .map(|_| {
+                let mut stream = connect(addr);
+                stream.write_all(write("").as_bytes()).unwrap();
+                stream
+            })
+            .collect();
+        let started = Instant::now();
+        while entered.load(Ordering::SeqCst) < 2 {
+            assert!(
+                started.elapsed() < Duration::from_secs(3),
+                "the writes never reached the handler"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        // The next write is refused at once, as a connection over the limit is, and a page can
+        // read the refusal.
+        let r = exchange(addr, &write(""));
+        assert_eq!(r.status, 503);
+        assert_eq!(r.json(), json!({"error": "too many connections"}));
+        assert_eq!(r.header("connection"), Some("close"));
+        let r = exchange(addr, &write("Origin: null\r\n"));
+        assert_eq!(r.status, 503);
+        assert_eq!(r.header("access-control-allow-origin"), Some("null"));
+        assert_eq!(
+            entered.load(Ordering::SeqCst),
+            2,
+            "a refused write never reaches the handler"
+        );
+
+        // The two connections left are the reads': one idle, one answered.
+        let idle = connect(addr);
+        let r = exchange(addr, &get("/v1/status", ""));
+        assert_eq!(r.status, 200, "{}", r.raw);
+        drop(idle);
+
+        // Let the writes through: they are answered, and their slots are free again.
+        let (open, opened) = &*gate;
+        *open.lock().unwrap() = true;
+        opened.notify_all();
+        for mut stream in held {
+            assert_eq!(read_all(&mut stream).status, 200);
+        }
+        let started = Instant::now();
+        loop {
+            let r = exchange(addr, &write(""));
+            if r.status == 200 {
+                break;
+            }
+            assert_eq!(r.status, 503);
+            assert!(
+                started.elapsed() < Duration::from_secs(3),
+                "the write slots never freed"
             );
             std::thread::sleep(Duration::from_millis(10));
         }
