@@ -14,7 +14,7 @@
 
 **What we built so that either answer is cheap.**
 
-1. **Durations are genesis config** (`ACCEPT_WINDOW`, `MIN/MAX_RESPONSE`, `RESUME_GRACE`; `dispute_window` per contract), so they are in the log.
+1. **Durations are genesis config** (`ACCEPT_WINDOW`, `MIN/MAX_RESPONSE`, `RESUME_GRACE`; `dispute_window` per market), so they are in the log.
 2. **Two policy seams:** `ReservationPolicy` (`FullHold`) and `SelectionPolicy` (`SealedAtDeadline`), enums in the genesis config (`crates/rfq-domain/src/command.rs`). One engine function matches each exhaustively, and each site listed here holds a compile-time tripwire (`let ReservationPolicy::FullHold = ..;`), so the compiler forces a decision there:
    - Reservation: `quote_reservation`; `submit_quote` (funds check, hold creation); `select_sealed`; `accept`; I4 in `check_invariants`.
    - Selection: `on_request_deadline`; `submit_quote`; `accept`; `reject`; `on_accept_by`.

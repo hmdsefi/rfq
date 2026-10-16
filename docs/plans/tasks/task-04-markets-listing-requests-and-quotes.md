@@ -1,16 +1,16 @@
-# Task 4: Contracts listing, requests and quotes
+# Task 4: Markets listing, requests and quotes
 
 > Part of the [implementation roadmap](../2026-10-13-rfq-engine-plan.md). Its **Global Constraints** and **Layered structure** table apply to this task and supersede crate names/paths written here.
 
-**Gate A rulings applied here** ([decisions](../../reviews/spec-review.md#decisions)): #1 only `Active` quotes can be cancelled (a `Selected` quote is firm); #2 `SubmitQuote` has no `price ≤ limit` check (no limit oracle); #12 each leg needs `qty × limit × 100 ≥ min_request_notional`; #14 `expires_at` is clamped to `response_deadline + accept_window`; #22 `ListContract` rejects an oracle that is operator, arbiter or treasury.
+**Gate A rulings applied here** ([decisions](../../reviews/spec-review.md#decisions)): #1 only `Active` quotes can be cancelled (a `Selected` quote is firm); #2 `SubmitQuote` has no `price ≤ limit` check (no limit oracle); #12 each leg needs `qty × limit × 100 ≥ min_request_notional`; #14 `expires_at` is clamped to `response_deadline + accept_window`; #22 `ListMarket` rejects an oracle that is operator, arbiter or treasury.
 
 **Files:**
-- Create: `crates/rfq-core/src/engine/contract.rs`, `crates/rfq-core/src/engine/rfq.rs`, `crates/rfq-core/tests/requests_quotes.rs`
+- Create: `crates/rfq-core/src/engine/market.rs`, `crates/rfq-core/src/engine/rfq.rs`, `crates/rfq-core/tests/requests_quotes.rs`
 - Modify: `crates/rfq-core/src/engine/mod.rs` (modules, dispatch, timer match, and delete the Task 3 `#[expect]` placeholders listed in Step 5)
 
 **Interfaces:**
 - Consumes: Task 3 types and `Engine` internals (`arm`, `config`, `genesis`, `VALIDATED`, `Out`, `Handled`), including `Config::min_request_notional`.
-- Produces (crate-internal, used by Tasks 5–6): `Engine::close_request(RequestId, RequestState, &mut Out)` and `Engine::end_quote(QuoteId, QuoteState, &mut Out)`; handlers `list_contract`, `on_contract_close`, `submit_request`, `cancel_request`, `submit_quote`, `cancel_quote` (final: `Active` only), `on_quote_expiry` (Active path), and a placeholder `on_request_deadline(RequestId, Timestamp, &mut Out)` that expires the request (Task 5 replaces it with selection).
+- Produces (crate-internal, used by Tasks 5–6): `Engine::close_request(RequestId, RequestState, &mut Out)` and `Engine::end_quote(QuoteId, QuoteState, &mut Out)`; handlers `list_market`, `on_market_close`, `submit_request`, `cancel_request`, `submit_quote`, `cancel_quote` (final: `Active` only), `on_quote_expiry` (Active path), and a placeholder `on_request_deadline(RequestId, Timestamp, &mut Out)` that expires the request (Task 5 replaces it with selection).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -23,14 +23,14 @@ pub const CLOSE: Timestamp = 1_000_000;
 pub const HARD: Timestamp = 2_000_000;
 pub const DEADLINE: Timestamp = 10_000;
 
-/// Funded accounts and one listed contract.
-fn setup() -> (Harness, ContractId) {
+/// Funded accounts and one listed market.
+fn setup() -> (Harness, MarketId) {
     let mut h = Harness::new(Config::default());
     for a in [ALICE, MM1, MM2, CAROL] {
         h.fund(a, 1_000);
     }
-    let c = ContractId(1);
-    let out = h.user(OPERATOR, Action::ListContract {
+    let c = MarketId(1);
+    let out = h.user(OPERATOR, Action::ListMarket {
         id: c,
         description: "Will it rain in Paris on 2026-11-01?".into(),
         oracle: ORACLE,
@@ -42,11 +42,11 @@ fn setup() -> (Harness, ContractId) {
     (h, c)
 }
 
-fn leg(c: ContractId, qty: Qty, limit: u16) -> LegSpec {
-    LegSpec { contract: c, side: Side::BuyYes, qty, limit_price: price(limit) }
+fn leg(c: MarketId, qty: Qty, limit: u16) -> LegSpec {
+    LegSpec { market: c, side: Side::BuyYes, qty, limit_price: price(limit) }
 }
 
-fn request(h: &mut Harness, c: ContractId) -> RequestId {
+fn request(h: &mut Harness, c: MarketId) -> RequestId {
     let id = RequestId(h.next_seq());
     let out = h.user(ALICE, Action::SubmitRequest { legs: vec![leg(c, 1_000, 7_000)], response_deadline: DEADLINE });
     assert_eq!(rejection(&out), None);
@@ -61,10 +61,10 @@ fn quote(h: &mut Harness, mm: AccountId, r: RequestId, bps: u16) -> QuoteId {
 }
 
 #[test]
-fn list_contract_requires_operator_and_valid_times() {
+fn list_market_requires_operator_and_valid_times() {
     let (mut h, _) = setup();
     let list = |h: &mut Harness, actor, id, oracle, close, hard| {
-        h.user(actor, Action::ListContract { id: ContractId(id), description: "x".into(), oracle, trading_close: close, resolution_deadline: hard, dispute_window: 1 })
+        h.user(actor, Action::ListMarket { id: MarketId(id), description: "x".into(), oracle, trading_close: close, resolution_deadline: hard, dispute_window: 1 })
     };
     assert_eq!(rejection(&list(&mut h, ALICE, 2, ORACLE, CLOSE, HARD)), Some(RejectReason::Unauthorized));
     assert_eq!(rejection(&list(&mut h, OPERATOR, 1, ORACLE, CLOSE, HARD)), Some(RejectReason::InvalidInput));
@@ -89,7 +89,7 @@ fn submit_request_validation() {
     assert_eq!(submit(vec![leg(c, 10, 7_000), leg(c, 10, 7_000)], DEADLINE), Some(RejectReason::Unsupported));
     assert_eq!(submit(vec![leg(c, 10, 7_000)], 500), Some(RejectReason::InvalidInput), "deadline sooner than min_response");
     assert_eq!(submit(vec![leg(c, 10, 7_000)], CLOSE - 1), Some(RejectReason::InvalidInput), "deadline + window after close");
-    assert_eq!(submit(vec![leg(ContractId(9), 10, 7_000)], DEADLINE), Some(RejectReason::UnknownObject));
+    assert_eq!(submit(vec![leg(MarketId(9), 10, 7_000)], DEADLINE), Some(RejectReason::UnknownObject));
     assert_eq!(submit(vec![leg(c, 0, 7_000)], DEADLINE), Some(RejectReason::InvalidInput));
     assert_eq!(submit(vec![leg(c, 1_000_000_001, 7_000)], DEADLINE), Some(RejectReason::InvalidInput));
     assert_eq!(submit(vec![leg(c, 2_000, 7_000)], DEADLINE), Some(RejectReason::InsufficientFunds));
@@ -211,11 +211,11 @@ fn withdraw_cannot_touch_reserved() {
 }
 
 #[test]
-fn contract_closes_at_trading_close() {
+fn market_closes_at_trading_close() {
     let (mut h, c) = setup();
     let out = h.tick(CLOSE);
-    assert_eq!(names(&out), vec!["ContractClosed"]);
-    assert_eq!(h.engine.contract(c).unwrap().state, ContractState::Closed);
+    assert_eq!(names(&out), vec!["MarketClosed"]);
+    assert_eq!(h.engine.market(c).unwrap().state, MarketState::Closed);
     let out = h.user(ALICE, Action::SubmitRequest { legs: vec![leg(c, 10, 7_000)], response_deadline: CLOSE + 10_000 });
     assert_eq!(rejection(&out), Some(RejectReason::InvalidState));
 }
@@ -227,9 +227,9 @@ Every leg in a test that expects a *different* rejection uses at least `qty 10` 
 Run: `cargo test -p rfq-core --test requests_quotes`
 Expected: FAIL. Most tests get `Unsupported` rejections because the handlers don't exist yet.
 
-- [ ] **Step 3: Implement contract listing and close**
+- [ ] **Step 3: Implement market listing and close**
 
-`crates/rfq-core/src/engine/contract.rs`:
+`crates/rfq-core/src/engine/market.rs`:
 ```rust
 use super::{Engine, Handled, Out};
 use crate::event::{Emitted, Event, RejectReason};
@@ -238,10 +238,10 @@ use crate::types::*;
 
 impl Engine {
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn list_contract(
+    pub(super) fn list_market(
         &mut self,
         actor: AccountId,
-        id: ContractId,
+        id: MarketId,
         description: &str,
         oracle: AccountId,
         trading_close: Timestamp,
@@ -254,40 +254,40 @@ impl Engine {
             return Err(RejectReason::Unauthorized);
         }
         // Role separation: the account that proposes outcomes must never judge its own proposal,
-        // list contracts, or collect forfeited bonds.
+        // list markets, or collect forfeited bonds.
         if [g.operator, g.arbiter, g.treasury].contains(&oracle) {
             return Err(RejectReason::InvalidInput);
         }
-        if self.contracts.contains_key(&id) {
+        if self.markets.contains_key(&id) {
             return Err(RejectReason::InvalidInput);
         }
         if !(self.now < trading_close && trading_close < resolution_deadline) || dispute_window == 0 {
             return Err(RejectReason::InvalidInput);
         }
-        self.contracts.insert(id, Contract {
+        self.markets.insert(id, Market {
             id,
             description: description.to_owned(),
             oracle,
             trading_close,
             resolution_deadline,
             dispute_window,
-            state: ContractState::Trading,
+            state: MarketState::Trading,
             dispute: None,
             positions: Vec::new(),
         });
-        self.arm(trading_close, TimerKey::ContractClose(id));
+        self.arm(trading_close, TimerKey::MarketClose(id));
         self.arm(resolution_deadline, TimerKey::HardDeadline(id));
-        out.push(Emitted::public(Event::ContractListed { contract: id }));
+        out.push(Emitted::public(Event::MarketListed { market: id }));
         Ok(())
     }
 
-    pub(super) fn on_contract_close(&mut self, id: ContractId, out: &mut Out) {
-        let Some(c) = self.contracts.get_mut(&id) else { return };
-        if c.state != ContractState::Trading {
+    pub(super) fn on_market_close(&mut self, id: MarketId, out: &mut Out) {
+        let Some(c) = self.markets.get_mut(&id) else { return };
+        if c.state != MarketState::Trading {
             return;
         }
-        c.state = ContractState::Closed;
-        out.push(Emitted::public(Event::ContractClosed { contract: id }));
+        c.state = MarketState::Closed;
+        out.push(Emitted::public(Event::MarketClosed { market: id }));
     }
 }
 ```
@@ -319,8 +319,8 @@ impl Engine {
         let mut total: Amount = 0;
         // Every leg is checked, so the trading-close guard is the min over legs (engine.md §8).
         for l in legs {
-            let c = self.contracts.get(&l.contract).ok_or(RejectReason::UnknownObject)?;
-            if c.state != ContractState::Trading {
+            let c = self.markets.get(&l.market).ok_or(RejectReason::UnknownObject)?;
+            if c.state != MarketState::Trading {
                 return Err(RejectReason::InvalidState);
             }
             if last_accept >= c.trading_close {
@@ -347,7 +347,7 @@ impl Engine {
             requester: actor,
             legs: legs
                 .iter()
-                .map(|l| Leg { contract: l.contract, side: l.side, qty: l.qty, limit_price: l.limit_price, quotes: BTreeSet::new(), selected: None })
+                .map(|l| Leg { market: l.market, side: l.side, qty: l.qty, limit_price: l.limit_price, quotes: BTreeSet::new(), selected: None })
                 .collect(),
             response_deadline,
             hold: Some(hold),
@@ -358,7 +358,7 @@ impl Engine {
             out.push(Emitted::public(Event::RequestOpened {
                 request: id,
                 leg: u32::try_from(i).expect("leg count is bounded"),
-                contract: l.contract,
+                market: l.market,
                 side: l.side,
                 qty: l.qty,
                 response_deadline,
@@ -515,13 +515,13 @@ impl Engine {
 
 - [ ] **Step 5: Wire up dispatch and timers**
 
-In `crates/rfq-core/src/engine/mod.rs`, add `mod contract; mod rfq;` next to `mod account;`. Then replace the `let result = match action { ... }` block in `apply_user` with:
+In `crates/rfq-core/src/engine/mod.rs`, add `mod market; mod rfq;` next to `mod account;`. Then replace the `let result = match action { ... }` block in `apply_user` with:
 ```rust
         let result = match action {
             Action::Deposit { to, amount } => self.deposit(actor, *to, *amount, out),
             Action::Withdraw { amount } => self.withdraw(actor, *amount, out),
-            Action::ListContract { id, description, oracle, trading_close, resolution_deadline, dispute_window } => {
-                self.list_contract(actor, *id, description, *oracle, *trading_close, *resolution_deadline, *dispute_window, out)
+            Action::ListMarket { id, description, oracle, trading_close, resolution_deadline, dispute_window } => {
+                self.list_market(actor, *id, description, *oracle, *trading_close, *resolution_deadline, *dispute_window, out)
             }
             Action::SubmitRequest { legs, response_deadline } => self.submit_request(actor, legs, *response_deadline, out),
             Action::CancelRequest { request } => self.cancel_request(actor, *request, out),
@@ -537,7 +537,7 @@ Then replace the timer `match key { _ => ... }` in `fire_due_timers` with:
             match key {
                 TimerKey::QuoteExpiry(q) => self.on_quote_expiry(q, out),
                 TimerKey::RequestDeadline(r) => self.on_request_deadline(r, at, out),
-                TimerKey::ContractClose(c) => self.on_contract_close(c, out),
+                TimerKey::MarketClose(c) => self.on_market_close(c, out),
                 _ => {}
             }
 ```
@@ -556,5 +556,5 @@ Expected: all pass, including 15 in `requests_quotes`, and clippy is clean. Note
 
 ```bash
 git add crates/rfq-core
-git commit -m "feat(core): contract listing, requests with worst-case holds, sealed quotes with atomic replace"
+git commit -m "feat(core): market listing, requests with worst-case holds, sealed quotes with atomic replace"
 ```

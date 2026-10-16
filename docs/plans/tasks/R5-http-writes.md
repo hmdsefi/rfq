@@ -36,7 +36,7 @@ impl ConnIds { pub fn next(&self) -> ConnId; }
 
 ## Requirements
 
-1. **Bodies (spec §3):** JSON objects. `actor` (number) required; `nonce` optional. `/v1/requests`: `legs` (array of `{contract, side, qty, limit_price}`), `response_deadline`. `/v1/quotes`: `request, leg, price, size, expires_at`. `/v1/commands`: `action` in the WebSocket's JSON form (any client `Action`; `Genesis`, `Tick`, `Resume` cannot be expressed, as on the WebSocket). Unknown fields are refused (`deny_unknown_fields`). Errors → `400 {"error":"bad request: …"}`.
+1. **Bodies (spec §3):** JSON objects. `actor` (number) required; `nonce` optional. `/v1/requests`: `legs` (array of `{market, side, qty, limit_price}`), `response_deadline`. `/v1/quotes`: `request, leg, price, size, expires_at`. `/v1/commands`: `action` in the WebSocket's JSON form (any client `Action`; `Genesis`, `Tick`, `Resume` cannot be expressed, as on the WebSocket). Unknown fields are refused (`deny_unknown_fields`). Errors → `400 {"error":"bad request: …"}`.
 2. **The short-lived connection (spec §4):** id from `ConnIds::next()` (the WebSocket acceptor uses the same counter, so ids never collide). Send, in order: `Open { peer, outbox }` (an outbox of the WebSocket's `OUTBOX` size), `Text(hello with view {"account": actor})`, `Text(command with id "http-<conn>")`. Then read the outbox, feeding `Answer::on_frame`, until it returns a reply or 75 s pass (`504 {"error":"no answer from the gateway"}`). **Always** send `Close { why: "http request done" }` at the end, also when the client went away or the wait timed out (Review Focus 5).
 3. **`Answer`:**
    - `sent` with this id → remember its `nonce`;
@@ -47,8 +47,8 @@ impl ConnIds { pub fn next(&self) -> ConnId; }
 4. **One account, two writers (Review Focus 3):** the hub already queues per account; the answer must only ever take the batch with this command's `(actor, nonce)`.
 5. **`scripts/http-smoke.mjs`** (Node 25, global `fetch` and `WebSocket`; usage and exit codes like `gateway-smoke.mjs`):
    - open a WebSocket as admin first and record every batch;
-   - fresh accounts `t0 * 100 + id` and contract `t0` (as the gateway smoke);
-   - over HTTP only: the operator's deposits and `ListContract` (`/v1/commands`), Alice's request (`/v1/requests`, limit 7000, 1,000 YES, deadline `+1.5 s`), MM1 at 6200 and MM2 at 6000 (`/v1/quotes`, using the request id = the request's `seq`);
+   - fresh accounts `t0 * 100 + id` and market `t0` (as the gateway smoke);
+   - over HTTP only: the operator's deposits and `ListMarket` (`/v1/commands`), Alice's request (`/v1/requests`, limit 7000, 1,000 YES, deadline `+1.5 s`), MM1 at 6200 and MM2 at 6000 (`/v1/quotes`, using the request id = the request's `seq`);
    - after the deadline, `GET /v1/accounts/{alice}/requests?min_seq=…` until `selected` is set; `POST /v1/commands` `Accept` with picks from `selected`;
    - check: `GET /v1/accounts/{alice}/positions?min_seq=<accept seq>` → one position, side `Yes`, stake `600000000`; `GET /v1/accounts/{alice}` → escrowed `600000000`; MM1's quotes show `Lost`; `GET /v1/trace?view=admin&after_seq=<first deposit seq − 1>` holds `RequestOpened`, `QuoteSubmitted` ×2, `RequestPresented`, `QuoteFilled`, `RequestFilled` in order, and every batch the WebSocket recorded in that range is in the trace, equal; `GET /v1/trace?view=<mm1>` never shows MM2's quote or Alice's balances; a `POST` with a bad body → `400`; `Origin: http://evil.example` → `403`;
    - print `HTTP SMOKE OK` and exit 0, or the first failure and exit 1.

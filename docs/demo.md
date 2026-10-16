@@ -33,7 +33,7 @@ Pick a scenario, press **Run**. The same scenarios also run without the page: `d
 
 ## 1. Happy path, and how to run the project
 
-`happy_path`: two market makers quote, the best price is presented, Alice accepts, the oracle proposes YES, nobody disputes, and the contract settles.
+`happy_path`: two market makers quote, the best price is presented, Alice accepts, the oracle proposes YES, nobody disputes, and the market settles.
 
 ![happy_path](media/happy_path.gif)
 
@@ -42,7 +42,7 @@ Pick a scenario, press **Run**. The same scenarios also run without the page: `d
 - **Quotes:** MM1 quotes $0.62 and MM2 quotes $0.60. Each quote is sealed: only its own MM receives `QuoteSubmitted`.
 - **Deadline:** a `Tick` opens the quotes. MM2 wins, MM1 gets its $380 back, and Alice is presented the price.
 - **Accept:** Alice's $600 and MM2's $400 are escrowed.
-- **Resolution:** trading closes, the oracle proposes YES, and the dispute window passes with no dispute. The contract is final YES, and Alice is paid $1,000 in the same batch.
+- **Resolution:** trading closes, the oracle proposes YES, and the dispute window passes with no dispute. The market is final YES, and Alice is paid $1,000 in the same batch.
 
 ## 2. A dispute, ruled INVALID
 
@@ -50,8 +50,8 @@ Pick a scenario, press **Run**. The same scenarios also run without the page: `d
 
 ![disputed_ruled_invalid](media/disputed_ruled_invalid.gif)
 
-- **Dispute:** Carol disputes inside the 2 s window. Her $100 bond is reserved like any other money, and the contract moves Proposed → Disputed.
-- **Ruling:** the arbiter rules INVALID, and one batch carries `Ruled (bond_returned)`, `ContractFinalized INVALID` and a `PositionSettled` for each holder.
+- **Dispute:** Carol disputes inside the 2 s window. Her $100 bond is reserved like any other money, and the market moves Proposed → Disputed.
+- **Ruling:** the arbiter rules INVALID, and one batch carries `Ruled (bond_returned)`, `MarketFinalized INVALID` and a `PositionSettled` for each holder.
 - **Money:** Alice gets her $600 back and MM2 its $400. The ruling differs from the oracle's proposal, so Carol was right and her bond is returned. Had the arbiter agreed with the oracle, the bond would have gone to the treasury ([resolution.md](specs/resolution.md)).
 
 ## 3. A silent oracle: INVALID at the hard deadline
@@ -60,9 +60,9 @@ Pick a scenario, press **Run**. The same scenarios also run without the page: `d
 
 ![oracle_silent_hard_deadline](media/oracle_silent_hard_deadline.gif)
 
-- Trading closes and the contract waits in Closed.
+- Trading closes and the market waits in Closed.
 - 10 s later, a `Tick` at the hard deadline finalizes it INVALID. The log pane shows no command, only the engine applying a timer.
-- Both stakes go back: Alice $600, MM2 $400. Money can never stay locked: every contract is final by its hard deadline.
+- Both stakes go back: Alice $600, MM2 $400. Money can never stay locked: every market is final by its hard deadline.
 
 ## 4. Nobody quotes: the request expires
 

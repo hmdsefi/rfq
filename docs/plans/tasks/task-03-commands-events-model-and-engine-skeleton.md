@@ -9,10 +9,10 @@
 **Interfaces:**
 - Consumes: Tasks 1–2.
 - Produces:
-  - `Config` (fields per Global Constraints, with `Default`), `Genesis { operator, arbiter, treasury, config }`, `LegSpec { contract, side, qty, limit_price }`, `Pick { leg: u32, quote: QuoteId, price: Price }`, `Action` (12 variants below), `Command::{Genesis(Genesis), Tick, User { actor, nonce, action }}`, `SequencedCommand { seq, time, cmd }`.
+  - `Config` (fields per Global Constraints, with `Default`), `Genesis { operator, arbiter, treasury, config }`, `LegSpec { market, side, qty, limit_price }`, `Pick { leg: u32, quote: QuoteId, price: Price }`, `Action` (12 variants below), `Command::{Genesis(Genesis), Tick, User { actor, nonce, action }}`, `SequencedCommand { seq, time, cmd }`.
   - `Audience::{Public, Account(AccountId)}`, `RejectReason` (12 variants below), `Event` (all variants below), `Event::name() -> &'static str`, `Emitted { audience, event }` with `Emitted::public(e)` and `Emitted::to(a, e)`.
   - Model types (listed in `model.rs` below) and `TimerKey`.
-  - `Engine::new()`, `apply(&SequencedCommand) -> Vec<Emitted>`, `balance(AccountId) -> Balance`, `request(RequestId) -> Option<&Request>`, `quote(QuoteId) -> Option<&Quote>`, `contract(ContractId) -> Option<&Contract>`, `position(PositionId) -> Option<&Position>`, `requests()`, `quotes()`, `contracts()` iterators, `next_timer() -> Option<Timestamp>`, `last_seq()`, `state_hash() -> [u8; 32]`, `check_invariants() -> Result<(), String>`.
+  - `Engine::new()`, `apply(&SequencedCommand) -> Vec<Emitted>`, `balance(AccountId) -> Balance`, `request(RequestId) -> Option<&Request>`, `quote(QuoteId) -> Option<&Quote>`, `market(MarketId) -> Option<&Market>`, `position(PositionId) -> Option<&Position>`, `requests()`, `quotes()`, `markets()` iterators, `next_timer() -> Option<Timestamp>`, `last_seq()`, `state_hash() -> [u8; 32]`, `check_invariants() -> Result<(), String>`.
   - `testkit::{Harness, accounts::*, rejection, names, dollars}`.
 
 - [ ] **Step 1: Write the command, event and model types**
@@ -54,7 +54,7 @@ pub struct Genesis {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LegSpec {
-    pub contract: ContractId,
+    pub market: MarketId,
     pub side: Side,
     pub qty: Qty,
     pub limit_price: Price,
@@ -71,8 +71,8 @@ pub struct Pick {
 pub enum Action {
     Deposit { to: AccountId, amount: Amount },
     Withdraw { amount: Amount },
-    ListContract {
-        id: ContractId,
+    ListMarket {
+        id: MarketId,
         description: String,
         oracle: AccountId,
         trading_close: Timestamp,
@@ -85,9 +85,9 @@ pub enum Action {
     CancelQuote { quote: QuoteId },
     Accept { request: RequestId, picks: Vec<Pick> },
     Reject { request: RequestId },
-    ProposeOutcome { contract: ContractId, outcome: Outcome },
-    Dispute { contract: ContractId },
-    Rule { contract: ContractId, outcome: Outcome },
+    ProposeOutcome { market: MarketId, outcome: Outcome },
+    Dispute { market: MarketId },
+    Rule { market: MarketId, outcome: Outcome },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -114,7 +114,7 @@ use serde::{Deserialize, Serialize};
 use crate::types::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ContractState {
+pub enum MarketState {
     Trading,
     Closed,
     Proposed { outcome: Outcome, dispute_until: Timestamp },
@@ -130,14 +130,14 @@ pub struct Dispute {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Contract {
-    pub id: ContractId,
+pub struct Market {
+    pub id: MarketId,
     pub description: String,
     pub oracle: AccountId,
     pub trading_close: Timestamp,
     pub resolution_deadline: Timestamp,
     pub dispute_window: Duration,
-    pub state: ContractState,
+    pub state: MarketState,
     pub dispute: Option<Dispute>,
     pub positions: Vec<PositionId>,
 }
@@ -163,7 +163,7 @@ impl RequestState {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Leg {
-    pub contract: ContractId,
+    pub market: MarketId,
     pub side: Side,
     pub qty: Qty,
     pub limit_price: Price,
@@ -208,7 +208,7 @@ pub struct Quote {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Position {
     pub id: PositionId,
-    pub contract: ContractId,
+    pub market: MarketId,
     pub request: RequestId,
     pub qty: Qty,
     pub yes_holder: AccountId,
@@ -224,9 +224,9 @@ pub enum TimerKey {
     QuoteExpiry(QuoteId),
     RequestDeadline(RequestId),
     AcceptBy(RequestId),
-    ContractClose(ContractId),
-    DisputeWindow(ContractId),
-    HardDeadline(ContractId),
+    MarketClose(MarketId),
+    DisputeWindow(MarketId),
+    HardDeadline(MarketId),
 }
 ```
 
@@ -263,9 +263,9 @@ pub enum Event {
     CommandRejected { reason: RejectReason },
     Deposited { account: AccountId, amount: Amount },
     Withdrawn { account: AccountId, amount: Amount },
-    ContractListed { contract: ContractId },
-    ContractClosed { contract: ContractId },
-    RequestOpened { request: RequestId, leg: u32, contract: ContractId, side: Side, qty: Qty, response_deadline: Timestamp },
+    MarketListed { market: MarketId },
+    MarketClosed { market: MarketId },
+    RequestOpened { request: RequestId, leg: u32, market: MarketId, side: Side, qty: Qty, response_deadline: Timestamp },
     RequestCancelled { request: RequestId },
     RequestExpired { request: RequestId },
     RequestPresented { request: RequestId, picks: Vec<Pick>, accept_by: Timestamp },
@@ -279,10 +279,10 @@ pub enum Event {
     QuoteSelected { quote: QuoteId },
     QuoteReleased { quote: QuoteId },
     QuoteFilled { quote: QuoteId, position: PositionId },
-    OutcomeProposed { contract: ContractId, outcome: Outcome, dispute_until: Timestamp },
-    Disputed { contract: ContractId, disputer: AccountId },
-    Ruled { contract: ContractId, outcome: Outcome, bond_returned: bool },
-    ContractFinalized { contract: ContractId, outcome: Outcome },
+    OutcomeProposed { market: MarketId, outcome: Outcome, dispute_until: Timestamp },
+    Disputed { market: MarketId, disputer: AccountId },
+    Ruled { market: MarketId, outcome: Outcome, bond_returned: bool },
+    MarketFinalized { market: MarketId, outcome: Outcome },
     PositionSettled { position: PositionId, yes_holder: AccountId, yes_payout: Amount, no_holder: AccountId, no_payout: Amount },
 }
 
@@ -293,8 +293,8 @@ impl Event {
             Event::CommandRejected { .. } => "CommandRejected",
             Event::Deposited { .. } => "Deposited",
             Event::Withdrawn { .. } => "Withdrawn",
-            Event::ContractListed { .. } => "ContractListed",
-            Event::ContractClosed { .. } => "ContractClosed",
+            Event::MarketListed { .. } => "MarketListed",
+            Event::MarketClosed { .. } => "MarketClosed",
             Event::RequestOpened { .. } => "RequestOpened",
             Event::RequestCancelled { .. } => "RequestCancelled",
             Event::RequestExpired { .. } => "RequestExpired",
@@ -312,7 +312,7 @@ impl Event {
             Event::OutcomeProposed { .. } => "OutcomeProposed",
             Event::Disputed { .. } => "Disputed",
             Event::Ruled { .. } => "Ruled",
-            Event::ContractFinalized { .. } => "ContractFinalized",
+            Event::MarketFinalized { .. } => "MarketFinalized",
             Event::PositionSettled { .. } => "PositionSettled",
         }
     }
@@ -588,7 +588,7 @@ pub struct Engine {
     pub(crate) now: Timestamp,
     pub(crate) nonces: BTreeMap<AccountId, u64>,
     pub(crate) ledger: Ledger,
-    pub(crate) contracts: BTreeMap<ContractId, Contract>,
+    pub(crate) markets: BTreeMap<MarketId, Market>,
     pub(crate) requests: BTreeMap<RequestId, Request>,
     pub(crate) quotes: BTreeMap<QuoteId, Quote>,
     pub(crate) positions: BTreeMap<PositionId, Position>,
@@ -604,11 +604,11 @@ impl Engine {
     pub fn balance(&self, a: AccountId) -> Balance { self.ledger.balance(a) }
     pub fn request(&self, id: RequestId) -> Option<&Request> { self.requests.get(&id) }
     pub fn quote(&self, id: QuoteId) -> Option<&Quote> { self.quotes.get(&id) }
-    pub fn contract(&self, id: ContractId) -> Option<&Contract> { self.contracts.get(&id) }
+    pub fn market(&self, id: MarketId) -> Option<&Market> { self.markets.get(&id) }
     pub fn position(&self, id: PositionId) -> Option<&Position> { self.positions.get(&id) }
     pub fn requests(&self) -> impl Iterator<Item = &Request> { self.requests.values() }
     pub fn quotes(&self) -> impl Iterator<Item = &Quote> { self.quotes.values() }
-    pub fn contracts(&self) -> impl Iterator<Item = &Contract> { self.contracts.values() }
+    pub fn markets(&self) -> impl Iterator<Item = &Market> { self.markets.values() }
     pub fn next_timer(&self) -> Option<Timestamp> { self.timers.first().map(|(t, _)| *t) }
 
     /// Applies one sequenced command. Commands with `seq <= last_seq` are ignored (replay-safe).
@@ -722,9 +722,9 @@ impl Engine {
         for q in self.quotes.values() {
             own(q.hold, q.state.is_live(), format!("quote {:?}", q.id))?;
         }
-        for c in self.contracts.values() {
+        for c in self.markets.values() {
             if let Some(d) = c.dispute {
-                let live = matches!(c.state, ContractState::Disputed { .. });
+                let live = matches!(c.state, MarketState::Disputed { .. });
                 own(d.hold, live, format!("dispute on {:?}", c.id))?;
             }
         }
@@ -746,10 +746,10 @@ impl Engine {
                 }
             }
         }
-        for c in self.contracts.values() {
-            let is_final = matches!(c.state, ContractState::Final(_));
+        for c in self.markets.values() {
+            let is_final = matches!(c.state, MarketState::Final(_));
             if !is_final && !self.timers.contains(&(c.resolution_deadline, TimerKey::HardDeadline(c.id))) {
-                return Err(format!("I5 contract {:?} has no hard-deadline timer", c.id));
+                return Err(format!("I5 market {:?} has no hard-deadline timer", c.id));
             }
         }
         Ok(())

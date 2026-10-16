@@ -1,6 +1,6 @@
 # Task R4: Gateway HTTP server, reads, replica thread, Docker port
 
-**Spec:** [read-api.md](../../specs/read-api.md) §2, §3 (reads), §6, §7, §9. **Goal:** `curl http://127.0.0.1:18081/v1/...` reads positions, requests, quotes, balances, contracts, status and the trace from a replica the gateway keeps current.
+**Spec:** [read-api.md](../../specs/read-api.md) §2, §3 (reads), §6, §7, §9. **Goal:** `curl http://127.0.0.1:18081/v1/...` reads positions, requests, quotes, balances, markets, status and the trace from a replica the gateway keeps current.
 
 **Files:**
 - Create:
@@ -56,7 +56,7 @@ pub fn spawn(listener: TcpListener, limits: HttpLimits, handler: Arc<dyn Fn(&Req
 
 ## Requirements
 
-1. **Routes (GET):** exactly the spec §3 read table. Every `200` body is a JSON object with `as_of_seq` (the replica's `last_seq` at the read) plus the fields named in the spec: `/v1/accounts/{id}` → the `AccountView` fields at top level; `/positions` → `{positions}`; `/requests` → `{requests}`; `/quotes` → `{quotes}`; `/v1/requests?state=open[&contract=ID]` → `{requests}`; `/v1/contracts` → `{contracts}`; `/v1/contracts/{id}` → the `ContractView` fields (404 `{"error":"no such contract"}` if missing); `/v1/status` → spec shape (`state_hash` lower-case hex, `engine` from `EngineStatus`).
+1. **Routes (GET):** exactly the spec §3 read table. Every `200` body is a JSON object with `as_of_seq` (the replica's `last_seq` at the read) plus the fields named in the spec: `/v1/accounts/{id}` → the `AccountView` fields at top level; `/positions` → `{positions}`; `/requests` → `{requests}`; `/quotes` → `{quotes}`; `/v1/requests?state=open[&market=ID]` → `{requests}`; `/v1/markets` → `{markets}`; `/v1/markets/{id}` → the `MarketView` fields (404 `{"error":"no such market"}` if missing); `/v1/status` → spec shape (`state_hash` lower-case hex, `engine` from `EngineStatus`).
 2. **Errors:** a non-numeric id or bad query value → `400 {"error":…}`; unknown path → `404`; a known path with another method → `405`; `min_seq` not reached within the wait → `503 {"error":"replica behind","as_of_seq":N}`; `GET /v1/requests` without `state=open` → `400`.
 3. **Trace (spec §6; Review Focus 4):** `view=admin` or `view=<account id>` (required; else `400`). Scan entries with `seq > after_seq` in order; for an account view apply `view::filter(View::Account(a), &entry.batch)` and skip `None`; `command` is shown for admin always, for an account only when `command.actor == a` (else `null`). Stop after `limit` entries; `next_after_seq` = the last returned entry's `seq` if the page is full and more entries exist after it, else `null`. An entry is `OutBatch` fields at top level plus `command`.
 4. **Server:** one acceptor thread; a thread per connection, at most `max_connections` (more: write `503 {"error":"too many connections"}` and close); read the head with `httparse` within `head_timeout` (16 KiB max head); `POST` needs `Content-Length` ≤ `max_body` (`411`/`413` otherwise); exactly one request per connection, answered with `Connection: close`, `Content-Type: application/json`.
@@ -72,7 +72,7 @@ pub fn spawn(listener: TcpListener, limits: HttpLimits, handler: Arc<dyn Fn(&Req
 
 - [ ] **Step 1: Move `origin_allowed` to `origin.rs`**; `ws.rs` uses it; its tests move with it. Run the gateway tests: PASS.
 - [ ] **Step 2: Failing router tests** (`read_api.rs` tests; build a `ReadSide` by applying `run_in_memory(happy_path).0.log` — the `Harness` log — through `ReadSide::apply`):
-  - each read route returns `200` with `as_of_seq` and the expected rows (Alice's position, balances, MM2's quote, contracts, open requests at a mid-scenario point);
+  - each read route returns `200` with `as_of_seq` and the expected rows (Alice's position, balances, MM2's quote, markets, open requests at a mid-scenario point);
   - `trace_admin_pages_in_order_with_commands` (`limit=2` → 2 entries, `next_after_seq` = the second's seq; following pages reach the end with `null`);
   - `trace_for_an_account_skips_what_it_cannot_see_and_still_advances` (Review Focus 4: a view of MM1 over a journal where most batches are invisible to MM1; pages never empty while more visible entries exist, `next_after_seq` strictly increases, the last is `null`; no MM2 quote events, no other balances, `command` only on MM1's own batches);
   - `min_seq_waits_then_answers` (a thread applies the next command after 50 ms) and `min_seq_times_out_with_503` (with a 100 ms wait);
@@ -86,7 +86,7 @@ pub fn spawn(listener: TcpListener, limits: HttpLimits, handler: Arc<dyn Fn(&Req
 ```bash
 curl -s http://127.0.0.1:18081/v1/status
 curl -s "http://127.0.0.1:18081/v1/trace?view=admin&limit=3"
-curl -s http://127.0.0.1:18081/v1/contracts
+curl -s http://127.0.0.1:18081/v1/markets
 ```
 
   Expected: `replica.state` `following`, `replica.last_seq` equal to `engine_last_seq` (or within a few), `state_hash` equal to the engine's latest `applied seq=… hash=…` log line at that seq (`docker compose logs engine | tail`). Record the output in the report.

@@ -10,7 +10,7 @@
 
 **Interfaces:**
 - Consumes: `Harness`, `accounts`, `genesis`.
-- Produces (used by `rfq-demo`, Task 11): `scenarios::{demo_config() -> Config, all() -> Vec<Scenario>, Scenario { name, steps, expect }, Step { at, kind }, StepKind::{Send { label, actor, action }, Tick}, Ctx::{new(t0), record_label, observe, seq, request, quote, contract, picks, at}, run_in_memory(&Scenario, t0) -> (Harness, Vec<Emitted>), contains_in_order(&[Emitted], &[&str]) -> Result<(), String>}`.
+- Produces (used by `rfq-demo`, Task 11): `scenarios::{demo_config() -> Config, all() -> Vec<Scenario>, Scenario { name, steps, expect }, Step { at, kind }, StepKind::{Send { label, actor, action }, Tick}, Ctx::{new(t0), record_label, observe, seq, request, quote, market, picks, at}, run_in_memory(&Scenario, t0) -> (Harness, Vec<Emitted>), contains_in_order(&[Emitted], &[&str]) -> Result<(), String>}`.
 
 - [ ] **Step 1: Write the scenarios module**
 
@@ -47,8 +47,8 @@ pub struct Ctx {
 impl Ctx {
     pub fn new(t0: Timestamp) -> Self { Ctx { t0, labels: BTreeMap::new(), presented: BTreeMap::new() } }
     pub fn at(&self, offset: Duration) -> Timestamp { self.t0 + offset }
-    /// One contract per scenario run, keyed by its start time so reruns never collide.
-    pub fn contract(&self) -> ContractId { ContractId(self.t0) }
+    /// One market per scenario run, keyed by its start time so reruns never collide.
+    pub fn market(&self) -> MarketId { MarketId(self.t0) }
     pub fn record_label(&mut self, label: &'static str, seq: u64) { self.labels.insert(label, seq); }
     pub fn seq(&self, label: &str) -> u64 {
         *self.labels.get(label).unwrap_or_else(|| panic!("label {label} has no seq yet"))
@@ -91,14 +91,14 @@ fn send(at: Duration, label: &'static str, actor: AccountId, f: impl Fn(&Ctx) ->
 
 fn tick(at: Duration) -> Step { Step { at, kind: StepKind::Tick } }
 
-/// Funds everyone and lists the scenario's contract (closes at +5 s, hard deadline at +15 s).
+/// Funds everyone and lists the scenario's market (closes at +5 s, hard deadline at +15 s).
 fn setup() -> Vec<Step> {
     let mut steps: Vec<Step> = [("fund_alice", ALICE), ("fund_mm1", MM1), ("fund_mm2", MM2), ("fund_carol", CAROL)]
         .into_iter()
         .map(|(label, to)| send(0, label, OPERATOR, move |_| Action::Deposit { to, amount: dollars(1_000) }))
         .collect();
-    steps.push(send(0, "list", OPERATOR, |c| Action::ListContract {
-        id: c.contract(),
+    steps.push(send(0, "list", OPERATOR, |c| Action::ListMarket {
+        id: c.market(),
         description: "Will it rain in Paris on 2026-11-01?".into(),
         oracle: ORACLE,
         trading_close: c.at(5_000),
@@ -112,7 +112,7 @@ fn setup() -> Vec<Step> {
 fn quoted() -> Vec<Step> {
     let mut s = setup();
     s.push(send(100, "req", ALICE, |c| Action::SubmitRequest {
-        legs: vec![LegSpec { contract: c.contract(), side: Side::BuyYes, qty: 1_000, limit_price: price(7_000) }],
+        legs: vec![LegSpec { market: c.market(), side: Side::BuyYes, qty: 1_000, limit_price: price(7_000) }],
         response_deadline: c.at(1_500),
     }));
     s.push(send(300, "q1", MM1, |c| Action::SubmitQuote { request: c.request("req"), leg: 0, price: price(6_200), size: 1_000, expires_at: c.at(10_000) }));
@@ -135,12 +135,12 @@ pub fn all() -> Vec<Scenario> {
     let happy = {
         let mut s = filled();
         s.push(tick(5_100));
-        s.push(send(5_200, "propose", ORACLE, |c| Action::ProposeOutcome { contract: c.contract(), outcome: Outcome::Yes }));
+        s.push(send(5_200, "propose", ORACLE, |c| Action::ProposeOutcome { market: c.market(), outcome: Outcome::Yes }));
         s.push(tick(7_300));
         Scenario {
             name: "happy_path",
             steps: s,
-            expect: vec!["RequestOpened", "QuoteSubmitted", "QuoteSubmitted", "QuoteLost", "QuoteSelected", "RequestPresented", "QuoteFilled", "RequestFilled", "ContractClosed", "OutcomeProposed", "ContractFinalized", "PositionSettled"],
+            expect: vec!["RequestOpened", "QuoteSubmitted", "QuoteSubmitted", "QuoteLost", "QuoteSelected", "RequestPresented", "QuoteFilled", "RequestFilled", "MarketClosed", "OutcomeProposed", "MarketFinalized", "PositionSettled"],
         }
     };
     // The selected quote is firm (RFC P5): MM2's cancel inside the window is rejected and the accept fills.
@@ -157,7 +157,7 @@ pub fn all() -> Vec<Scenario> {
     let no_quotes = {
         let mut s = setup();
         s.push(send(100, "req", ALICE, |c| Action::SubmitRequest {
-            legs: vec![LegSpec { contract: c.contract(), side: Side::BuyYes, qty: 1_000, limit_price: price(7_000) }],
+            legs: vec![LegSpec { market: c.market(), side: Side::BuyYes, qty: 1_000, limit_price: price(7_000) }],
             response_deadline: c.at(1_500),
         }));
         s.push(tick(1_600));
@@ -171,15 +171,15 @@ pub fn all() -> Vec<Scenario> {
     let disputed = {
         let mut s = filled();
         s.push(tick(5_100));
-        s.push(send(5_200, "propose", ORACLE, |c| Action::ProposeOutcome { contract: c.contract(), outcome: Outcome::Yes }));
-        s.push(send(5_500, "dispute", CAROL, |c| Action::Dispute { contract: c.contract() }));
-        s.push(send(6_000, "rule", ARBITER, |c| Action::Rule { contract: c.contract(), outcome: Outcome::Invalid }));
-        Scenario { name: "disputed_ruled_invalid", steps: s, expect: vec!["RequestFilled", "OutcomeProposed", "Disputed", "Ruled", "ContractFinalized", "PositionSettled"] }
+        s.push(send(5_200, "propose", ORACLE, |c| Action::ProposeOutcome { market: c.market(), outcome: Outcome::Yes }));
+        s.push(send(5_500, "dispute", CAROL, |c| Action::Dispute { market: c.market() }));
+        s.push(send(6_000, "rule", ARBITER, |c| Action::Rule { market: c.market(), outcome: Outcome::Invalid }));
+        Scenario { name: "disputed_ruled_invalid", steps: s, expect: vec!["RequestFilled", "OutcomeProposed", "Disputed", "Ruled", "MarketFinalized", "PositionSettled"] }
     };
     let silent = {
         let mut s = filled();
         s.push(tick(15_100));
-        Scenario { name: "oracle_silent_hard_deadline", steps: s, expect: vec!["RequestFilled", "ContractClosed", "ContractFinalized", "PositionSettled"] }
+        Scenario { name: "oracle_silent_hard_deadline", steps: s, expect: vec!["RequestFilled", "MarketClosed", "MarketFinalized", "PositionSettled"] }
     };
     vec![happy, withdraw, no_quotes, lapse, disputed, silent]
 }
@@ -323,14 +323,14 @@ fn pick<T: Copy>(items: &[T], i: u16) -> Option<T> {
     if items.is_empty() { None } else { Some(items[i as usize % items.len()]) }
 }
 
-fn action(h: &Harness, o: &Op, c: ContractId) -> Option<Action> {
+fn action(h: &Harness, o: &Op, c: MarketId) -> Option<Action> {
     let now = h.now();
     let requests: Vec<RequestId> = h.engine.requests().map(|r| r.id).collect();
     let quotes: Vec<QuoteId> = h.engine.quotes().map(|q| q.id).collect();
     let p = price(1 + (o.b % 9_999));
     Some(match o.kind {
         0 => Action::SubmitRequest {
-            legs: vec![LegSpec { contract: c, side: if o.a % 2 == 0 { Side::BuyYes } else { Side::BuyNo }, qty: 1 + (o.a as u64 % 500), limit_price: p }],
+            legs: vec![LegSpec { market: c, side: if o.a % 2 == 0 { Side::BuyYes } else { Side::BuyNo }, qty: 1 + (o.a as u64 % 500), limit_price: p }],
             response_deadline: now + 1_000 + (o.b as u64 % 20_000),
         },
         1 => Action::SubmitQuote { request: pick(&requests, o.a)?, leg: 0, price: p, size: 500, expires_at: now + 1 + o.b as u64 * 3 },
@@ -345,9 +345,9 @@ fn action(h: &Harness, o: &Op, c: ContractId) -> Option<Action> {
             Action::Accept { request: r.id, picks }
         }
         5 => Action::Reject { request: pick(&requests, o.a)? },
-        6 => Action::ProposeOutcome { contract: c, outcome: [Outcome::Yes, Outcome::No, Outcome::Invalid][o.a as usize % 3] },
-        7 => Action::Dispute { contract: c },
-        8 => Action::Rule { contract: c, outcome: [Outcome::Yes, Outcome::No, Outcome::Invalid][o.a as usize % 3] },
+        6 => Action::ProposeOutcome { market: c, outcome: [Outcome::Yes, Outcome::No, Outcome::Invalid][o.a as usize % 3] },
+        7 => Action::Dispute { market: c },
+        8 => Action::Rule { market: c, outcome: [Outcome::Yes, Outcome::No, Outcome::Invalid][o.a as usize % 3] },
         _ => Action::Withdraw { amount: dollars(1 + o.a as u64 % 50) },
     })
 }
@@ -358,8 +358,8 @@ proptest! {
     fn invariants_hold_for_random_streams(ops in prop::collection::vec(op(), 1..200)) {
         let mut h = Harness::new(Config::default());
         for a in ACTORS { h.fund(a, 10_000); }
-        let c = ContractId(1);
-        h.user(OPERATOR, Action::ListContract { id: c, description: "p".into(), oracle: ORACLE, trading_close: 2_000_000, resolution_deadline: 4_000_000, dispute_window: 5_000 });
+        let c = MarketId(1);
+        h.user(OPERATOR, Action::ListMarket { id: c, description: "p".into(), oracle: ORACLE, trading_close: 2_000_000, resolution_deadline: 4_000_000, dispute_window: 5_000 });
         let total: Amount = ACTORS.iter().map(|a| { let b = h.engine.balance(*a); b.free + b.reserved + b.escrowed }).sum();
         let mut withdrawn: Amount = 0;
         for o in &ops {

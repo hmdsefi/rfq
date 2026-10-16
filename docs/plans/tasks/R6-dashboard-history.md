@@ -1,6 +1,6 @@
 # Task R6: The dashboard loads its history on page load
 
-**Spec:** [read-api.md](../../specs/read-api.md) §8. **Goal:** a reloaded dashboard shows the same lanes, contracts, positions, ledger and trace as before the reload.
+**Spec:** [read-api.md](../../specs/read-api.md) §8. **Goal:** a reloaded dashboard shows the same lanes, markets, positions, ledger and trace as before the reload.
 
 **Files:**
 - Modify:

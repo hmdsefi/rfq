@@ -1,7 +1,9 @@
 # RFQ Matching & Settlement Engine
 [![ci](https://github.com/hmdsefi/rfq/actions/workflows/ci.yml/badge.svg)](https://github.com/hmdsefi/rfq/actions/workflows/ci.yml)
 
-A deterministic matching and settlement engine for a permissionless RFQ venue for binary-outcome contracts, in Rust. A requester asks for a price, market makers answer with firm quotes, the best quote is presented, and on acceptance both sides' collateral locks in escrow until an oracle resolves the contract. Real money sits in every intermediate state and every participant is assumed adversarial, so the design goal is that funds can never be lost, duplicated or stuck without an exit.
+A deterministic matching and settlement engine for a permissionless RFQ venue for binary-outcome markets, in Rust. A requester asks for a price, market makers answer with firm quotes, the best quote is presented, and on acceptance both sides' collateral locks in escrow until an oracle resolves the market. Real money sits in every intermediate state and every participant is assumed adversarial, so the design goal is that funds can never be lost, duplicated or stuck without an exit.
+
+A **market** is what the brief calls a binary-outcome contract.
 
 Design docs: see [Documentation](#documentation) below, or the index in [docs/README.md](docs/README.md). The brief (the exercise PDF) is not in the repository: it belongs to the company that set the exercise.
 
@@ -102,8 +104,8 @@ open tools/dashboard/dist/rfq-dashboard.html  # the status bar says "Connected",
 
 Recorded runs of five scenarios (the happy path, a dispute, a silent oracle, no quotes, a lapsed request), each with the engine's events and the engine and gateway logs side by side: [docs/demo.md](docs/demo.md).
 
-- **Scenarios.** Pick one of the 14 (eight brief scenarios, six attacks) and press **Run**, **Run ×N** or **Run all**. The page acts as every participant through the gateway and judges PASS or FAIL against the expected events. Panels: lanes, contract, ledger, trace, a timeline scrubber, the runs table with each run's latency, and **View as** (what one account receives). The failure drills below are listed at the bottom of the page. `node tools/dashboard/web/live-smoke.mjs` runs the 14 and `happy_path` ×20 from a terminal.
-- **Reload.** The page keeps nothing across a reload, so on load it asks the gateway's [HTTP API](#http-api) for the newest 5,000 `seq`s of history: lanes, contracts, positions, ledger and trace come back, and so do the earlier scenario runs, in the timeline's run list, marked as history with their PASS or FAIL. A run whose commands are no one scenario's has no verdict. So does a run the reload cut while it was sending its commands: it is marked incomplete. A run that had sent them all is judged at load if the engine had finished it by then. Otherwise it gets its verdict from the live stream once the engine has finished it, provided the stream holds every batch after the history and the page stays connected; if it may have missed some, the run stays incomplete. The page then shows the newest run, not every batch; **All batches** shows everything. The runs table does not come back: it is the page's own record, with its timing. `?http=URL` on the page's address points it at another HTTP base. If the load fails (an older gateway, the port closed), a banner says so and the page stays live ([DESIGN §11.2](tools/dashboard/DESIGN.md)).
+- **Scenarios.** Pick one of the 14 (eight brief scenarios, six attacks) and press **Run**, **Run ×N** or **Run all**. The page acts as every participant through the gateway and judges PASS or FAIL against the expected events. Panels: lanes, market, ledger, trace, a timeline scrubber, the runs table with each run's latency, and **View as** (what one account receives). The failure drills below are listed at the bottom of the page. `node tools/dashboard/web/live-smoke.mjs` runs the 14 and `happy_path` ×20 from a terminal.
+- **Reload.** The page keeps nothing across a reload, so on load it asks the gateway's [HTTP API](#http-api) for the newest 5,000 `seq`s of history: lanes, markets, positions, ledger and trace come back, and so do the earlier scenario runs, in the timeline's run list, marked as history with their PASS or FAIL. A run whose commands are no one scenario's has no verdict. So does a run the reload cut while it was sending its commands: it is marked incomplete. A run that had sent them all is judged at load if the engine had finished it by then. Otherwise it gets its verdict from the live stream once the engine has finished it, provided the stream holds every batch after the history and the page stays connected; if it may have missed some, the run stays incomplete. The page then shows the newest run, not every batch; **All batches** shows everything. The runs table does not come back: it is the page's own record, with its timing. `?http=URL` on the page's address points it at another HTTP base. If the load fails (an older gateway, the port closed), a banner says so and the page stays live ([DESIGN §11.2](tools/dashboard/DESIGN.md)).
 - **Engine crash:** `docker compose kill engine` during a **Run ×N**, then `docker compose start engine`. The status goes "engine down" (when nothing is being sent, noticing can take up to about 10 s) and the command in flight reports `outcome unknown … nonce N`. After the start: `Resume`, "engine up", and a retry with the same nonce, whose log line says what happened (`nonce N taken once (Duplicate on retry); original: applied`, or `retry applied`, for example). Until that retry settles it, the gateway holds the participant's other commands, for at most 60 s ([gateway.md §6](docs/specs/gateway.md)). Runs not yet started wait for the engine (up to 60 s) and pass; a run in flight at the kill may fail on timing, or with "engine unavailable" (commands queued behind the in-flight one on the shared operator are refused). `docker compose logs engine` shows `replayed seq=… hash=…`, the hash it had.
 - **Stall:** `docker compose pause engine; sleep 2; docker compose unpause engine`. A `Resume` batch follows and open dispute windows are extended, so a run in flight inside a window may fail on timing: correct engine behaviour.
 - **Driver crash:** `docker compose kill aeron`. The engine is reported down about 3 s later; about 10 s after the kill the engine and gateway exit 1 and the page shows "Reconnecting". A `kill` is a manual stop, so Docker does not restart the driver, and the engine and gateway cannot rejoin its dead IPC namespace: run `docker compose up -d aeron engine gateway`. The engine replays its journal to the same hash and the page reconnects without a reload. The self-healing variant is `docker compose exec aeron kill -TERM 1`: the driver exits by itself, Docker restarts it in about 1 s, and the engine and gateway follow. Docker restarts a container automatically at most three times over its lifetime (`restart: on-failure:3`), so this drill self-heals about three times before `docker compose up -d` is needed again ([architecture §5](docs/architecture/overview.md) says what restarts by itself).
@@ -115,7 +117,7 @@ The gateway also serves plain HTTP on `http://127.0.0.1:18081`, next to the WebS
 With the stack up (`docker compose up -d aeron engine gateway`), paste this whole block into a shell: one trade, written and read back over HTTP. It has no comments, so it pastes into zsh as it is. `get` and `post` are `curl` with the base URL, and `post` keeps the reply's `seq` in `SEQ` (a request's or quote's id is its `seq`). Amounts are micro-USD, prices basis points, times engine milliseconds: the engine stamps the wall clock, so `T` is now (Docker's clock follows the host's). The steps:
 
 0. `get /v1/status`: the stack is up when it says `"engine":"up"` and the replica `"following"`. The engine needs a few seconds after `docker compose up`: if it is not yet, wait and run the block again.
-1. The operator (account 1) funds Alice (10) and MM2 (21) with $1,000 each and lists contract 7. Run the block again and the listing is refused (`InvalidInput`, contract 7 exists), which is harmless.
+1. The operator (account 1) funds Alice (10) and MM2 (21) with $1,000 each and lists market 7. Run the block again and the listing is refused (`InvalidInput`, market 7 exists), which is harmless.
 2. Alice asks to buy 1,000 YES at 0.70 or better (7000 basis points); quotes are due in 3 s.
 3. MM2 quotes 0.60 for all 1,000.
 4. At the deadline the engine presents the best quote to Alice, and her request shows it as `selected`. The loop waits up to 10 s for that.
@@ -132,10 +134,10 @@ get /v1/status
 T=$(date +%s)000
 post /v1/commands '{"actor":1,"action":{"Deposit":{"to":10,"amount":1000000000}}}'
 post /v1/commands '{"actor":1,"action":{"Deposit":{"to":21,"amount":1000000000}}}'
-post /v1/commands '{"actor":1,"action":{"ListContract":{"id":7,"description":"Rain in Paris tomorrow?","oracle":4,"trading_close":'$((T+3600000))',"resolution_deadline":'$((T+7200000))',"dispute_window":60000}}}'
+post /v1/commands '{"actor":1,"action":{"ListMarket":{"id":7,"description":"Rain in Paris tomorrow?","oracle":4,"trading_close":'$((T+3600000))',"resolution_deadline":'$((T+7200000))',"dispute_window":60000}}}'
 
 T=$(date +%s)000
-post /v1/requests '{"actor":10,"legs":[{"contract":7,"side":"BuyYes","qty":1000,"limit_price":7000}],"response_deadline":'$((T+3000))'}'
+post /v1/requests '{"actor":10,"legs":[{"market":7,"side":"BuyYes","qty":1000,"limit_price":7000}],"response_deadline":'$((T+3000))'}'
 REQ=$SEQ
 
 post /v1/quotes '{"actor":21,"request":'$REQ',"leg":0,"price":6000,"size":1000,"expires_at":'$((T+60000))'}'
@@ -153,10 +155,10 @@ get "/v1/trace?view=10&limit=20"
 Each `POST` answers `200` with its command's batch as its actor sees it (`seq`, `nonce`, `latency_us`, events, balances), or `422` with `"rejected": "<reason>"` when the engine refuses the command. Step 6's first read ends like this (the ids differ from run to run): Alice holds YES with $600 locked, and MM2 holds the other side.
 
 ```json
-{"as_of_seq":11,"positions":[{"contract":7,"id":1,"payout":null,"qty":1000,"request":7,"settled":false,"side":"Yes","stake":600000000}]}
+{"as_of_seq":11,"positions":[{"id":1,"market":7,"payout":null,"qty":1000,"request":7,"settled":false,"side":"Yes","stake":600000000}]}
 ```
 
-`view=10` is what Alice's own connection would have received: her commands and what the engine told her, nothing of MM2's quote or balance (`view=admin` is the operator's view, every command). The other endpoints (balances, quotes, open requests, contracts, status), the error statuses, the limits and the trace paging are in [read-api.md](docs/specs/read-api.md). If you moved the port, change `H`. `node scripts/http-smoke.mjs` runs a whole trade over HTTP and checks every reply and read, and that the trace equals the batches the WebSocket delivered; it prints `HTTP SMOKE OK`. Its arguments are the HTTP base and the WebSocket URL, or `RFQ_HTTP_URL` and `RFQ_GATEWAY_URL`.
+`view=10` is what Alice's own connection would have received: her commands and what the engine told her, nothing of MM2's quote or balance (`view=admin` is the operator's view, every command). The other endpoints (balances, quotes, open requests, markets, status), the error statuses, the limits and the trace paging are in [read-api.md](docs/specs/read-api.md). If you moved the port, change `H`. `node scripts/http-smoke.mjs` runs a whole trade over HTTP and checks every reply and read, and that the trace equals the batches the WebSocket delivered; it prints `HTTP SMOKE OK`. Its arguments are the HTTP base and the WebSocket URL, or `RFQ_HTTP_URL` and `RFQ_GATEWAY_URL`.
 
 ## Layout
 
@@ -164,12 +166,12 @@ Code is split into hexagonal layers, and dependencies point inward only: crate b
 
 | Crate | Layer | What it holds |
 |---|---|---|
-| [`rfq-domain`](crates/rfq-domain) | Domain, pure | Money types, `Ledger`, requests, quotes, contracts, positions, `Command` and `Event`, and the `Engine` state machine with its invariants. All money logic lives here. No I/O, no clock, no randomness. `#![forbid(unsafe_code)]`. |
+| [`rfq-domain`](crates/rfq-domain) | Domain, pure | Money types, `Ledger`, requests, quotes, markets, positions, `Command` and `Event`, and the `Engine` state machine with its invariants. All money logic lives here. No I/O, no clock, no randomness. `#![forbid(unsafe_code)]`. |
 | [`rfq-app`](crates/rfq-app) | Application | The ports `Journal` and `Transport`, the protocol types `ClientCommand` and `EventBatch`, `batch_of` (which command makes which batch, shared by the node and the replica), the `Sequencer`, and `Node`, the write-ahead loop: sequence, append, wait durable, apply, publish. |
 | [`rfq-infra`](crates/rfq-infra) | Infrastructure | Adapters for the ports: the versioned `codec`, `FileJournal`, `MemJournal`, `MemTransport`; with feature `aeron`, `AeronTransport`, `ArchiveJournal` (Aeron Archive) and `JournalFollower` (replays the journal and keeps following it, for the read side). |
 | [`rfq-node`](crates/rfq-node) | Composition root (binary) | Reads its configuration from the environment, wires an Aeron transport and a journal into `Node`, and runs the loop. |
 | [`rfq-demo`](crates/rfq-demo) | Client (binary) | Runs the scripted scenarios against a live node over Aeron and checks the events it gets back. |
-| [`rfq-read`](crates/rfq-read) | Read side, pure | The replica: a read-only `Engine` fed by the journal, the trace of every batch it regenerates, and the read views (positions, requests, quotes, contracts). No I/O, no clock. `#![forbid(unsafe_code)]`. |
+| [`rfq-read`](crates/rfq-read) | Read side, pure | The replica: a read-only `Engine` fed by the journal, the trace of every batch it regenerates, and the read views (positions, requests, quotes, markets). No I/O, no clock. `#![forbid(unsafe_code)]`. |
 | [`rfq-gateway`](crates/rfq-gateway) | Client edge (library and binary) | The WebSocket gateway and the HTTP API. The library is pure (protocol, per-viewer filter, nonce book, hub state machine, the HTTP read and write rules); the binary adds the Aeron adapter, the WebSocket and HTTP servers, the hub loop and the replica thread that follows the journal. |
 | [`rfq-testkit`](crates/rfq-testkit) | Test support | The test `Harness`, well-known accounts, and the scripted scenarios (shared by the tests and the demo). |
 
@@ -220,7 +222,7 @@ Reviews and plans: the adversarial review of the spec before coding ([reviews/sp
 
 ## Measured numbers
 
-`cargo bench -p rfq-domain` replays a 100,005-command log (20,000 full RFQ rounds: request, two quotes, tick, accept) through `Engine::apply` at about **3.7 million commands/s** (about 270 ns each), and `state_hash` over the resulting state takes about **11.9 ms**. This is the engine alone: Apple M4 Max, macOS 27.0.1, rustc 1.99.0, release profile with overflow checks on, one thread, 3 funded accounts and 1 contract, with no codec, no fsync and no Aeron, measured while other builds kept the machine busy. End-to-end throughput over Aeron was not measured. Details and caveats: [architecture §8](docs/architecture/overview.md).
+`cargo bench -p rfq-domain` replays a 100,005-command log (20,000 full RFQ rounds: request, two quotes, tick, accept) through `Engine::apply` at about **3.7 million commands/s** (about 270 ns each), and `state_hash` over the resulting state takes about **11.9 ms**. This is the engine alone: Apple M4 Max, macOS 27.0.1, rustc 1.99.0, release profile with overflow checks on, one thread, 3 funded accounts and 1 market, with no codec, no fsync and no Aeron, measured while other builds kept the machine busy. End-to-end throughput over Aeron was not measured. Details and caveats: [architecture §8](docs/architecture/overview.md).
 
 ## Not built
 

@@ -6,7 +6,7 @@
 - Create: `Cargo.toml`, `crates/rfq-core/Cargo.toml`, `crates/rfq-core/src/lib.rs`, `crates/rfq-core/src/types.rs`
 
 **Interfaces:**
-- Produces: `Amount`, `Qty`, `Timestamp`, `Duration` (all `u64`), `ONE_DOLLAR`, ids `AccountId/ContractId/RequestId/QuoteId/PositionId/HoldId(pub u64)`, `Price::new(u16) -> Option<Price>`, `Price::bps()`, `Price::complement()`, `Side::{BuyYes, BuyNo}`, `Outcome::{Yes, No, Invalid}`, `buyer_lock(Qty, Price) -> Option<Amount>`, `seller_lock(Qty, Price) -> Option<Amount>`.
+- Produces: `Amount`, `Qty`, `Timestamp`, `Duration` (all `u64`), `ONE_DOLLAR`, ids `AccountId/MarketId/RequestId/QuoteId/PositionId/HoldId(pub u64)`, `Price::new(u16) -> Option<Price>`, `Price::bps()`, `Price::complement()`, `Side::{BuyYes, BuyNo}`, `Outcome::{Yes, No, Invalid}`, `buyer_lock(Qty, Price) -> Option<Amount>`, `seller_lock(Qty, Price) -> Option<Amount>`.
 
 - [ ] **Step 1: Create the workspace**
 
@@ -140,7 +140,7 @@ macro_rules! id_type {
         pub struct $name(pub u64);
     )*};
 }
-id_type!(AccountId, ContractId, RequestId, QuoteId, PositionId, HoldId);
+id_type!(AccountId, MarketId, RequestId, QuoteId, PositionId, HoldId);
 
 /// Price of the side the requester buys, in basis points of $1, strictly inside (0, 10_000).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

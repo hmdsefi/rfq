@@ -23,7 +23,7 @@ Expected: no output. Rename the tests or update the doc until nothing is missing
 ````markdown
 # RFQ Matching & Settlement Engine
 
-Deterministic RFQ engine for binary-outcome contracts. Design docs: [docs/README.md](docs/README.md).
+Deterministic RFQ engine for binary-outcome markets. Design docs: [docs/README.md](docs/README.md).
 
 ## Run the tests (no Docker needed)
 ```bash

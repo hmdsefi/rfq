@@ -6,7 +6,9 @@
 
 ## 1. Problem
 
-Build the core of a **permissionless RFQ venue for binary-outcome contracts** (prediction markets). A requester asks for a price, market makers (MMs) answer with firm quotes, the best quote is presented, and on acceptance both sides' funds lock in escrow until the contract resolves.
+Build the core of a **permissionless RFQ venue for binary-outcome prediction markets**. A requester asks for a price, market makers (MMs) answer with firm quotes, the best quote is presented, and on acceptance both sides' funds lock in escrow until the market resolves.
+
+A **market** is what the brief calls a binary-outcome contract.
 
 Unlike an exchange RFQ, the trade doesn't end the story: it *creates* a fully-collateralised position whose money sits in escrow until an oracle decides the outcome. Real money sits in every intermediate state, and every participant is assumed adversarial.
 
@@ -30,13 +32,13 @@ UI, auth/KYC, real chain or money movement, pricing/risk logic, fees, Aeron Clus
 | P3 | Fills | **One quote fills a whole leg.** No splitting. | One counterparty per leg keeps escrow simple. |
 | P4 | Requester funds | **Reserved at submission** at `qty × limit_price`. | Requests without funds can't tie up MM capital. |
 | P5 | MM cancel | MMs may cancel/replace **until selection**; a selected quote is **firm** through `accept_by`. Ordering decides races. | Standard firm-quote RFQ: the MM knows `ACCEPT_WINDOW` and prices it in. A cancel inside the window would let one MM void every RFQ for free. |
-| P6 | Multi-leg | **Built (PO decision of 2026-10-16; until then design only).** A request has 1 to `MAX_LEGS` (8) legs, filled all-or-nothing in one `Accept`. No legs, or more than `MAX_LEGS`, is `InvalidInput`. Before the decision the engine rejected `legs.len() != 1`. Read as atomic execution of separately quoted legs, each settling on its own contract, not as a parlay; specs/engine.md §8 says why, and how a parlay would fit as a derived contract. | The data model was already `Vec<Leg>` and the atomicity design held (specs/engine.md §8), so building it cost one removed guard, a leg cap and an `Accept` re-check. The cap bounds the work of the one command that escrows every leg. |
+| P6 | Multi-leg | **Built (PO decision of 2026-10-16; until then design only).** A request has 1 to `MAX_LEGS` (8) legs, filled all-or-nothing in one `Accept`. No legs, or more than `MAX_LEGS`, is `InvalidInput`. Before the decision the engine rejected `legs.len() != 1`. Read as atomic execution of separately quoted legs, each settling on its own market, not as a parlay; specs/engine.md §8 says why, and how a parlay would fit as a derived market. | The data model was already `Vec<Leg>` and the atomicity design held (specs/engine.md §8), so building it cost one removed guard, a leg cap and an `Accept` re-check. The cap bounds the work of the one command that escrows every leg. |
 | P7 | Visibility | **Sealed** until the response deadline. | Prevents last-second undercutting and quote leakage. |
 | P8 | Expiry in window | A selected quote can't be cancelled and is eligible only if firm through `accept_by`, so the presented price stays fillable for the whole window. Defensively, if it were ever gone the **request fails**, everything released. No silent fallback. | Requester only ever accepts a price they saw. |
 | P9 | Resolution | Outcomes `Yes`/`No`/`Invalid`. **Hard deadline ⇒ final:** `Invalid` (refund) if the oracle never proposed; an unruled dispute keeps the proposal. A timeout never turns a proposal into `Invalid`. | Money can never be stuck forever, and running out the clock never pays the losing side. |
-| P10 | Contracts | Listed by an **operator**; trading is permissionless. | The resolver must know the exact question; stops requesters crafting ambiguous wording. |
+| P10 | Markets | Listed by an **operator**; trading is permissionless. | The resolver must know the exact question; stops requesters crafting ambiguous wording. |
 | P11 | Best quote | Lowest price for the requester; tie → earliest sequence number. | Deterministic and fair. |
-| P12 | Disputes | Anyone may dispute once per contract by posting a **bond**; a mocked **arbiter** rules. | Cheap honest path, costly spam. |
+| P12 | Disputes | Anyone may dispute once per market by posting a **bond**; a mocked **arbiter** rules. | Cheap honest path, costly spam. |
 
 ## 5. Technical decisions
 
@@ -56,7 +58,7 @@ UI, auth/KYC, real chain or money movement, pricing/risk logic, fees, Aeron Clus
 - **Aeron Cluster** (Raft) replaces the single sequencer for HA: the engine becomes the clustered service unchanged.
 - **Snapshots** in Archive bound replay time.
 - **Read replicas:** built (T8), inside the gateway process: a replica and a journal follower serve the HTTP reads and the trace. Designed, not built: replicas as a service of their own, started from a snapshot rather than the whole log, and authentication on the HTTP API.
-- **Sharding** by contract group if one engine ever saturates (see architecture §8).
+- **Sharding** by market group if one engine ever saturates (see architecture §8).
 - **On-chain escrow contract** (non-custodial settlement), plus **effect workers** (e.g. Temporal) for chain transactions and oracle polling. Both attach at the existing `Deposit`/`Withdrawn` seam (see architecture §7). Temporal is deliberately kept out of the core.
 
 ## 7. Risks

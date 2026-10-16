@@ -86,8 +86,8 @@ fn build_log() -> Vec<SequencedCommand> {
     for a in [ALICE, MM1, MM2] {
         b.user(0, OPERATOR, Action::Deposit { to: a, amount: dollars(1_000_000_000) });
     }
-    let c = ContractId(1);
-    b.user(0, OPERATOR, Action::ListContract {
+    let c = MarketId(1);
+    b.user(0, OPERATOR, Action::ListMarket {
         id: c,
         description: "bench".into(),
         oracle: ORACLE,
@@ -100,7 +100,7 @@ fn build_log() -> Vec<SequencedCommand> {
         t += 2_000;
         let r = RequestId(b.seq + 1);
         b.user(t, ALICE, Action::SubmitRequest {
-            legs: vec![LegSpec { contract: c, side: Side::BuyYes, qty: 10, limit_price: price(7_000) }],
+            legs: vec![LegSpec { market: c, side: Side::BuyYes, qty: 10, limit_price: price(7_000) }],
             response_deadline: t + 1_000,
         });
         b.user(t, MM1, Action::SubmitQuote { request: r, leg: 0, price: price(6_100), size: 10, expires_at: t + 100_000 });

@@ -41,7 +41,7 @@ The replica runs in its own thread in the gateway process. HTTP reads take a sho
 
 ## 3. HTTP API
 
-JSON in and out. Units as on the WebSocket: prices in basis points, money in micro-USD, times in engine milliseconds. A request's id, a quote's id and a contract's id are as in the engine (a request or quote id is the `seq` of the command that created it).
+JSON in and out. Units as on the WebSocket: prices in basis points, money in micro-USD, times in engine milliseconds. A request's id, a quote's id and a market's id are as in the engine (a request or quote id is the `seq` of the command that created it).
 
 ### Reads (served by the replica)
 
@@ -51,11 +51,11 @@ Every read response has `as_of_seq`: the last `seq` the replica has applied. Any
 |---|---|
 | `GET /v1/status` | `{engine: "up"\|"down", engine_last_seq, replica: {state: "following"\|"catching_up"\|"unavailable", last_seq, state_hash}}`. `engine_last_seq` is the newest `seq` the gateway saw on egress, `null` before any. `catching_up` lasts until the follower first has everything recorded: a gateway that starts while the engine is down, and long enough for its last recording to have stopped (about 10 s), stays `catching_up` until the engine writes (§5). |
 | `GET /v1/accounts/{id}` | `{account, balance: {free, reserved, escrowed}, last_nonce}` |
-| `GET /v1/accounts/{id}/positions` | `{positions: [{id, contract, request, qty, side: "Yes"\|"No", stake, settled, payout}]}`: the account's side, its own locked amount, and once settled what it was paid. No counterparty. |
-| `GET /v1/accounts/{id}/requests` | The account's own requests: `{id, state, response_deadline, legs: [{contract, side, qty, limit_price, selected}]}`. `selected` is `{quote, price}` once the request is presented (what `RequestPresented` tells the requester, and what `Accept` needs), else `null`; the live quote set is never shown (quotes are sealed until the deadline). |
+| `GET /v1/accounts/{id}/positions` | `{positions: [{id, market, request, qty, side: "Yes"\|"No", stake, settled, payout}]}`: the account's side, its own locked amount, and once settled what it was paid. No counterparty. |
+| `GET /v1/accounts/{id}/requests` | The account's own requests: `{id, state, response_deadline, legs: [{market, side, qty, limit_price, selected}]}`. `selected` is `{quote, price}` once the request is presented (what `RequestPresented` tells the requester, and what `Accept` needs), else `null`; the live quote set is never shown (quotes are sealed until the deadline). |
 | `GET /v1/accounts/{id}/quotes` | The account's own quotes: `{id, request, leg, price, size, expires_at, state}` |
-| `GET /v1/requests?state=open` | Open requests with public fields only: `{id, response_deadline, legs: [{contract, side, qty}]}` (what `RequestOpened` already makes public: no requester, no limit). Optional `&contract=ID`. |
-| `GET /v1/contracts`, `GET /v1/contracts/{id}` | `{id, description, oracle, trading_close, resolution_deadline, dispute_window, state}` |
+| `GET /v1/requests?state=open` | Open requests with public fields only: `{id, response_deadline, legs: [{market, side, qty}]}` (what `RequestOpened` already makes public: no requester, no limit). Optional `&market=ID`. |
+| `GET /v1/markets`, `GET /v1/markets/{id}` | `{id, description, oracle, trading_close, resolution_deadline, dispute_window, state}` |
 | `GET /v1/trace?view=admin\|{account}&after_seq=N&limit=M` | `{entries, next_after_seq}`; §6. |
 
 Holds and timers are never exposed: they are engine internals. An account's nonce appears only on its own endpoint.
@@ -64,7 +64,7 @@ Holds and timers are never exposed: they are engine internals. An account's nonc
 
 | Endpoint | Body | Action |
 |---|---|---|
-| `POST /v1/requests` | `{actor, nonce?, legs: [{contract, side, qty, limit_price}], response_deadline}` | `SubmitRequest` |
+| `POST /v1/requests` | `{actor, nonce?, legs: [{market, side, qty, limit_price}], response_deadline}` | `SubmitRequest` |
 | `POST /v1/quotes` | `{actor, nonce?, request, leg, price, size, expires_at}` | `SubmitQuote` |
 | `POST /v1/commands` | `{actor, nonce?, action}` | any client action, in the WebSocket's JSON form |
 
@@ -129,7 +129,7 @@ On page load the dashboard fetches the history it missed, alongside its live str
 2. The recorder seeds those batches as history: in `seq` order, before the first live batch of the current epoch, skipping any `seq` the live stream already delivered. The live WebSocket starts at page load as today, so nothing is lost while the history loads.
 3. The model uses an entry's `command` where the page has no command of its own for that batch.
 
-Lanes, contracts, positions, ledger and trace come back after a reload, and so does the timeline's run list: the page rebuilds the scenario runs from the entries' commands, and shows the newest ([DESIGN §11.2](../../tools/dashboard/DESIGN.md)). The runs table does not: it is the page's own record of the runs it drove. If the history fetch fails (an older gateway, port closed, a malformed response), the page works as today, live only, and says so in a banner; if the replica is not `following`, it shows the history with a banner that it may be incomplete. The HTTP base URL is `http://127.0.0.1:18081`, or `?http=…` on the page URL.
+Lanes, markets, positions, ledger and trace come back after a reload, and so does the timeline's run list: the page rebuilds the scenario runs from the entries' commands, and shows the newest ([DESIGN §11.2](../../tools/dashboard/DESIGN.md)). The runs table does not: it is the page's own record of the runs it drove. If the history fetch fails (an older gateway, port closed, a malformed response), the page works as today, live only, and says so in a banner; if the replica is not `following`, it shows the history with a banner that it may be incomplete. The HTTP base URL is `http://127.0.0.1:18081`, or `?http=…` on the page URL.
 
 ## 9. Security
 

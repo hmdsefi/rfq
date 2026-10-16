@@ -21,7 +21,7 @@ Expected: `git log --oneline` shows one commit, and `git status` doesn't list `.
 **Confirm with the user before running this step**, because it publishes to GitHub. The repo is **private**; it's shared with the reviewers only in Task 14.
 ```bash
 gh repo create hmdsefi/rfq --private --source . --remote origin --push \
-  --description "RFQ matching & settlement engine for binary-outcome contracts (take-home)"
+  --description "RFQ matching & settlement engine for binary-outcome markets (take-home)"
 gh repo view hmdsefi/rfq --json visibility --jq .visibility
 ```
 Expected: `PRIVATE`.

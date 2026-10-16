@@ -2,7 +2,7 @@
 
 **Spec:** [engine.md §8](../../specs/engine.md), [tools/dashboard/DESIGN.md §11](../../../tools/dashboard/DESIGN.md). **Depends on:**
 - M1's two scenarios in `rfq_testkit::scenarios::all()`: `multi_leg_happy` and `multi_leg_leg2_fails`;
-- `Ctx::contract_n(k) = t0 * 10 + k`;
+- `Ctx::market_n(k) = t0 * 10 + k`;
 - rfq-demo scope owning those ids.
 
 **Goal:** both multi-leg stories run on the live dashboard through the real stack, and the page renders requests with several legs, several picks and several positions.
@@ -17,14 +17,14 @@
    - the scenario parity test;
    - the page tests;
    - the README and DESIGN texts that say 12.
-2. **JS scripts.** Add `multi_leg_happy` and `multi_leg_leg2_fails` to `web/scenarios.js`, step for step identical to the Rust ones: actors, offsets, actions, legs, `expect`. Add `ctx.contractN(k)`. `scenarios.test.mjs` parity must cover them. Change something on purpose to check the test fails, then restore it.
-3. **Scope** (`web/recorder.js` `Scope`): own `t0 * 10 + k` contracts (k = 1..=9), with a test.
+2. **JS scripts.** Add `multi_leg_happy` and `multi_leg_leg2_fails` to `web/scenarios.js`, step for step identical to the Rust ones: actors, offsets, actions, legs, `expect`. Add `ctx.marketN(k)`. `scenarios.test.mjs` parity must cover them. Change something on purpose to check the test fails, then restore it.
+3. **Scope** (`web/recorder.js` `Scope`): own `t0 * 10 + k` markets (k = 1..=9), with a test.
 4. **Rendering:**
    - A request card lists every leg: market name, side, qty, and the limit for its own requester only.
    - A `Presented` request lists every pick, per leg.
    - A `Filled` request lists every position.
    - A quote shows its leg ("leg 2 of 3").
-   - The contract area shows every market the run listed.
+   - The market area shows every market the run listed.
    - An `Expired` multi-leg request makes clear in its card and trace that no leg was filled and every hold was released. This comes from the events and balances alone; the page computes nothing.
 5. **The D1 multi-leg tab:**
    - Replace "Designed, not built (P6)" with "Built", with **Run** buttons for both scenarios, gated on the catalogue as today.

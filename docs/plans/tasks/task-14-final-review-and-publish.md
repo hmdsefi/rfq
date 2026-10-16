@@ -29,7 +29,7 @@ gh run watch --exit-status
 
 - [ ] **Step 4: Share the repo with the reviewers**
 
-**Confirm with the user first**, and get the reviewers' GitHub usernames. Keep the repo private: it contains the exercise brief PDF, which belongs to Outcome Labs.
+**Confirm with the user first**, and get the reviewers' GitHub usernames. The repo is kept private, and the brief PDF is kept out of it.
 ```bash
 for u in <reviewer-1> <reviewer-2>; do
   gh api -X PUT "repos/hmdsefi/rfq/collaborators/$u" -f permission=pull

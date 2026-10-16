@@ -22,17 +22,17 @@ use rfq_core::*;
 const DEADLINE: Timestamp = 10_000;
 const ACCEPT_BY: Timestamp = DEADLINE + 30_000;
 
-struct World { h: Harness, c: ContractId, r: RequestId }
+struct World { h: Harness, c: MarketId, r: RequestId }
 
 fn world(side: Side) -> World {
     let mut h = Harness::new(Config::default());
     for a in [ALICE, MM1, MM2] {
         h.fund(a, 1_000);
     }
-    let c = ContractId(1);
-    h.user(OPERATOR, Action::ListContract { id: c, description: "q".into(), oracle: ORACLE, trading_close: 1_000_000, resolution_deadline: 2_000_000, dispute_window: 10_000 });
+    let c = MarketId(1);
+    h.user(OPERATOR, Action::ListMarket { id: c, description: "q".into(), oracle: ORACLE, trading_close: 1_000_000, resolution_deadline: 2_000_000, dispute_window: 10_000 });
     let r = RequestId(h.next_seq());
-    let out = h.user(ALICE, Action::SubmitRequest { legs: vec![LegSpec { contract: c, side, qty: 1_000, limit_price: price(7_000) }], response_deadline: DEADLINE });
+    let out = h.user(ALICE, Action::SubmitRequest { legs: vec![LegSpec { market: c, side, qty: 1_000, limit_price: price(7_000) }], response_deadline: DEADLINE });
     assert_eq!(rejection(&out), None);
     World { h, c, r }
 }
@@ -99,7 +99,7 @@ fn accept_escrows_exact_amounts_buy_yes() {
     assert_eq!(w.h.engine.balance(MM2), Balance { free: dollars(600), reserved: 0, escrowed: dollars(400) });
     let p = w.h.engine.position(PositionId(1)).unwrap();
     assert_eq!((p.yes_holder, p.yes_lock, p.no_holder, p.no_lock), (ALICE, dollars(600), MM2, dollars(400)));
-    assert_eq!(w.h.engine.contract(w.c).unwrap().positions, vec![PositionId(1)]);
+    assert_eq!(w.h.engine.market(w.c).unwrap().positions, vec![PositionId(1)]);
 }
 
 #[test]
@@ -354,7 +354,7 @@ Delete Task 4's placeholder `on_request_deadline`, then append to the `impl Engi
             let pid = PositionId(self.next_position);
             self.positions.insert(pid, Position {
                 id: pid,
-                contract: l.contract,
+                market: l.market,
                 request: id,
                 qty: l.qty,
                 yes_holder,
@@ -363,7 +363,7 @@ Delete Task 4's placeholder `on_request_deadline`, then append to the `impl Engi
                 no_lock,
                 settled: false,
             });
-            self.contracts.get_mut(&l.contract).expect(VALIDATED).positions.push(pid);
+            self.markets.get_mut(&l.market).expect(VALIDATED).positions.push(pid);
             out.push(Emitted::to(q.mm, Event::QuoteFilled { quote: qid, position: pid }));
             positions.push(pid);
         }

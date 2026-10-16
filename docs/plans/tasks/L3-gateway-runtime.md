@@ -71,7 +71,7 @@
    - Connect as admin and send `hello`.
    - With fresh per-run account ids (`t0 * 100 + id`, as `rfq-demo`'s Scope does), send, as their actors:
      - the operator's deposits for the scenario accounts;
-     - `ListContract` (`id = t0`, close `+5 s`, hard deadline `+15 s`, window `2 s`);
+     - `ListMarket` (`id = t0`, close `+5 s`, hard deadline `+15 s`, window `2 s`);
      - Alice's request (1000 BuyYes, limit 7000, deadline `+1.5 s`);
      - MM1's quote at 6200 and MM2's at 6000;
      - after the deadline, Alice's `Accept` with the picks taken from `RequestPresented`.

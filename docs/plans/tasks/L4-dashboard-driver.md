@@ -16,15 +16,15 @@
    - `rfq_testkit::scenarios::all()` (`crates/rfq-testkit/src/scenarios.rs`);
    - the 6 attack presets (`tools/dashboard/src/presets.rs` and DESIGN §5).
 
-   A step is `{ at, label, actor, action: (ctx) => Action, nonce?: "reuse" | "skip" }` or `{ at, wait: true }` (a former `tick`). `ctx` mirrors the testkit's `Ctx`: `contract()`, `at(ms)`, `request(label)`, `quote(label)`, `picks(requestId)`, and `account(id)` (run scope). Write a comment above each script naming its Rust source.
+   A step is `{ at, label, actor, action: (ctx) => Action, nonce?: "reuse" | "skip" }` or `{ at, wait: true }` (a former `tick`). `ctx` mirrors the testkit's `Ctx`: `market()`, `at(ms)`, `request(label)`, `quote(label)`, `picks(requestId)`, and `account(id)` (run scope). Write a comment above each script naming its Rust source.
 2. **Run scope** (as `rfq-demo`'s `scope.rs`):
    - `t0` = the engine's now (from `welcome.now` plus the measured offset) + 500 ms;
    - accounts: `t0 * 100 + id`, except OPERATOR 1, ARBITER 2 and TREASURY 3;
-   - contract id: `t0`.
+   - market id: `t0`.
 
    A run owns:
    - the batches whose origin is one of its commands (record their seqs);
-   - events naming its contract, its accounts, or a request or quote id equal to one of its seqs.
+   - events naming its market, its accounts, or a request or quote id equal to one of its seqs.
 
    Concurrent runs use distinct `t0` (offset by 1 ms each).
 3. **Driver:**

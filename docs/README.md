@@ -6,7 +6,7 @@ The brief (the exercise PDF) is not in the repository. How to build, test and ru
 
 | | Brief deliverable | Where |
 |---|---|---|
-| **D1** | State machine | [specs/engine.md](specs/engine.md) §6 (request, quote and contract state machines, who triggers each transition) and §8 (multi-leg: "leg 2 of 3 fails") |
+| **D1** | State machine | [specs/engine.md](specs/engine.md) §6 (request, quote and market state machines, who triggers each transition) and §8 (multi-leg: "leg 2 of 3 fails") |
 | **D2** | Working implementation | The code in [`crates/`](../crates), run by `cargo test --workspace` (in-memory scenarios, property tests, node restart tests) and by [`scripts/demo.sh`](../scripts/demo.sh) (the happy path, five failure paths and two multi-leg paths over Aeron, then a crash and replay check). See the [root README](../README.md). |
 | **D3** | Failure-mode notes | [specs/failure-modes.md](specs/failure-modes.md): every race (R1–R9) and partial failure (F1–F16), each with its test where one exists. It links to a companion, the adversarial analysis (attackers and what stops them): [specs/adversarial.md](specs/adversarial.md) |
 | **D4** | Resolution design | [specs/resolution.md](specs/resolution.md) |

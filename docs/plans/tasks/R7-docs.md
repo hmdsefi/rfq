@@ -16,13 +16,13 @@
 **The README curl walk-through** (every command run against the Docker stack before committing; paste real ids from that run into the text only as examples):
 
 ```bash
-# fund Alice (10) and MM2 (21), list a contract, as the operator (1).
+# fund Alice (10) and MM2 (21), list a market, as the operator (1).
 # Each POST answers with its batch; its "time" is the engine's clock (ms), the base for deadlines.
 curl -s -X POST http://127.0.0.1:18081/v1/commands -H 'content-type: application/json' \
   -d '{"actor":1,"action":{"Deposit":{"to":10,"amount":1000000000}}}'
-# ... ListContract, then:
+# ... ListMarket, then:
 curl -s -X POST http://127.0.0.1:18081/v1/requests -H 'content-type: application/json' \
-  -d '{"actor":10,"legs":[{"contract":7,"side":"BuyYes","qty":1000,"limit_price":7000}],"response_deadline":…}'
+  -d '{"actor":10,"legs":[{"market":7,"side":"BuyYes","qty":1000,"limit_price":7000}],"response_deadline":…}'
 curl -s -X POST http://127.0.0.1:18081/v1/quotes -H 'content-type: application/json' \
   -d '{"actor":21,"request":118,"leg":0,"price":6000,"size":1000,"expires_at":…}'
 curl -s http://127.0.0.1:18081/v1/accounts/10/requests          # selected: {quote, price}
@@ -32,7 +32,7 @@ curl -s http://127.0.0.1:18081/v1/accounts/10/positions
 curl -s "http://127.0.0.1:18081/v1/trace?view=10&limit=20"
 ```
 
-Fill in the elided parts (the `ListContract` body, deadlines from engine time: the response to any `POST` carries the batch `time`, which is engine ms) so the sequence works when pasted. Keep the README section short: the walk-through, one sentence per step, a link to the spec for the full table.
+Fill in the elided parts (the `ListMarket` body, deadlines from engine time: the response to any `POST` carries the batch `time`, which is engine ms) so the sequence works when pasted. Keep the README section short: the walk-through, one sentence per step, a link to the spec for the full table.
 
 ## Steps
 

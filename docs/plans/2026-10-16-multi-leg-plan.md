@@ -21,9 +21,9 @@
   - selection is all-or-nothing, so a missing eligible quote on any leg expires the whole request and releases every hold in that command;
   - accept is one command that validates every leg first;
   - a presented request stays whole;
-  - every leg's contract must outlive the request.
+  - every leg's market must outlive the request.
 - **Leg cap:** `MAX_LEGS = 8`. More legs is `InvalidInput`; zero legs is `InvalidInput`.
-- **Scenario contract ids:** the run's contract stays `ContractId(t0)`. A multi-leg scenario lists extra markets as `ContractId(t0 * 10 + k)`, k = 1..=9 (`Ctx::contract_n(k)`). These stay below 2^53 for the JS page, and never collide across runs, because distinct `t0` give distinct `t0 * 10 + k`. Run scope (rfq-demo `scope.rs`, the page's `Scope`) owns those ids too.
+- **Scenario market ids:** the run's market stays `MarketId(t0)`. A multi-leg scenario lists extra markets as `MarketId(t0 * 10 + k)`, k = 1..=9 (`Ctx::market_n(k)`). These stay below 2^53 for the JS page, and never collide across runs, because distinct `t0` give distinct `t0 * 10 + k`. Run scope (rfq-demo `scope.rs`, the page's `Scope`) owns those ids too.
 - **Gates:** the same as the live-gateway plan (workspace test, clippy, fmt, deny; Docker builds; `scripts/demo.sh`; gateway smoke; dashboard `build.sh`; live smoke).
 - **Commits:**
   - scopes `domain`, `testkit`, `demo`, `dashboard` and `docs`;

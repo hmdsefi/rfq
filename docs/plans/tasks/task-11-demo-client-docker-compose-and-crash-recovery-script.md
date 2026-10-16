@@ -52,8 +52,8 @@ fn run_account(run: u64, a: AccountId) -> AccountId {
 fn remap(action: Action, f: impl Fn(AccountId) -> AccountId) -> Action {
     match action {
         Action::Deposit { to, amount } => Action::Deposit { to: f(to), amount },
-        Action::ListContract { id, description, oracle, trading_close, resolution_deadline, dispute_window } => {
-            Action::ListContract { id, description, oracle: f(oracle), trading_close, resolution_deadline, dispute_window }
+        Action::ListMarket { id, description, oracle, trading_close, resolution_deadline, dispute_window } => {
+            Action::ListMarket { id, description, oracle: f(oracle), trading_close, resolution_deadline, dispute_window }
         }
         other => other,
     }

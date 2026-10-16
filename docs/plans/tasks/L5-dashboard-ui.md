@@ -6,7 +6,7 @@
 - Modify: `tools/dashboard/web/index.html`.
 - Create: `tools/dashboard/web/model.js`: `modelAt(recording, position)`, which builds the shape the existing renderers read:
   - accounts with balances: the latest `balances` up to `position`;
-  - requests, quotes, contracts and positions, from events plus the page's own sent commands (a requester's limit, a quote's size);
+  - requests, quotes, markets and positions, from events plus the page's own sent commands (a requester's limit, a quote's size);
   - trace entries, one per batch.
 
   Its unit test is `web/model.test.mjs`.
@@ -27,9 +27,9 @@
    - While running: a progress line ("happy_path: step 7 of 13") and a Stop button. Stop abandons the driver, while the engine finishes whatever is already sent.
    - Results table: scenario, PASS/FAIL (with detail), commands, p50, p95, max, wall time.
 3. **Timeline.** A scrubber (range input plus ←/→ buttons and keyboard arrows) over the recorded batches of the selected run, or "all".
-   - Every panel renders `modelAt(recording, position)`: lanes, contract card, trace, ledger, D1 state machines with the selected object lit.
+   - Every panel renders `modelAt(recording, position)`: lanes, market card, trace, ledger, D1 state machines with the selected object lit.
    - "Live" mode follows the newest batch; moving the scrubber pins it.
-4. **Lanes and contract.**
+4. **Lanes and market.**
    - Same look as v1, but read-only in live mode: scenarios drive the commands. Manual commands are out of scope for v2.
    - Show the run-scoped account ids with their display names: "Alice (run …1234)".
 5. **Trace.**

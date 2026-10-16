@@ -120,8 +120,8 @@ fn restart_appends_resume() {
 fn ticks_only_when_a_timer_is_due() {
     let mut node = Node::start(MemJournal::default(), MemTransport::default(), genesis(Config::default())).unwrap();
     assert_eq!(node.poll(1_000).unwrap(), 0, "no timers armed: nothing logged");
-    // A contract arms close/hard-deadline timers.
-    let list = ClientCommand { actor: OPERATOR, nonce: 1, action: Action::ListContract { id: ContractId(1), description: "x".into(), oracle: ORACLE, trading_close: 10_000, resolution_deadline: 20_000, dispute_window: 1 } };
+    // A market arms close/hard-deadline timers.
+    let list = ClientCommand { actor: OPERATOR, nonce: 1, action: Action::ListMarket { id: MarketId(1), description: "x".into(), oracle: ORACLE, trading_close: 10_000, resolution_deadline: 20_000, dispute_window: 1 } };
     let (j, mut t) = node.into_parts();
     t.ingress.push_back(encode(&list));
     let mut node = Node::start(j, t, genesis(Config::default())).unwrap();

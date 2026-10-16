@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a deterministic, replayable RFQ engine for binary-outcome contracts in Rust. Commands are sequenced and recorded through Aeron + Aeron Archive in Docker, with a demo that runs one happy path, five failure paths, and a crash-recovery replay.
+**Goal:** Build a deterministic, replayable RFQ engine for binary-outcome markets in Rust. Commands are sequenced and recorded through Aeron + Aeron Archive in Docker, with a demo that runs one happy path, five failure paths, and a crash-recovery replay.
 
 **Architecture:** A pure `rfq-core` crate holds the engine, `apply(seq, time, cmd) -> events`. It has no I/O and no clock, and every money move goes through one ledger guarded by invariants I1–I5. `rfq-node` wraps the engine. It runs a sequencer, a `Journal` (Aeron Archive, file, or memory) and a `Transport` (Aeron or memory), and enforces write-ahead: no event is published before its command is durable. `rfq-demo` drives scripted scenarios over Aeron.
 
@@ -83,11 +83,11 @@ crates/rfq-core/
   src/ledger.rs                    Balance, Hold, Ledger (only code that moves money)
   src/command.rs                   Config, Genesis, LegSpec, Pick, Action, Command, SequencedCommand
   src/event.rs                     Audience, RejectReason, Event, Emitted
-  src/model.rs                     Contract/Request/Leg/Quote/Position + states, TimerKey
+  src/model.rs                     Market/Request/Leg/Quote/Position + states, TimerKey
   src/engine/mod.rs                Engine struct, apply, timers, invariants, state_hash
   src/engine/account.rs            Deposit/Withdraw
   src/engine/rfq.rs                requests, quotes, selection, accept/reject
-  src/engine/contract.rs           list, close, propose, dispute, rule, finalize
+  src/engine/market.rs           list, close, propose, dispute, rule, finalize
   src/testkit.rs                   Harness + well-known accounts (used by tests and demo)
   src/scenarios.rs                 scripted scenarios (in-memory and over Aeron)
   src/codec.rs                     encode/decode, ClientCommand, EventBatch
@@ -129,9 +129,9 @@ spike/                             Task 0 throwaway (deleted at end of Task 0)
 | Gate A Adversarial spec review | Setup | Attacks the specs before any code exists; spec fixes land before Task 1 |
 | 0 Aeron spike | Setup | Self-contained; only Tasks 10–11 use its output (pinned versions + Verified API) |
 | 1 → 2 → 3 | Gate A, then previous | Types → ledger → engine skeleton |
-| 4 → 5 → 6 → 7 | previous | All edit `engine/mod.rs` (dispatch + timer match) and `rfq.rs`/`contract.rs`; Task 6 tests need positions from Task 5; Task 7 exercises everything |
+| 4 → 5 → 6 → 7 | previous | All edit `engine/mod.rs` (dispatch + timer match) and `rfq.rs`/`market.rs`; Task 6 tests need positions from Task 5; Task 7 exercises everything |
 | 8 Codec | 3 | Needs only `Command`, `Action`, `Emitted`, `testkit::accounts` |
-| 9 Node core | 4, 8 | Uses the codec; `ticks_only_when_a_timer_is_due` lists a contract (Task 4) |
+| 9 Node core | 4, 8 | Uses the codec; `ticks_only_when_a_timer_is_due` lists a market (Task 4) |
 | 10 Aeron adapters | 0, 7, 9 | Verified API, `scenarios::demo_config()`, node loop |
 | 11 Demo + Docker | 10 | |
 | 12 Docs sync | all | |
@@ -177,7 +177,7 @@ Each task lives in its own file under [tasks/](tasks/). Run them in the order gi
 | 1 | Workspace and core types | [tasks/task-01-workspace-and-core-types.md](tasks/task-01-workspace-and-core-types.md) |
 | 2 | Ledger | [tasks/task-02-ledger.md](tasks/task-02-ledger.md) |
 | 3 | Commands, events, model and engine skeleton | [tasks/task-03-commands-events-model-and-engine-skeleton.md](tasks/task-03-commands-events-model-and-engine-skeleton.md) |
-| 4 | Contracts listing, requests and quotes | [tasks/task-04-contracts-listing-requests-and-quotes.md](tasks/task-04-contracts-listing-requests-and-quotes.md) |
+| 4 | Markets listing, requests and quotes | [tasks/task-04-markets-listing-requests-and-quotes.md](tasks/task-04-markets-listing-requests-and-quotes.md) |
 | 5 | Selection, acceptance, rejection and races | [tasks/task-05-selection-acceptance-rejection-and-races.md](tasks/task-05-selection-acceptance-rejection-and-races.md) |
 | 6 | Resolution and settlement | [tasks/task-06-resolution-and-settlement.md](tasks/task-06-resolution-and-settlement.md) |
 | 7 | Scenarios, property test and replay determinism | [tasks/task-07-scenarios-property-test-and-replay-determinism.md](tasks/task-07-scenarios-property-test-and-replay-determinism.md) |
