@@ -3,8 +3,9 @@
 use rfq_domain::{Command, Engine, Genesis, SequencedCommand, Timestamp};
 
 use crate::error::{NodeError, SequenceError};
+use crate::output::batch_of;
 use crate::ports::{Journal, Transport};
-use crate::protocol::{BatchKind, ClientCommand, EventBatch};
+use crate::protocol::{ClientCommand, EventBatch};
 use crate::sequencer::Sequencer;
 
 /// Most ingress commands taken per `poll`. Bounds the batch that shares one durability wait.
@@ -151,21 +152,7 @@ impl<J: Journal, T: Transport> Node<J, T> {
             .filter_map(|sc| {
                 let events = self.engine.apply(sc);
                 let balances = self.engine.take_touched_balances();
-                let (kind, origin) = match &sc.cmd {
-                    Command::User { actor, nonce, .. } => (BatchKind::User, Some((*actor, *nonce))),
-                    Command::Tick => (BatchKind::Tick, None),
-                    Command::Resume => (BatchKind::Resume, None),
-                    Command::Genesis(_) => (BatchKind::Genesis, None),
-                };
-                // Every Resume is published, so clients see each restart and stall (gateway.md §2.3).
-                (origin.is_some() || !events.is_empty() || kind == BatchKind::Resume).then_some(EventBatch {
-                    seq: sc.seq,
-                    time: sc.time,
-                    kind,
-                    origin,
-                    events,
-                    balances,
-                })
+                batch_of(sc, events, balances)
             })
             .collect();
         for b in &out {

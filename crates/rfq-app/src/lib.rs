@@ -15,12 +15,14 @@
 pub mod client;
 pub mod error;
 pub mod node;
+pub mod output;
 pub mod ports;
 pub mod protocol;
 pub mod sequencer;
 
 pub use error::{BoxError, NodeError, SequenceError};
 pub use node::Node;
+pub use output::batch_of;
 pub use ports::{Journal, Transport};
 pub use protocol::*;
 pub use sequencer::Sequencer;
