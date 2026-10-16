@@ -60,6 +60,14 @@ impl Engine {
     pub fn position(&self, id: PositionId) -> Option<&Position> {
         self.positions.get(&id)
     }
+    /// Every position, in id order.
+    pub fn positions(&self) -> impl Iterator<Item = &Position> {
+        self.positions.values()
+    }
+    /// The nonce of the last command of `a` the engine consumed; 0 for an account never seen.
+    pub fn last_nonce(&self, a: AccountId) -> u64 {
+        self.nonces.get(&a).copied().unwrap_or(0)
+    }
     pub fn requests(&self) -> impl Iterator<Item = &Request> {
         self.requests.values()
     }
