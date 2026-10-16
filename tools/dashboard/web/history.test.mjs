@@ -351,6 +351,21 @@ await test("an open run that gets a command after the history (the live stream c
   assert.deepEqual([done.incomplete, done.open, done.pass], [true, false, null], done.detail);
 });
 
+await test("a genesis role's command is the run's when it names the run's contract or market, as the arbiter's ruling does", () => {
+  const t0 = 1_790_000_000_456;
+  const alice = t0 * 100 + 10;
+  const user = (seq, actor, nonce, action, events = []) => ({ seq, time: t0 + seq, kind: "User", origin: { actor, nonce }, events, balances: [], command: { actor, nonce, action } });
+  const entries = [
+    user(2, 1, 2, { Deposit: { to: alice, amount: 5 } }, [{ audience: { Account: alice }, event: { Deposited: { account: alice, amount: 5 } } }]),
+    // A market of the run's, with an oracle that is not one of its accounts: only the contract id says whose it is.
+    user(3, 1, 3, { ListContract: { id: t0 * 10 + 2, description: "d", oracle: 4, trading_close: t0 + 5_000, resolution_deadline: t0 + 15_000, dispute_window: 2_000 } }),
+    user(4, 2, 2, { Rule: { contract: t0, outcome: "Invalid" } }),
+    user(5, 2, 3, { Rule: { contract: 7, outcome: "Invalid" } }), // the curl walk-through's contract: no run's
+  ];
+  const [run] = S.runsFromHistory(entries);
+  assert.deepEqual(run.commands.map((c) => [c.seq, c.action]), [[2, "Deposit"], [3, "ListContract"], [4, "Rule"]]);
+});
+
 await test("a history with nothing but one deposit of a run gets the neutral label, no verdict, and that one batch", () => {
   const t0 = 1_790_000_000_123;
   const alice = t0 * 100 + 10;

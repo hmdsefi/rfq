@@ -1110,16 +1110,53 @@ const RfqScenarios = (() => {
     return accounts.some((a) => scope.accounts.has(a)) || contracts.some((c) => scope.ownsContract(c));
   }
 
+  /** The run (`t0`) whose script account `a` is, or null: `t0 * 100 + id`, with `id` one of the scripts' accounts. */
+  const runOfAccount = (a) => (Number.isSafeInteger(a) && a >= PER_RUN && RUN_ACCOUNTS.includes(a % PER_RUN) ? Math.floor(a / PER_RUN) : null);
+
+  /**
+   * One pass over a history (`batches`, ascending by seq) for the runs `t0s`: per run, the indexes of the
+   * batches whose command may be the run's (its account's, or a genesis role's that names one of its accounts
+   * or contracts: a contract `c` is run `c`'s, or, as an extra market, run `c / 10`'s), and whether a batch of
+   * one of its accounts has no command (a live one, which carries no action). `isRunCommand` decides.
+   */
+  function indexRuns(batches, t0s) {
+    const index = new Map([...t0s].map((t0) => [t0, { at: [], unread: false }]));
+    batches.forEach((b, i) => {
+      if (!b.command) {
+        const t0 = runOfAccount(b.origin?.actor);
+        if (index.has(t0)) index.get(t0).unread = true;
+        return;
+      }
+      const owners = new Set([runOfAccount(b.command.actor)]);
+      if (R.GENESIS_ROLES.includes(b.command.actor)) {
+        const { accounts, contracts } = named(b.command.action);
+        for (const a of accounts) owners.add(runOfAccount(a));
+        for (const c of contracts.filter(Number.isSafeInteger)) {
+          owners.add(c);
+          if (c % 10 > 0) owners.add(Math.floor(c / 10));
+        }
+      }
+      for (const t0 of owners) index.get(t0)?.at.push(i);
+    });
+    return index;
+  }
+
+  /** The scripts' shapes, worked out once each: a script's commands as `"<actor> <action>"`. */
+  const SHAPES = new WeakMap();
+
   /** A script's commands as `"<actor> <action>"`, the actor a script account or genesis role, in order. */
   function shapeOf(scenario) {
+    if (SHAPES.has(scenario)) return SHAPES.get(scenario);
     const ctx = new Ctx(0);
-    return scenario.steps
+    const shape = scenario.steps
       .filter((s) => !s.wait)
       .map((step, i) => {
-        const shape = `${step.actor} ${actionName(step.action(ctx))}`;
+        const one = `${step.actor} ${actionName(step.action(ctx))}`;
         ctx.recordLabel(step.label, i + 1); // a later step may name this one's request or quote
-        return shape;
+        return one;
       });
+    SHAPES.set(scenario, shape);
+    return shape;
   }
 
   /**
@@ -1196,9 +1233,10 @@ const RfqScenarios = (() => {
    * Run `t0` of a history (`batches` ascending by seq), rebuilt as the driver records a live run, as of engine
    * time `end` (every batch up to it is in `batches`; at least the last batch's time). `cutAt` is where the
    * history fetched from the read API ended, `end` unless this is a later rebuild with the batches recorded
-   * since (`settleRun`). See `runsFromHistory` for what comes back.
+   * since (`settleRun`). `index` is the run's part of `indexRuns`, worked out here when left out. See
+   * `runsFromHistory` for what comes back.
    */
-  function historyRun(t0, batches, { end = -Infinity, cutAt } = {}) {
+  function historyRun(t0, batches, { end = -Infinity, cutAt, index = indexRuns(batches, [t0]).get(t0) } = {}) {
     end = Math.max(end, batches.at(-1)?.time ?? -Infinity);
     cutAt ??= end;
     const scope = new R.Scope(t0);
@@ -1209,11 +1247,12 @@ const RfqScenarios = (() => {
     // artifact, like the driver's. An attack's replay sends another action with a used nonce: the run's own.
     const cmds = [];
     const before = new Set();
-    for (const b of batches) {
+    for (const i of index.at) {
+      const b = batches[i];
       const cmd = b.command;
-      if (!cmd || !isRunCommand(scope, cmd)) continue;
+      if (!isRunCommand(scope, cmd)) continue;
       const key = canonical([cmd.actor, cmd.nonce, cmd.action]);
-      cmds.push({ cmd, seq: b.seq, time: b.time, events: b.events, retry: before.has(key) && unconsumed(b.events) });
+      cmds.push({ cmd, i, seq: b.seq, time: b.time, events: b.events, retry: before.has(key) && unconsumed(b.events) });
       before.add(key);
       scope.sent(cmd.actor, cmd.nonce);
       if (R.GENESIS_ROLES.includes(cmd.actor)) accounts[ACCOUNT_NAMES[cmd.actor]] = cmd.actor;
@@ -1221,7 +1260,7 @@ const RfqScenarios = (() => {
     const steps = cmds.filter((c) => !c.retry);
     const retries = new Set(cmds.filter((c) => c.retry).map((c) => c.seq));
     // Nothing before the run's first command is about its accounts or contracts.
-    const from = cmds.length ? batches.findIndex((b) => b.seq === cmds[0].seq) : 0;
+    const from = cmds.length ? cmds[0].i : 0;
     const candidates = cmds.length ? candidatesOf(t0, steps, batches, from) : [];
     const whole = candidates.filter((s) => shapeOf(s).length === steps.length);
     // A script with a step still to send when the history was cut (due less than LATE_MS before its end):
@@ -1231,7 +1270,7 @@ const RfqScenarios = (() => {
       return due != null && due > cutAt - LATE_MS;
     });
     // A command of one of the run's accounts with no `command`: a live batch, which carries no action.
-    const unread = batches.some((b) => !b.command && b.origin != null && scope.accounts.has(b.origin.actor));
+    const unread = index.unread;
     const cut = going.length > 0 || unread;
     // Judged only when the history holds the whole of one script's commands, and nothing could follow them.
     const scenario = !cut && whole.length === 1 ? whole[0] : null;
@@ -1341,10 +1380,9 @@ const RfqScenarios = (() => {
    */
   function runsFromHistory(entries, { end } = {}) {
     const batches = [...entries].sort((a, b) => a.seq - b.seq);
-    return [...runT0s(batches)]
-      .sort((a, b) => a - b)
-      .map((t0) => historyRun(t0, batches, { end }))
-      .filter((r) => r.batches.length > 0);
+    const t0s = [...runT0s(batches)].sort((a, b) => a - b);
+    const index = indexRuns(batches, t0s);
+    return t0s.map((t0) => historyRun(t0, batches, { end, index: index.get(t0) })).filter((r) => r.batches.length > 0);
   }
 
   /**
