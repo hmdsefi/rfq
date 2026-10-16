@@ -738,6 +738,52 @@ mod tests {
         format!("POST {path} HTTP/1.1\r\nHost: localhost\r\n{length}{extra}\r\n")
     }
 
+    /// Whether the writes of `waiting_writes` may go on, and what wakes them.
+    type Gate = Arc<(Mutex<bool>, Condvar)>;
+
+    /// A handler whose `POST`s wait, as writes do for a hung engine or an actor held behind an
+    /// unresolved nonce: each counts itself in `entered`, then waits until the gate is opened.
+    fn waiting_writes() -> (Handler, Gate, Arc<AtomicUsize>) {
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let entered = Arc::new(AtomicUsize::new(0));
+        let handler: Handler = {
+            let (gate, entered) = (Arc::clone(&gate), Arc::clone(&entered));
+            Arc::new(move |request: &Request| {
+                if request.method == "POST" {
+                    entered.fetch_add(1, Ordering::SeqCst);
+                    let (open, opened) = &*gate;
+                    let mut open = open.lock().unwrap();
+                    while !*open {
+                        open = opened.wait(open).unwrap();
+                    }
+                }
+                echo(request)
+            })
+        };
+        (handler, gate, entered)
+    }
+
+    /// Sends `n` writes and waits until all are in the handler.
+    fn hold_writes(addr: std::net::SocketAddr, entered: &AtomicUsize, n: usize) -> Vec<TcpStream> {
+        let held = (0..n)
+            .map(|_| {
+                let mut stream = connect(addr);
+                let write = format!("{}{{}}", post("/v1/commands", Some(2), ""));
+                stream.write_all(write.as_bytes()).unwrap();
+                stream
+            })
+            .collect();
+        let started = Instant::now();
+        while entered.load(Ordering::SeqCst) < n {
+            assert!(
+                started.elapsed() < Duration::from_secs(3),
+                "the writes never reached the handler"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        held
+    }
+
     #[test]
     fn one_request_is_answered_with_connection_close_and_the_connection_closes() {
         let addr = start(limits());
@@ -1188,22 +1234,7 @@ mod tests {
     /// `max_writes` of the connections: the rest are always there for reads.
     #[test]
     fn writes_over_their_cap_get_503_and_reads_still_get_in() {
-        let gate = Arc::new((Mutex::new(false), Condvar::new()));
-        let entered = Arc::new(AtomicUsize::new(0));
-        let handler: Handler = {
-            let (gate, entered) = (Arc::clone(&gate), Arc::clone(&entered));
-            Arc::new(move |request: &Request| {
-                if request.method == "POST" {
-                    entered.fetch_add(1, Ordering::SeqCst);
-                    let (open, opened) = &*gate;
-                    let mut open = open.lock().unwrap();
-                    while !*open {
-                        open = opened.wait(open).unwrap();
-                    }
-                }
-                echo(request)
-            })
-        };
+        let (handler, gate, entered) = waiting_writes();
         let (addr, live) = start_counted(
             HttpLimits {
                 max_connections: 4,
@@ -1215,21 +1246,7 @@ mod tests {
         let write = |extra: &str| format!("{}{{}}", post("/v1/commands", Some(2), extra));
 
         // Two writes that wait fill the writes' share.
-        let held: Vec<TcpStream> = (0..2)
-            .map(|_| {
-                let mut stream = connect(addr);
-                stream.write_all(write("").as_bytes()).unwrap();
-                stream
-            })
-            .collect();
-        let started = Instant::now();
-        while entered.load(Ordering::SeqCst) < 2 {
-            assert!(
-                started.elapsed() < Duration::from_secs(3),
-                "the writes never reached the handler"
-            );
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        let held = hold_writes(addr, &entered, 2);
 
         // The next write is refused at once, as a connection over the limit is, and a page can
         // read the refusal.
@@ -1277,6 +1294,138 @@ mod tests {
                 "the write slots never freed"
             );
             std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// A `POST` takes its write slot before its body is read, and gives it back however the
+    /// request ends early: refused with a `411`, `413`, `400` or `408`, or left by a client in the
+    /// middle of its body. With one write slot, a slot not given back refuses every `POST` after.
+    #[test]
+    fn a_write_that_ends_early_gives_its_slot_back() {
+        let handled = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&handled);
+        let addr = start_with(
+            HttpLimits {
+                max_writes: 1,
+                head_timeout: Duration::from_millis(500),
+                ..limits()
+            },
+            Arc::new(move |request| {
+                if request.method == "POST" {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                }
+                echo(request)
+            }),
+        );
+        let half = format!("{}abc", post("/v1/commands", Some(10), ""));
+        // What the client sends, and the status it is answered with (`None`: it leaves first).
+        let cases = [
+            ("no Content-Length", post("/v1/commands", None, ""), Some(411)),
+            (
+                "a chunked body",
+                post("/v1/commands", None, "Transfer-Encoding: chunked\r\n"),
+                Some(411),
+            ),
+            (
+                "a body over the limit",
+                post("/v1/commands", Some(5_000), ""),
+                Some(413),
+            ),
+            (
+                "a Content-Length that is not a number",
+                post("/v1/commands", None, "Content-Length: abc\r\n"),
+                Some(400),
+            ),
+            ("a body that never completes", half.clone(), Some(408)),
+            ("a client that leaves mid-body", half, None),
+        ];
+        for (before, (what, request, answer)) in cases.into_iter().enumerate() {
+            let mut stream = connect(addr);
+            stream.write_all(request.as_bytes()).unwrap();
+            match answer {
+                Some(status) => assert_eq!(read_all(&mut stream).status, status, "{what}"),
+                None => drop(stream),
+            }
+
+            // The slot is given back when the connection's thread ends, which the client cannot
+            // see: a `POST` straight after may be refused a few times, but gets through.
+            let started = Instant::now();
+            loop {
+                let r = exchange(addr, &format!("{}{{}}", post("/v1/commands", Some(2), "")));
+                if r.status == 200 {
+                    break;
+                }
+                assert_eq!(r.status, 503, "{what}: {}", r.raw);
+                assert_eq!(r.json(), json!({"error": "too many connections"}), "{what}");
+                assert!(
+                    started.elapsed() < Duration::from_secs(3),
+                    "{what}: the write slot was never given back"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert_eq!(
+                handled.load(Ordering::SeqCst),
+                before + 1,
+                "{what}: only the normal POSTs reach the handler"
+            );
+        }
+    }
+
+    /// What is not a write served takes no write slot: with the writes at their cap, a preflight
+    /// is still answered, and so is a `POST` that is refused for its `Origin` or `Host` (a `403`,
+    /// not the `503` of a write over its cap).
+    #[test]
+    fn a_preflight_and_a_forbidden_post_are_answered_with_the_writes_at_their_cap() {
+        let (handler, gate, entered) = waiting_writes();
+        let addr = start_with(
+            HttpLimits {
+                max_writes: 1,
+                ..limits()
+            },
+            handler,
+        );
+        let held = hold_writes(addr, &entered, 1);
+
+        // At the cap: another write is refused.
+        let r = exchange(addr, &format!("{}{{}}", post("/v1/commands", Some(2), "")));
+        assert_eq!(r.status, 503);
+
+        let r = exchange(
+            addr,
+            "OPTIONS /v1/commands HTTP/1.1\r\nHost: localhost\r\nOrigin: http://localhost:5173\r\n\
+             Access-Control-Request-Method: POST\r\n\r\n",
+        );
+        assert_eq!(r.status, 204, "{}", r.raw);
+        assert_eq!(
+            r.header("access-control-allow-origin"),
+            Some("http://localhost:5173")
+        );
+        assert_eq!(r.header("access-control-allow-methods"), Some("GET, POST"));
+
+        let r = exchange(
+            addr,
+            &post("/v1/commands", Some(2), "Origin: http://evil.example\r\n"),
+        );
+        assert_eq!(r.status, 403, "{}", r.raw);
+        assert_eq!(r.json(), json!({"error": "origin not allowed"}));
+
+        let r = exchange(
+            addr,
+            "POST /v1/commands HTTP/1.1\r\nHost: evil.example\r\nContent-Length: 2\r\n\r\n{}",
+        );
+        assert_eq!(r.status, 403, "{}", r.raw);
+        assert_eq!(r.json(), json!({"error": "host not allowed"}));
+
+        assert_eq!(
+            entered.load(Ordering::SeqCst),
+            1,
+            "only the held write reached the handler"
+        );
+        let (open, opened) = &*gate;
+        *open.lock().unwrap() = true;
+        opened.notify_all();
+        for mut stream in held {
+            assert_eq!(read_all(&mut stream).status, 200);
         }
     }
 
