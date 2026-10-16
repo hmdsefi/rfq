@@ -656,24 +656,36 @@ async function loadHistory() {
       after = next;
     }
     if (rec.epoch !== epoch) return;
-    // The runs the history shows, by the scenarios' account ids: their accounts get their names, and the
-    // timeline's run list gets the runs, rebuilt as the driver records its own. A following replica holds
-    // everything up to this page's load (less its lag): a run still going then was cut by the reload. Else
-    // only its last entry says how far the history goes.
+    rec.seedHistory(entries);
+    if (replica.state !== "following") addError(`History may be incomplete: the read replica is ${replica.state.replace(/_/g, " ")}.`);
+    loadHistoryRuns(entries, replica, asOf, epoch);
+    schedule();
+  } catch (e) {
+    addError(`History not loaded (${e instanceof HistoryError ? e.message : e?.message ?? e}): showing what happens from now on.`);
+  }
+}
+
+/**
+ * The runs the seeded history shows, by the scenarios' account ids: their accounts get their names, and the
+ * timeline's run list gets the runs, rebuilt as the driver records its own (`epoch`: the one they were seeded
+ * into). A following replica holds everything up to this page's load, less its lag: a run still going then
+ * was cut by the reload. Otherwise only the history's last entry says how far it goes. A rebuild that fails
+ * leaves the history as it is, with a banner: only the runs are missing.
+ */
+function loadHistoryRuns(entries, replica, asOf, epoch) {
+  try {
     const end = replica.state === "following" ? LOADED_AT + gw.offset - HISTORY_LAG_MS : undefined;
     const runs = RfqScenarios.runsFromHistory(entries, { end });
-    rec.seedHistory(entries);
     for (const t0 of RfqScenarios.runT0s(entries)) page.historyT0.add(t0);
     for (const run of runs) run.epoch = epoch;
     page.historyRuns = runs;
     page.historyEntries = entries;
     page.historyAsOf = asOf;
-    if (replica.state !== "following") addError(`History may be incomplete: the read replica is ${replica.state.replace(/_/g, " ")}.`);
-    settleHistory();
-    schedule();
   } catch (e) {
-    addError(`History not loaded (${e instanceof HistoryError ? e.message : e?.message ?? e}): showing what happens from now on.`);
+    addError(`The earlier runs were not rebuilt from the history (${e?.message ?? e}): the run list has only the runs of this page.`);
+    return;
   }
+  settleHistory();
 }
 
 let settleTimer = null;

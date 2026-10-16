@@ -1140,6 +1140,30 @@ await test("a new journal after the reload (a new epoch): the old history's runs
   }
 });
 
+await test("a rebuild of the runs that fails leaves the history seeded, with a banner that only the runs are missing", async () => {
+  let release;
+  const gate = new Promise((resolve) => (release = resolve));
+  const api = fakeReadApi(TWO_RUNS);
+  const page = loadPage({ fetch: async (url) => (await gate, api.fetch(url)) });
+  const { run, val, document } = page;
+  try {
+    run('RfqScenarios.runsFromHistory = () => { throw new Error("no rule for this"); }');
+    release();
+    await run("historyLoaded");
+    await connected(page);
+    run("render()");
+    assert.deepEqual(val("rec.allBatches().map((b) => b.seq)"), seqs(2, 16), "the history is seeded");
+    assert.deepEqual(val("page.historyRuns"), []);
+    const banners = text(document, "banners");
+    assert.ok(banners.includes("The earlier runs were not rebuilt from the history (no rule for this): the run list has only the runs of this page."), banners);
+    assert.ok(!banners.includes("History not loaded"), banners);
+    assert.match(document.getElementById("banners").innerHTML, /data-action="dismiss-error"/, "dismissible");
+    assert.ok(text(document, "ledger-table").includes("$1,000.00"), "the history's balances are shown");
+  } finally {
+    teardown(page);
+  }
+});
+
 // ---- history: a reload in the middle of a run ----------------------------------------------------------------
 
 /** `attack_over_limit_quote` as the admin trace holds it: the setup, Alice's request, and MM2's quote above her limit. */
