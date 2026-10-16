@@ -82,7 +82,7 @@ The chosen view stays in place across a reset.
 - `requester_lapses`
 - `disputed_ruled_invalid`
 - `oracle_silent_hard_deadline`
-- `multi_leg_happy`: one request for three markets, a quote on every leg, and one accept fills all three legs
+- `multi_leg_happy`: one request for three markets, a quote on every leg, and one accept fills all three legs, then each market settles YES
 - `multi_leg_leg2_fails`: legs 1 and 3 are quoted, leg 2 is not, so at the deadline the whole request expires and every hold is released in that one command
 
 The two multi-leg scenarios list three markets (Paris, London, Rome) as `MarketId(t0 * 10 + k)` for k = 1..=3 (`Ctx::market_n`), and a run's scope owns those ids too.
