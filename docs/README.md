@@ -17,16 +17,18 @@ The brief (the exercise PDF) is not in the repository. How to build, test and ru
 | Doc | What it answers |
 |---|---|
 | [demo.md](demo.md) | Recorded runs (GIFs) of five scenarios on the live stack: what each step does, with the engine's events and the logs |
-| [rfc/0001-rfq-engine.md](rfc/0001-rfq-engine.md) | What we're building, the product decisions (P1–P12), the technical decisions (T1–T7), and why |
-| [architecture/overview.md](architecture/overview.md) | Layers and crates, components, Aeron streams, write-ahead loop and crash points, Docker topology, production path, measured numbers |
+| [rfc/0001-rfq-engine.md](rfc/0001-rfq-engine.md) | What we're building, the product decisions (P1–P12), the technical decisions (T1–T8), and why |
+| [architecture/overview.md](architecture/overview.md) | Layers and crates, components (the write path and the read side), Aeron streams, write-ahead loop and crash points, Docker topology, production path, measured numbers |
 | [specs/engine.md](specs/engine.md) | Domain model, ledger and invariants I1–I5, commands and validation, state machines, events |
 | [specs/failure-modes.md](specs/failure-modes.md) | Every race and partial failure, and how it's handled |
 | [specs/adversarial.md](specs/adversarial.md) | Companion to D3: what a malicious requester, MM, oracle or bystander can try, and the defence or accepted residual risk |
 | [specs/resolution.md](specs/resolution.md) | How funds unlock; disputes, delays, ambiguity |
 | [specs/quote-lifetime.md](specs/quote-lifetime.md) | Seconds vs days: what's invariant, what isn't, what is built vs designed |
-| [specs/transport-aeron.md](specs/transport-aeron.md) | Aeron + Archive wiring, journal, replay, Docker Compose, the verified `rusteron` API |
+| [specs/transport-aeron.md](specs/transport-aeron.md) | Aeron + Archive wiring, journal, replay and the journal follower, Docker Compose, the verified `rusteron` API |
 | [specs/gateway.md](specs/gateway.md) | The client edge: the WebSocket protocol, what each view (admin, one account) may see, nonces, engine status and `outcome unknown`, the trust boundary |
+| [specs/read-api.md](specs/read-api.md) | The read side and the HTTP API: a replica of the engine fed by the journal, the read and write endpoints with their statuses, the trace per view, consistency (`as_of_seq`, `min_seq`), limits and security |
 | [reviews/spec-review.md](reviews/spec-review.md) | Adversarial review of the spec before coding: 25 findings and how each was ruled |
 | [plans/2026-10-13-rfq-engine-plan.md](plans/2026-10-13-rfq-engine-plan.md) | Implementation roadmap: constraints, layers, execution order, task index |
 | [plans/2026-10-15-live-gateway-plan.md](plans/2026-10-15-live-gateway-plan.md) | The live plan: the gateway and the dashboard driving the real stack (tasks L1–L7) |
-| [plans/tasks/](plans/tasks/) | One file per task (Setup, Gate A, Tasks 0–14, L1–L7) |
+| [plans/2026-10-16-read-api-plan.md](plans/2026-10-16-read-api-plan.md) | The read plan: the journal follower, the replica, the HTTP API and the dashboard's history on load (tasks R1–R7) |
+| [plans/tasks/](plans/tasks/) | One file per task (Setup, Gate A, Tasks 0–14, L1–L7, R1–R7) |

@@ -10,7 +10,7 @@ Every race (R) and partial failure (F) handled, with a test that shows it (`carg
 | R4 | **Expiry vs selection:** must be firm through `accept_by`. | `short_expiry_not_selected` |
 | R5 | **Double accept or reject:** no longer `Presented`. | `double_accept_rejected` |
 | R6 | **Duplicate or skipped command:** strict nonces, nothing consumed. | `duplicate_nonce_ignored`, `nonce_gap_rejected_and_not_consumed` |
-| R7 | **Withdraw vs reservation:** only `free` can be withdrawn. | `withdraw_cannot_touch_reserved` |
+| R7 | **Withdraw vs reservation:** only `free` is withdrawable. | `withdraw_cannot_touch_reserved` |
 | R8 | **Quote replace vs selection:** one command. | `replace_quote_atomic` |
 | R9 | **Dispute vs window end:** the window timer runs first. | `dispute_at_the_window_end_is_too_late` |
 | F1 | **Funds short mid-accept:** checked before any escrow. | — |
@@ -26,7 +26,8 @@ Every race (R) and partial failure (F) handled, with a test that shows it (`carg
 | F11 | **A port fails:** the node halts; a restart replays. | `poll_after_failure_is_refused` |
 | F12 | **`seq` gap or duplicate in replay:** the node won't start. | `replay_refuses_a_gap`, `replay_refuses_a_duplicate_seq` |
 | F13 | **Aeron crash (Docker test):** redelivery is `Duplicate` or applied once. | `archive_journal_replays_every_recording_across_restarts_and_crashes` |
-| F14 | **Stall or clock jump:** `Resume` first, as F9. *Residual:* long downtime can lock the oracle out: `Invalid`, refunds. | `a_stall_cannot_eat_a_dispute_window` |
+| F14 | **Stall or clock jump:** `Resume` first, as F9. *Residual:* long downtime can lock the oracle out (`Invalid`). | `a_stall_cannot_eat_a_dispute_window` |
 | F15 | **Egress reader stops:** the node halts after 5 s. *Residual:* readers must be venue-run. | — |
+| F16 | **Read replica behind or lost:** `as_of_seq`, `min_seq` (else `503`); rebuilt from the journal; fsynced commands only. | `min_seq_times_out_with_503`, `the_replica_serves_while_it_rebuilds` |
 
-**Multi-leg: where capital could leak.** Only in the holds of a provisionally matched leg, each owned by a live request with a pending timer (I4, I5). Every exit but `Filled` releases every leg's holds in one command ([engine.md §8](engine.md)); tests `leg_two_of_three_unfilled_expires_the_whole_request_and_releases_every_hold`, `a_selected_leg_cannot_be_withdrawn`, scenario `multi_leg_leg2_fails`.
+**Multi-leg: where capital could leak.** Only in a provisionally matched leg's holds, each owned by a live request with a timer (I4, I5). Every exit but `Filled` releases every hold in one command ([engine.md §8](engine.md)); tests `leg_two_of_three_unfilled_expires_the_whole_request_and_releases_every_hold`, `a_selected_leg_cannot_be_withdrawn`, scenario `multi_leg_leg2_fails`.

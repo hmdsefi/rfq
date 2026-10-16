@@ -49,11 +49,13 @@ UI, auth/KYC, real chain or money movement, pricing/risk logic, fees, Aeron Clus
 | T5 | Time is **data**: sequencer stamps time; the engine never reads a clock. Due timers fire before each command. | Wall-clock reads in the engine (non-deterministic replay). |
 | T6 | Integer money: micro-USD (`u64`), prices in basis points (1..=9999). `qty × bps × 100` is exact — **no rounding anywhere**. | Decimals/floats. |
 | T7 | `BTreeMap` everywhere state is iterated; no randomness. | `HashMap` (randomised iteration breaks replay). |
+| T8 | **Reads come from a replica of the journal, never from the engine.** A read-only copy of the engine replays and follows the Archive (it only sees fsynced commands) and serves the HTTP reads and the trace. Added 2026-10-16, built ([specs/read-api.md](../specs/read-api.md)). | Reads served by the live engine (it would share its single writer). A separate store for the trace: the PO chose the journal as the only permanent record, so the trace is derived from it. |
 
 ## 6. Production path (designed, not built)
 
 - **Aeron Cluster** (Raft) replaces the single sequencer for HA: the engine becomes the clustered service unchanged.
 - **Snapshots** in Archive bound replay time.
+- **Read replicas:** built (T8), inside the gateway process: a replica and a journal follower serve the HTTP reads and the trace. Designed, not built: replicas as a service of their own, started from a snapshot rather than the whole log, and authentication on the HTTP API.
 - **Sharding** by contract group if one engine ever saturates (see architecture §8).
 - **On-chain escrow contract** (non-custodial settlement), plus **effect workers** (e.g. Temporal) for chain transactions and oracle polling. Both attach at the existing `Deposit`/`Withdrawn` seam (see architecture §7). Temporal is deliberately kept out of the core.
 

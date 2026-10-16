@@ -49,7 +49,7 @@ Every read response has `as_of_seq`: the last `seq` the replica has applied. Any
 
 | Endpoint | Returns |
 |---|---|
-| `GET /v1/status` | `{engine: "up"\|"down", engine_last_seq, replica: {state: "following"\|"catching_up"\|"unavailable", last_seq, state_hash}}`. `engine_last_seq` is the newest `seq` the gateway saw on egress. |
+| `GET /v1/status` | `{engine: "up"\|"down", engine_last_seq, replica: {state: "following"\|"catching_up"\|"unavailable", last_seq, state_hash}}`. `engine_last_seq` is the newest `seq` the gateway saw on egress, `null` before any. `catching_up` lasts until the follower first has everything recorded: a gateway that starts while the engine is down, and long enough for its last recording to have stopped (about 10 s), stays `catching_up` until the engine writes (§5). |
 | `GET /v1/accounts/{id}` | `{account, balance: {free, reserved, escrowed}, last_nonce}` |
 | `GET /v1/accounts/{id}/positions` | `{positions: [{id, contract, request, qty, side: "Yes"\|"No", stake, settled, payout}]}`: the account's side, its own locked amount, and once settled what it was paid. No counterparty. |
 | `GET /v1/accounts/{id}/requests` | The account's own requests: `{id, state, response_deadline, legs: [{contract, side, qty, limit_price, selected}]}`. `selected` is `{quote, price}` once the request is presented (what `RequestPresented` tells the requester, and what `Accept` needs), else `null`; the live quote set is never shown (quotes are sealed until the deadline). |
@@ -82,6 +82,8 @@ The call returns once the command's batch is back, or the hub gives up on it:
 
 Other statuses: `404` unknown route, `405` wrong method, `500` an internal failure (logged).
 
+A reply holds the first chunk of its batch. A batch is split into chunks only above 8 MiB (the transport's maximum message), which no command reaches under the 64 KiB ingress cap.
+
 ## 4. Writes go through the hub
 
 A `POST` opens a short-lived connection on the hub's inbox, exactly as a WebSocket connection would: `Open` with its own outbox, a `hello` with the actor's account view, the command with a fresh id, then `Close` once the answer is in. So an HTTP command gets the same nonce book, per-account queue, back-pressure, unresolved-nonce hold and `outcome unknown` handling as a WebSocket one (gateway.md §5, §6), and the hub needs no HTTP code. Connection ids come from one counter shared by the WebSocket acceptor and the HTTP server.
@@ -109,6 +111,8 @@ A trace entry is the batch as the view sees it (gateway.md §4's `filter`: same 
 - `view={account}`: only the account's own commands, the same rule as `origin`.
 
 The command is what lets a reloaded dashboard recover its own limits and quote sizes, which no event carries.
+
+The trace hides the gateway's own probe commands, as the WebSocket does (`Withdraw {amount: 0}`: the nonce probes and the liveness probe, gateway.md §5, §6): such a batch is shown without its `origin` and the probe's rejection, or not at all if nothing else is left, and its `command` is `null`. A client's own `Withdraw` of 0, which the engine always refuses, is hidden the same way.
 
 Paging: entries with `seq > after_seq` (default 0), ascending, at most `limit` (default 500, maximum 1,000). `next_after_seq` is the last returned `seq` when more remain, else `null`. An account view skips batches with nothing for it, as on the WebSocket.
 

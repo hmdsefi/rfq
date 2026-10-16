@@ -8,9 +8,11 @@ The engine's inputs and outputs only exist on Aeron streams inside the venue:
 - `ClientCommand` goes in on ingress 1001;
 - an `EventBatch` comes out on egress 1003 for every applied command.
 
-A client outside the venue needs one place to send commands and get its own results back, filtered so it sees only what it may see. engine.md §7 already assigns that filtering to "gateways", and the architecture lists the client read port as future work. This component builds it.
+A client outside the venue needs one place to send commands and get its own results back, filtered so it sees only what it may see. engine.md §7 already assigns that filtering to "gateways". This component builds it.
 
 The gateway holds no business state and makes no business decisions. It moves `ClientCommand`s in and `EventBatch`es out, and filters the output per viewer. Every number a client sees was produced by the engine.
+
+This WebSocket only pushes: a client sees what happens while it is connected. Asking for current state (positions, balances, requests, the trace of what it missed) and sending commands without a WebSocket are the **HTTP API** on port 18081, which the same process serves ([read-api.md](read-api.md)). Its writes enter the hub like a WebSocket command, so everything below (nonces §5, engine status and `outcome unknown` §6) applies to them unchanged. Its reads come from a read-only replica of the engine that the gateway builds from the journal; the replica takes no part in a write, so the hub still holds no business state.
 
 ```
 client (dashboard, scripts) ──WebSocket JSON──► rfq-gateway ──ClientCommand──► ingress 1001 ──► rfq-node
@@ -99,7 +101,7 @@ Nonces are strict per actor (`last + 1`). The gateway keeps a nonce book with `l
 
 - The demo has no authentication, as the brief allows ("Auth, accounts, KYC" are out of scope). The gateway trusts the `actor` a client names. **Production:** an authenticated session fixes the actor and the gateway never takes it from the message.
 - The `admin` view is the venue's operator view. In production it is restricted to venue staff. In the demo every local client may use it.
-- The gateway listens on `127.0.0.1` only, port 18080 (`ws://127.0.0.1:18080`; 8080 is often taken on a developer's machine). It accepts WebSocket upgrades from `Origin: null` (a page opened from disk), `http://localhost:*` / `http://127.0.0.1:*`, and from requests with no `Origin` at all: non-browser clients (Node scripts, `websocat`) send none, and browsers always send one, so the check still refuses every other web site in the user's browser. Browsers also send `Origin: null` from a sandboxed iframe, on any site: acceptable for this unauthenticated local demo, not for production. Other Origins get HTTP 403.
+- The gateway listens on `127.0.0.1` only, port 18080 (`ws://127.0.0.1:18080`; 8080 is often taken on a developer's machine). It accepts WebSocket upgrades from `Origin: null` (a page opened from disk), `http://localhost:*` / `http://127.0.0.1:*`, and from requests with no `Origin` at all: non-browser clients (Node scripts, `websocat`) send none, and browsers always send one, so the check still refuses every other web site in the user's browser. Browsers also send `Origin: null` from a sandboxed iframe, on any site: acceptable for this unauthenticated local demo, not for production. Other Origins get HTTP 403. Its HTTP port, 18081, is the same: loopback only, the same `Origin` rule, no authentication, and the admin trace open to every local client ([read-api.md §9](read-api.md)).
 - It refuses text frames over 64 KiB, and commands whose encoding is over the engine's ingress limit (64 KiB; a 64 KiB JSON frame can encode larger), before offering them.
 - It never panics on client input. Bad input gets an `error` frame and the connection stays open.
 
@@ -127,10 +129,11 @@ Together with the node's `applied seq hash` lines, `docker compose logs -f gatew
 - **`rfq-gateway` (binary, feature `aeron`):**
   - the Aeron adapter: the ingress publication and the egress subscription with the `Reassembler`, reusing `rfq-infra`;
   - the WebSocket server (`tungstenite`, one thread per connection);
-  - the hub loop.
+  - the hub loop;
+  - the HTTP server and the replica thread (journal follower, replica), specified in [read-api.md](read-api.md) §2 to §5: `GET`s read the replica, `POST`s enter the hub as a short-lived connection (one id counter shared with the WebSocket acceptor).
 
   Built in Docker like `rfq-node`.
-- **docker-compose:** a `gateway` service (`ipc: service:aeron`, `127.0.0.1:${RFQ_GATEWAY_PORT:-18080}:18080`, `restart: on-failure:3`).
+- **docker-compose:** a `gateway` service (`ipc: service:aeron`, `127.0.0.1:${RFQ_GATEWAY_PORT:-18080}:18080` for the WebSocket and `127.0.0.1:${RFQ_HTTP_PORT:-18081}:18081` for the HTTP API, `restart: on-failure:3`). In the container the servers listen on `0.0.0.0` (`RFQ_GATEWAY_ADDR`, `RFQ_HTTP_ADDR`); the host side stays on loopback.
 
 ## 10. Acceptance
 

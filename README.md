@@ -22,7 +22,8 @@ The toolchain is pinned to Rust 1.99.0 in `rust-toolchain.toml`, so `rustup` ins
 - unit and behaviour tests for the ledger and every command, including the race and partial-failure cases ([failure-modes.md](docs/specs/failure-modes.md) names the test for each one) and the multi-leg atomicity rules ([`multi_leg.rs`](crates/rfq-domain/tests/multi_leg.rs));
 - the eight scripted scenarios of the demo (six for the brief's lifecycle and failure cases, two for its multi-leg case), run in memory, and replay tests that rebuild the engine from its log and compare `state_hash`;
 - three property tests that run random command streams and check the invariants I1–I5 after every command (the third generates multi-leg requests, and also checks that a request fills all of its legs or none);
-- node tests over the in-memory and file journals: startup replay, write-ahead order, restart, `Resume` after a stall, failure latch.
+- node tests over the in-memory and file journals: startup replay, write-ahead order, restart, `Resume` after a stall, failure latch;
+- read-side tests: every scenario is run through a node, and a replica fed only its journal must reproduce the node's batches and `state_hash` (also across a restart); the read views and their sealing rules, the HTTP routes and statuses, and a write's round trip through the hub.
 
 Engine benchmark:
 
@@ -63,7 +64,7 @@ docker compose --profile demo down -v       # stop everything and delete the Arc
 
 ### Gateway (WebSocket)
 
-`rfq-gateway` is the client edge ([gateway.md](docs/specs/gateway.md)): JSON over a WebSocket on `ws://127.0.0.1:18080`, published on the host's loopback only. It puts each client's commands on ingress with the actor's next nonce, and sends every egress batch back, filtered for the connection's view (`admin`, or one account), with a `result` per command and a `status` when the engine goes down or comes back. Start it next to the engine, then drive one trade through it with the smoke script (Node 22 or later):
+`rfq-gateway` is the client edge ([gateway.md](docs/specs/gateway.md)): JSON over a WebSocket on `ws://127.0.0.1:18080`, published on the host's loopback only. It puts each client's commands on ingress with the actor's next nonce, and sends every egress batch back, filtered for the connection's view (`admin`, or one account), with a `result` per command and a `status` when the engine goes down or comes back. The same process serves the [HTTP API](#http-api) on port 18081. Start it next to the engine, then drive one trade through it with the smoke script (Node 22 or later):
 
 ```bash
 docker compose up -d aeron engine gateway
@@ -86,9 +87,64 @@ open tools/dashboard/dist/rfq-dashboard.html  # the status bar says "Connected",
 Recorded runs of five scenarios (the happy path, a dispute, a silent oracle, no quotes, a lapsed request), each with the engine's events and the engine and gateway logs side by side: [docs/demo.md](docs/demo.md).
 
 - **Scenarios.** Pick one of the 14 (eight brief scenarios, six attacks) and press **Run**, **Run ×N** or **Run all**. The page acts as every participant through the gateway and judges PASS or FAIL against the expected events. Panels: lanes, contract, ledger, trace, a timeline scrubber, the runs table with each run's latency, and **View as** (what one account receives). The failure drills below are listed at the bottom of the page. `node tools/dashboard/web/live-smoke.mjs` runs the 14 and `happy_path` ×20 from a terminal.
+- **Reload.** The page keeps nothing across a reload, so on load it asks the gateway's [HTTP API](#http-api) for the newest 5,000 `seq`s of history: lanes, contracts, positions, ledger and trace come back (the runs table does not, it is the page's own record). `?http=URL` on the page's address points it at another HTTP base. If the load fails (an older gateway, the port closed), a banner says so and the page stays live ([DESIGN §11.2](tools/dashboard/DESIGN.md)).
 - **Engine crash:** `docker compose kill engine` during a **Run ×N**, then `docker compose start engine`. The status goes "engine down" (when nothing is being sent, noticing can take up to about 10 s) and the command in flight reports `outcome unknown … nonce N`. After the start: `Resume`, "engine up", and a retry with the same nonce, whose log line says what happened (`nonce N taken once (Duplicate on retry); original: applied`, or `retry applied`, for example). Until that retry settles it, the gateway holds the participant's other commands, for at most 60 s ([gateway.md §6](docs/specs/gateway.md)). Runs not yet started wait for the engine (up to 60 s) and pass; a run in flight at the kill may fail on timing, or with "engine unavailable" (commands queued behind the in-flight one on the shared operator are refused). `docker compose logs engine` shows `replayed seq=… hash=…`, the hash it had.
 - **Stall:** `docker compose pause engine; sleep 2; docker compose unpause engine`. A `Resume` batch follows and open dispute windows are extended, so a run in flight inside a window may fail on timing: correct engine behaviour.
 - **Driver crash:** `docker compose kill aeron`. The engine is reported down about 3 s later; about 10 s after the kill the engine and gateway exit 1 and the page shows "Reconnecting". A `kill` is a manual stop, so Docker does not restart the driver, and the engine and gateway cannot rejoin its dead IPC namespace: run `docker compose up -d aeron engine gateway`. The engine replays its journal to the same hash and the page reconnects without a reload. The self-healing variant is `docker compose exec aeron kill -TERM 1`: the driver exits by itself, Docker restarts it in about 1 s, and the engine and gateway follow. Docker restarts a container automatically at most three times over its lifetime (`restart: on-failure:3`), so this drill self-heals about three times before `docker compose up -d` is needed again ([architecture §5](docs/architecture/overview.md) says what restarts by itself).
+
+### HTTP API
+
+The gateway also serves plain HTTP on `http://127.0.0.1:18081`, next to the WebSocket on 18080 and, like it, published on the host's loopback only (`RFQ_HTTP_PORT` moves it). `GET`s read a **replica**: a read-only copy of the engine that the gateway keeps by following the Archive journal, so a read never touches the engine. `POST`s go through the same hub as the WebSocket's commands, with the same nonces and safety rules. Every read says which `seq` it reflects (`as_of_seq`), and `?min_seq=N` makes it wait for a write you just made. There is no authentication: whoever can reach the port can act as, or read, any account, the admin trace included ([read-api.md §9](docs/specs/read-api.md)).
+
+With the stack up (`docker compose up -d aeron engine gateway`), paste this whole block: one trade, written and read back over HTTP. Amounts are micro-USD, prices basis points, times engine milliseconds. The demo node's accept window is 2 s, so step 5 has to follow step 4 at once.
+
+```bash
+H=http://127.0.0.1:18081
+get() { curl -s "$H$1"; echo; }
+post() {  # POST body $2 to $1; print the reply; keep its seq in $SEQ (a request's or quote's id is its seq)
+  R=$(curl -s -X POST "$H$1" -H 'content-type: application/json' -d "$2")
+  printf '%s\n' "$R"
+  SEQ=$(printf '%s' "$R" | sed 's/^{"seq":\([0-9]*\).*/\1/')
+}
+
+# 0. Is the stack up? Expect "engine":"up" and the replica "following".
+get /v1/status
+
+# 1. The operator (account 1) funds Alice (10) and MM2 (21) with $1,000 each and lists contract 7
+#    (run it again and the listing is refused, contract 7 exists: harmless).
+T=$(date +%s)000                          # engine time is the wall clock in ms; Docker's follows the host's
+post /v1/commands '{"actor":1,"action":{"Deposit":{"to":10,"amount":1000000000}}}'
+post /v1/commands '{"actor":1,"action":{"Deposit":{"to":21,"amount":1000000000}}}'
+post /v1/commands '{"actor":1,"action":{"ListContract":{"id":7,"description":"Rain in Paris tomorrow?","oracle":4,"trading_close":'$((T+3600000))',"resolution_deadline":'$((T+7200000))',"dispute_window":60000}}}'
+
+# 2. Alice asks to buy 1,000 YES at 0.70 or better (7000 basis points); quotes are due in 3 s.
+T=$(date +%s)000
+post /v1/requests '{"actor":10,"legs":[{"contract":7,"side":"BuyYes","qty":1000,"limit_price":7000}],"response_deadline":'$((T+3000))'}'
+REQ=$SEQ
+
+# 3. MM2 quotes 0.60 for all 1,000.
+post /v1/quotes '{"actor":21,"request":'$REQ',"leg":0,"price":6000,"size":1000,"expires_at":'$((T+60000))'}'
+QUOTE=$SEQ
+
+# 4. At the deadline the engine presents the best quote to Alice: her request now has "selected".
+until get /v1/accounts/10/requests | grep -q '"state":{"Presented"'; do sleep 0.5; done
+get /v1/accounts/10/requests
+
+# 5. Alice accepts what she was shown. Both stakes go to escrow.
+post /v1/commands '{"actor":10,"action":{"Accept":{"request":'$REQ',"picks":[{"leg":0,"quote":'$QUOTE',"price":6000}]}}}'
+
+# 6. Read it back; min_seq makes a read wait until the replica has applied the write it follows.
+get "/v1/accounts/10/positions?min_seq=$SEQ"
+get "/v1/trace?view=10&limit=20"
+```
+
+Each `POST` answers `200` with its command's batch as its actor sees it (`seq`, `nonce`, `latency_us`, events, balances), or `422` with `"rejected": "<reason>"` when the engine refuses the command. Step 6's first read ends like this (the ids differ from run to run): Alice holds YES with $600 locked, and MM2 holds the other side.
+
+```json
+{"as_of_seq":11,"positions":[{"contract":7,"id":1,"payout":null,"qty":1000,"request":7,"settled":false,"side":"Yes","stake":600000000}]}
+```
+
+`view=10` is what Alice's own connection would have received: her commands and what the engine told her, nothing of MM2's quote or balance (`view=admin` is the operator's, every command). The other endpoints (balances, quotes, open requests, contracts, status), the error statuses, the limits and the trace paging are in [read-api.md](docs/specs/read-api.md). To publish the API on another host port, set `RFQ_HTTP_PORT` and change `H`. `node scripts/http-smoke.mjs` runs a whole trade over HTTP and checks every reply and read, including that the trace equals the batches the WebSocket delivered; it prints `HTTP SMOKE OK` (it takes the HTTP base and the WebSocket URL as arguments, or `RFQ_HTTP_URL` and `RFQ_GATEWAY_URL`).
 
 ## Layout
 
@@ -97,11 +153,12 @@ Code is split into hexagonal layers, and dependencies point inward only: crate b
 | Crate | Layer | What it holds |
 |---|---|---|
 | [`rfq-domain`](crates/rfq-domain) | Domain, pure | Money types, `Ledger`, requests, quotes, contracts, positions, `Command` and `Event`, and the `Engine` state machine with its invariants. All money logic lives here. No I/O, no clock, no randomness. `#![forbid(unsafe_code)]`. |
-| [`rfq-app`](crates/rfq-app) | Application | The ports `Journal` and `Transport`, the protocol types `ClientCommand` and `EventBatch`, the `Sequencer`, and `Node`, the write-ahead loop: sequence, append, wait durable, apply, publish. |
-| [`rfq-infra`](crates/rfq-infra) | Infrastructure | Adapters for the ports: the versioned `codec`, `FileJournal`, `MemJournal`, `MemTransport`; with feature `aeron`, `AeronTransport` and `ArchiveJournal` (Aeron Archive). |
+| [`rfq-app`](crates/rfq-app) | Application | The ports `Journal` and `Transport`, the protocol types `ClientCommand` and `EventBatch`, `batch_of` (which command makes which batch, shared by the node and the replica), the `Sequencer`, and `Node`, the write-ahead loop: sequence, append, wait durable, apply, publish. |
+| [`rfq-infra`](crates/rfq-infra) | Infrastructure | Adapters for the ports: the versioned `codec`, `FileJournal`, `MemJournal`, `MemTransport`; with feature `aeron`, `AeronTransport`, `ArchiveJournal` (Aeron Archive) and `JournalFollower` (replays the journal and keeps following it, for the read side). |
 | [`rfq-node`](crates/rfq-node) | Composition root (binary) | Reads its configuration from the environment, wires an Aeron transport and a journal into `Node`, and runs the loop. |
 | [`rfq-demo`](crates/rfq-demo) | Client (binary) | Runs the scripted scenarios against a live node over Aeron and checks the events it gets back. |
-| [`rfq-gateway`](crates/rfq-gateway) | Client edge (library and binary) | The WebSocket gateway. The library is pure (protocol, per-viewer filter, nonce book, hub state machine); the binary adds the Aeron adapter, the WebSocket server and the hub loop. |
+| [`rfq-read`](crates/rfq-read) | Read side, pure | The replica: a read-only `Engine` fed by the journal, the trace of every batch it regenerates, and the read views (positions, requests, quotes, contracts). No I/O, no clock. `#![forbid(unsafe_code)]`. |
+| [`rfq-gateway`](crates/rfq-gateway) | Client edge (library and binary) | The WebSocket gateway and the HTTP API. The library is pure (protocol, per-viewer filter, nonce book, hub state machine, the HTTP read and write rules); the binary adds the Aeron adapter, the WebSocket and HTTP servers, the hub loop and the replica thread that follows the journal. |
 | [`rfq-testkit`](crates/rfq-testkit) | Test support | The test `Harness`, well-known accounts, and the scripted scenarios (shared by the tests and the demo). |
 
 ## Where each deliverable is
@@ -124,6 +181,7 @@ Also: the product and technical decisions in [rfc/0001-rfq-engine.md](docs/rfc/0
 - **Money only moves through the ledger,** and every handler validates before it mutates. Five invariants (conservation, holds, escrow, ownership, no dead ends) are checked after every command in the tests.
 - **Adversarial by default.** Sealed bids, firm quotes once selected, strict per-actor nonces, a bond for disputes, role separation for oracles, a hard deadline so no money is stuck forever. The remaining risks are listed with their production defences in [adversarial.md](docs/specs/adversarial.md).
 - **Write-ahead.** Nothing is applied or published until its command is durable, meaning fsynced, in the journal: Aeron Archive with `aeron.archive.file.sync.level=2`, or a local file with `sync_data`. That costs an fsync on the write-ahead path, one wait per batch. Egress is a best-effort notification stream; anything that must happen exactly once reads the journal.
+- **Reads come from the journal too.** A replica of the engine, built by replaying and following the Archive, serves the HTTP reads and the trace, so the engine never answers a read. It shows only commands that were fsynced, and its `state_hash` at a `seq` equals the node's ([read-api.md](docs/specs/read-api.md)).
 
 ## Measured numbers
 
@@ -131,7 +189,7 @@ Also: the product and technical decisions in [rfc/0001-rfq-engine.md](docs/rfc/0
 
 ## Not built
 
-Designed only: snapshots and pruning, Aeron Cluster for HA, on-chain escrow and effect workers, and authentication. (The gateway is built, but it trusts the `actor` a client names: [gateway.md §7](docs/specs/gateway.md).) The brief puts auth, real chain integration and pricing out of scope.
+Designed only: snapshots and pruning, Aeron Cluster for HA, on-chain escrow and effect workers, and authentication. (The gateway and its HTTP API are built, but they trust the `actor` a client names: [gateway.md §7](docs/specs/gateway.md), [read-api.md §9](docs/specs/read-api.md). The read side is built inside the gateway: it has no snapshots, so it replays the whole journal on every start, and its trace grows with it.) The brief puts auth, real chain integration and pricing out of scope.
 
 ## License
 

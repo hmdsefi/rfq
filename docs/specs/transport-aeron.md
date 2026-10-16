@@ -8,10 +8,11 @@
 | Log | 1002 | node → Archive (recorded, never read live) | `SequencedCommand` |
 | Egress | 1003 | node → clients | `EventBatch{seq, time, kind, origin, events, balances}` |
 | Replay | 1004 | Archive → node at startup | `SequencedCommand` |
+| Follow | 1005 | Archive → the gateway's journal follower, continuously | `SequencedCommand` |
 
 Stream ids start at 1001 because Aeron Archive's local control channel already uses `aeron:ipc` stream 10.
 
-The engine does not subscribe to the log stream. It runs in the same process as the sequencer and applies a command as soon as the Archive has recorded it (`wait_durable`); the only way back out of stream 1002 is replay on 1004.
+The engine does not subscribe to the log stream. It runs in the same process as the sequencer and applies a command as soon as the Archive has recorded it (`wait_durable`); the only way back out of stream 1002 is replay: on 1004 by the node at startup, and on 1005 by the gateway's journal follower (below). The node publishes on neither of them, and the follower never writes to the Archive.
 
 Encoding: `serde` + `bincode` (fixed-int, little-endian, trailing bytes rejected), with a `u8` version prefix. Size policy: ingress messages longer than `MAX_INGRESS` (64 KiB) are dropped before decoding; journal records and egress batches are produced by the node and are not size-limited by the codec (the Aeron adapter splits an egress batch that exceeds the transport's max message size into several `EventBatch` chunks with the same `seq`). A message that fails to decode on ingress is dropped and logged; it never reaches the log. Ingress decodes to `ClientCommand`, which cannot express `Genesis`, `Tick` or `Resume`. Only the node itself creates those.
 
@@ -40,6 +41,13 @@ pub trait Transport {
 ```
 
 - **`ArchiveJournal`:** each node start writes the log through a new *exclusive* publication on `aeron:ipc` stream 1002 and calls `start_recording(aeron:ipc?session-id=<that publication's session>, 1002, LOCAL)`, which creates a new recording of exactly that session. Together, all the recordings of stream 1002 in recording-id order make up the log. `wait_durable` reads the recording's position counter in shared memory until it reaches the publication position returned by `offer`. `replay` (allowed only before the first `append`) stops any recording a crashed node left active, then replays every recording for stream 1002 in order onto stream 1004. Details and reasons: [Implementation notes](#implementation-notes-task-10).
+- **`JournalFollower` (feature `aeron`; the read side's input, [read-api.md §5](read-api.md)).** It reads the same log as `replay`, but keeps reading while the node writes:
+  - **How it follows.** It replays a recording from its start onto stream 1005 with length `INT64_MAX`. The Archive replays what is recorded and, for a recording that is still active, keeps replaying as it grows. The follower subscribes to that replay's session only (`aeron:ipc?session-id=…`), reassembles fragments with the same `Reassembler` and decodes each `SequencedCommand` with the node's codec. A message torn at a crash's stop position never completes, so it is never delivered.
+  - **Recording switch.** Every node start records anew, so when a stopped recording's replay reaches its stop position, the follower moves on to the next recording in id order. If that does not exist yet it waits, listing the catalog every 100 ms, until the restarted node creates it. A recording that was stopped before it recorded anything is skipped: the Archive refuses to replay it (invalid position), where an active one that holds nothing yet it accepts. A replay that ends short of the stop position, or a recording that disappears, is an error.
+  - **Control session.** `replay` closes its control session right after startup; the follower lives as long as the gateway, so it keeps its session open and calls `poll_for_recording_signals` on every poll. Left unpolled, the Archive closes the session once its pings no longer fit (the same failure as in the `wait_durable` note below, after about nine idle minutes).
+  - **`caught_up()`** says when it has delivered everything recorded: it follows the log's last recording, that recording is still active, no later one was listed, and the replay's position has reached the recording's position counter (the value `wait_durable` reads). It is `false` while the follower waits for a recording or follows one that has stopped, so a gateway that starts after the engine's last recording has stopped (the engine down for about 10 s) reports `catching_up` until the engine writes. Checked: engine stopped for 16 s, gateway restarted, `/v1/status` said `catching_up` with every `seq` replayed; the engine's start made it `following`. `poll` returning `Ok(0)` is not the same thing: it only says that call delivered nothing.
+  - **Only durable commands.** The Archive replays what it has recorded, and with `file.sync.level=2` the recorded position moves only after the fsync, so the follower never delivers a command that was not durable: the node's write-ahead guarantee carries over to every reader.
+  - **No sequencing, no retries.** It delivers commands in recorded order and does not check `seq`; the replica does. Any error is returned and ends the follower, and the caller opens a new one and rebuilds from the first recording ([read-api.md §5](read-api.md)). Like every `rusteron` handle it is not `Send`: the gateway's replica thread connects its own Aeron client and opens the follower inside itself.
 - **`FileJournal` (fallback; `RFQ_JOURNAL=file:<path>`):** an append-only file of length-prefixed records with a CRC32 on each. `wait_durable` = `File::sync_data`. On open it truncates an incomplete or checksum-failing tail: that tail was never durable, so it was never applied (a bad checksum mid-file also truncates everything after it, even records that were durable and published: a residual risk of this fallback journal, [adversarial.md](adversarial.md)). A checksum-valid record that does not decode is `Corrupt` and is never truncated. The first I/O error poisons the handle. The node still needs a media driver for the Aeron transport.
 - **`MemJournal`:** used by tests.
 
@@ -89,6 +97,18 @@ services:
       RFQ_JOURNAL: archive
       RFQ_HASH_EVERY_BATCH: "1" # logs `applied seq=<n> hash=<hex>` after every batch
     depends_on: [aeron]
+  gateway:                      # rfq-gateway: WebSocket :18080 and HTTP API :18081 (gateway.md, read-api.md)
+    build: { context: ., dockerfile: docker/rust.Dockerfile, args: { BIN: rfq-gateway } }
+    ipc: "service:aeron"
+    init: true
+    restart: "on-failure:3"     # a dead driver or Aeron client exits 1; a dead engine is not fatal
+    environment:
+      RFQ_GATEWAY_ADDR: "0.0.0.0:18080"
+      RFQ_HTTP_ADDR: "0.0.0.0:18081"
+    ports:                      # published on the host's loopback only
+      - "127.0.0.1:${RFQ_GATEWAY_PORT:-18080}:18080"
+      - "127.0.0.1:${RFQ_HTTP_PORT:-18081}:18081"
+    depends_on: [aeron]
   demo:                         # rfq-demo: on demand, `docker compose run --rm demo [scenario]`
     build: { context: ., dockerfile: docker/rust.Dockerfile, args: { BIN: rfq-demo } }
     ipc: "service:aeron"
@@ -99,8 +119,8 @@ volumes:
   archive: {}
 ```
 
-- All three containers share the driver's `/dev/shm/aeron` through `ipc: "service:aeron"`. Every stream is `aeron:ipc`, so there is no network between them.
-- No container runs as root. The driver creates its files in `/dev/shm/aeron` as `0644` owned by its own uid, and a client maps them read-write, so the driver and both Rust images all run as uid 10001. `/data/archive` in the Aeron image is owned by that uid, so a new `archive` volume starts owned by it too.
+- The engine, the gateway and the demo share the driver's `/dev/shm/aeron` through `ipc: "service:aeron"`. Every stream is `aeron:ipc`, so there is no network between them.
+- No container runs as root. The driver creates its files in `/dev/shm/aeron` as `0644` owned by its own uid, and a client maps them read-write, so the driver and the Rust images all run as uid 10001. `/data/archive` in the Aeron image is owned by that uid, so a new `archive` volume starts owned by it too.
 - `docker/rust.Dockerfile` builds one workspace binary (`BIN`) with `--features aeron` and `--locked` on `rust:1.99.0-bookworm`, and runs it on `debian:bookworm-slim`.
 - `RFQ_HASH_EVERY_BATCH` (demo only: it hashes the whole state after every batch) is what lets `scripts/demo.sh` prove recovery: it compares the last `applied seq=<n> hash=<hex>` logged before `SIGKILL` with the `replayed seq=<n> hash=<hex>` the restarted engine logs after replaying the Archive. They must be equal (`RECOVERY OK`).
 - The Archive data lives on the `archive` volume, so it survives the engine being killed and restarted. `docker compose --profile demo down -v` deletes it.
