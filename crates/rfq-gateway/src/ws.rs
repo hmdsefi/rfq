@@ -22,7 +22,7 @@
 use std::io::{self, ErrorKind, Read};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -75,16 +75,29 @@ pub enum InboxItem {
 /// The hub loop's inbox: bounded, and every send blocks while it is full.
 pub type Inbox = SyncSender<(ConnId, InboxItem)>;
 
-/// Starts the acceptor thread on `listener`. Each accepted connection gets an id and a thread.
-pub fn spawn(listener: TcpListener, inbox: Inbox) -> io::Result<JoinHandle<()>> {
-    std::thread::Builder::new()
-        .name("ws-accept".into())
-        .spawn(move || accept(&listener, &inbox))
+/// The counter of connection ids, shared by everything that opens a hub connection: the
+/// WebSocket acceptor, and the HTTP writes (read-api.md §4). Clones share the counter, so no two
+/// connections ever have the same [`ConnId`], whichever door they came in by.
+#[derive(Clone, Debug, Default)]
+pub struct ConnIds(Arc<AtomicU64>);
+
+impl ConnIds {
+    /// The next id: 1, 2, 3, ... over all clones.
+    pub fn next(&self) -> ConnId {
+        ConnId(self.0.fetch_add(1, Ordering::Relaxed) + 1)
+    }
 }
 
-fn accept(listener: &TcpListener, inbox: &Inbox) {
+/// Starts the acceptor thread on `listener`. Each accepted connection gets an id from `ids`, and
+/// a thread.
+pub fn spawn(listener: TcpListener, inbox: Inbox, ids: ConnIds) -> io::Result<JoinHandle<()>> {
+    std::thread::Builder::new()
+        .name("ws-accept".into())
+        .spawn(move || accept(&listener, &inbox, &ids))
+}
+
+fn accept(listener: &TcpListener, inbox: &Inbox, ids: &ConnIds) {
     let live = Arc::new(AtomicUsize::new(0));
-    let mut next = 0u64;
     for stream in listener.incoming() {
         let stream = match stream {
             Ok(stream) => stream,
@@ -100,12 +113,11 @@ fn accept(listener: &TcpListener, inbox: &Inbox) {
             tracing::warn!(peer, max = MAX_CONNECTIONS, "ws refused: too many connections");
             continue;
         }
-        next += 1;
-        let conn = ConnId(next);
+        let conn = ids.next();
         let guard = Live::enter(&live);
         let inbox = inbox.clone();
         let spawned = std::thread::Builder::new()
-            .name(format!("ws-{next}"))
+            .name(format!("ws-{}", conn.0))
             .spawn(move || {
                 let _guard = guard;
                 connection(conn, stream, &inbox);
@@ -381,10 +393,15 @@ mod tests {
     /// its connection, and closes a connection (drops its outbox) when it sends `bye`. Returns
     /// the port and a log of what reached the inbox.
     fn server() -> (u16, Receiver<String>) {
+        server_with(ConnIds::default())
+    }
+
+    /// [`server`], taking its connection ids from `ids`.
+    fn server_with(ids: ConnIds) -> (u16, Receiver<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let (inbox, items) = mpsc::sync_channel::<(ConnId, InboxItem)>(64);
-        spawn(listener, inbox).unwrap();
+        spawn(listener, inbox, ids).unwrap();
         let (log, seen) = mpsc::channel();
         std::thread::spawn(move || {
             let mut outboxes = BTreeMap::new();
@@ -468,6 +485,44 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Clones count together, from any thread: ids never repeat (read-api.md §4).
+    #[test]
+    fn connection_ids_are_one_counter_across_clones_and_threads() {
+        let ids = ConnIds::default();
+        assert_eq!(ids.next(), ConnId(1));
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let ids = ids.clone();
+                std::thread::spawn(move || (0..1_000).map(|_| ids.next().0).collect::<Vec<_>>())
+            })
+            .collect();
+        let mut all: Vec<u64> = threads.into_iter().flat_map(|t| t.join().unwrap()).collect();
+        all.sort_unstable();
+        assert_eq!(
+            all,
+            (2..=8_001).collect::<Vec<_>>(),
+            "every id once, none skipped"
+        );
+        assert_eq!(ids.next(), ConnId(8_002));
+    }
+
+    /// The acceptor numbers its connections from the shared counter, so an HTTP write holding a
+    /// clone of it never gets the id of a WebSocket connection.
+    #[test]
+    fn the_acceptor_takes_its_ids_from_the_shared_counter() {
+        let ids = ConnIds::default();
+        let (port, seen) = server_with(ids.clone());
+        let _first = connect(port, None).unwrap();
+        assert_eq!(expect_log(&seen, "open "), "open 1");
+        assert_eq!(ids.next(), ConnId(2), "the id after the WebSocket's");
+        let _second = connect(port, None).unwrap();
+        assert_eq!(
+            expect_log(&seen, "open "),
+            "open 3",
+            "and the acceptor skips the id taken"
+        );
     }
 
     #[test]

@@ -22,7 +22,7 @@
 //!
 //! Each request is logged at info: `http method=… path=… status=… ms=…`, never a body.
 use std::io::{self, ErrorKind, Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -74,6 +74,8 @@ pub struct Request {
     pub origin: Option<String>,
     /// The body; empty unless the method is `POST`.
     pub body: Vec<u8>,
+    /// The client's address, for the logs (`0.0.0.0:0` if the socket cannot say).
+    pub peer: SocketAddr,
 }
 
 pub type Handler = Arc<dyn Fn(&Request) -> Reply + Send + Sync>;
@@ -347,6 +349,9 @@ fn serve(
         query: head.query.clone(),
         origin: head.origin.clone(),
         body,
+        peer: stream
+            .peer_addr()
+            .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0))),
     };
     let reply = catch_unwind(AssertUnwindSafe(|| handler(&request))).unwrap_or_else(|_| {
         tracing::error!(method = %request.method, path = %request.path, "http handler panicked");

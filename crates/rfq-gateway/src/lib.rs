@@ -24,3 +24,4 @@ pub mod protocol;
 pub mod read_api;
 pub mod status;
 pub mod view;
+pub mod write_api;

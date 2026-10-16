@@ -3,8 +3,9 @@
 //! connection.
 //!
 //! Each turn:
-//! 1. drains the WebSocket inbox (at most [`MAX_INBOX_PER_TURN`] items, so egress is never
-//!    starved: the node gives up on a subscriber that stops reading);
+//! 1. drains the inbox (at most [`MAX_INBOX_PER_TURN`] items, so egress is never starved: the
+//!    node gives up on a subscriber that stops reading). The WebSocket connections and the HTTP
+//!    writes (`http_write`: a short-lived connection per `POST`) both enter it;
 //! 2. polls egress until it is drained (at most [`MAX_POLLS_PER_TURN`] polls), and feeds each
 //!    batch (or chunk of one) to the hub;
 //! 3. feeds `Ingress { connected }` when the venue's connection changes, the first connection at
@@ -281,14 +282,20 @@ fn wall_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use std::net::SocketAddr;
-    use std::sync::mpsc::{self, Sender, sync_channel};
+    use std::io::{Read, Write};
+    use std::net::{SocketAddr, TcpListener, TcpStream};
+    use std::sync::mpsc::sync_channel;
+    use std::thread::JoinHandle;
 
     use rfq_app::BatchKind;
-    use rfq_domain::{AccountId, Emitted, Event, RejectReason};
+    use rfq_domain::{AccountId, Action, Balance, Emitted, Event, RejectReason};
+    use rfq_gateway::protocol::MAX_TEXT;
     use serde_json::{Value, json};
 
     use super::*;
+    use crate::http_server;
+    use crate::http_write::Writer;
+    use crate::ws::{ConnIds, INBOX};
 
     const ALICE: AccountId = AccountId(10);
     const MM1: AccountId = AccountId(20);
@@ -328,18 +335,22 @@ mod tests {
 
     struct Rig {
         hub: HubLoop<FakeVenue>,
-        inbox: Sender<(ConnId, InboxItem)>,
+        /// A bounded inbox, like the server's, so HTTP writes can enter it.
+        inbox: SyncSender<(ConnId, InboxItem)>,
         status: Arc<EngineStatus>,
+        /// The connection ids of everything that opens a hub connection in a test.
+        ids: ConnIds,
     }
 
     impl Rig {
         fn new() -> Rig {
-            let (inbox, items) = mpsc::channel();
+            let (inbox, items) = sync_channel(INBOX);
             let status = Arc::new(EngineStatus::new());
             Rig {
                 hub: HubLoop::new(FakeVenue::default(), items, Arc::clone(&status)),
                 inbox,
                 status,
+                ids: ConnIds::default(),
             }
         }
 
@@ -678,6 +689,477 @@ mod tests {
             (false, Some(7)),
             "down, and the last seq stays"
         );
+    }
+
+    // ---- HTTP writes (read-api.md §4): the real HTTP server and write handler, the real hub
+    // loop on this thread, a client in its own thread ----
+
+    /// How long a POST may wait in a test that is not about the wait.
+    const LONG_WAIT: Duration = Duration::from_secs(20);
+
+    impl Rig {
+        /// Marks the engine up: the venue is connected, and the hub has heard so.
+        fn engine_up(&mut self) {
+            self.hub.venue.connected = true;
+            self.turn();
+        }
+
+        /// A real HTTP server on an ephemeral port whose `POST`s enter this rig's inbox, each
+        /// waiting at most `wait` for its answer.
+        fn http(&self, wait: Duration) -> SocketAddr {
+            let writer = Writer::new(self.inbox.clone(), self.ids.clone(), wait);
+            let handler: http_server::Handler = Arc::new(move |request| writer.post(request));
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            http_server::spawn(listener, http_server::LIMITS, handler).unwrap();
+            addr
+        }
+
+        /// A WebSocket-style connection, numbered from the shared counter, with `view`.
+        fn ws(&mut self, view: Value) -> (u64, Receiver<String>) {
+            let conn = self.ids.next().0;
+            let frames = self.open(conn, 64);
+            self.text(conn, json!({"type": "hello", "view": view}));
+            (conn, frames)
+        }
+
+        /// Turns the hub loop until `done` holds, for at most 5 s.
+        fn turn_until(&mut self, what: &str, done: impl Fn(&Rig) -> bool) {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                self.turn();
+                if done(self) {
+                    return;
+                }
+                assert!(Instant::now() < deadline, "gave up waiting for {what}");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+
+        /// Until the hub has opened `conn` with Alice's view, which is its hello; and a moment
+        /// more, so that the command its client sends right after is queued too.
+        fn turn_until_alices_post(&mut self, conn: u64) {
+            self.turn_until("the POST's hub connection", |r| {
+                r.hub.hub.view(ConnId(conn)) == Some(View::Account(ALICE))
+            });
+            std::thread::sleep(Duration::from_millis(20));
+            self.turn();
+        }
+
+        fn offered(&self) -> usize {
+            self.hub.venue.offered.len()
+        }
+    }
+
+    /// The raw request for a `POST` of `body`.
+    fn post_text(path: &str, body: &str) -> String {
+        format!(
+            "POST {path} HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    /// A client in its own thread: one `POST`, and the status and JSON body it got back.
+    fn post(addr: SocketAddr, path: &str, body: &Value) -> JoinHandle<(u16, Value)> {
+        let request = post_text(path, &body.to_string());
+        std::thread::spawn(move || {
+            let mut stream = TcpStream::connect(addr).unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+            stream.write_all(request.as_bytes()).unwrap();
+            let mut raw = String::new();
+            stream.read_to_string(&mut raw).unwrap();
+            let (head, body) = raw.split_once("\r\n\r\n").unwrap();
+            let status = head.split(' ').nth(1).unwrap().parse().unwrap();
+            (status, serde_json::from_str(body).unwrap_or(Value::Null))
+        })
+    }
+
+    fn withdraw_body(actor: AccountId, nonce: u64, amount: u64) -> Value {
+        json!({"actor": actor.0, "nonce": nonce, "action": {"Withdraw": {"amount": amount}}})
+    }
+
+    fn quote_body(actor: AccountId, nonce: u64) -> Value {
+        json!({"actor": actor.0, "nonce": nonce, "request": 7, "leg": 0, "price": 6_200,
+               "size": 1_000, "expires_at": 10_000})
+    }
+
+    /// The batch of `actor`'s command `nonce`: a withdrawal of `amount`, and the balance after it.
+    fn withdrew(seq: u64, actor: AccountId, nonce: u64, amount: u64) -> EventBatch {
+        EventBatch {
+            events: vec![Emitted::to(
+                actor,
+                Event::Withdrawn {
+                    account: actor,
+                    amount,
+                },
+            )],
+            balances: vec![(
+                actor,
+                Balance {
+                    free: 100 - amount,
+                    reserved: 0,
+                    escrowed: 0,
+                },
+            )],
+            ..answer(seq, actor, nonce)
+        }
+    }
+
+    fn amount_of(body: &Value) -> &Value {
+        &body["events"][0]["event"]["Withdrawn"]["amount"]
+    }
+
+    #[test]
+    fn post_command_returns_its_batch() {
+        let mut rig = Rig::new();
+        rig.engine_up();
+        let addr = rig.http(LONG_WAIT);
+        let client = post(addr, "/v1/commands", &withdraw_body(ALICE, 5, 1));
+
+        rig.turn_until("the command on ingress", |r| r.offered() == 1);
+        let (command, _) = &rig.hub.venue.offered[0];
+        assert_eq!(
+            (command.actor, command.nonce, &command.action),
+            (ALICE, 5, &Action::Withdraw { amount: 1 })
+        );
+        // The test answers the venue's offer with the node's batch.
+        rig.hub.venue.egress.push_back(withdrew(7, ALICE, 5, 1));
+        rig.turn_until("the answer", |_| client.is_finished());
+        let (status, body) = client.join().unwrap();
+
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(
+            (&body["seq"], &body["nonce"], &body["rejected"]),
+            (&json!(7), &json!(5), &Value::Null)
+        );
+        assert!(body["latency_us"].is_u64(), "{body}");
+        assert_eq!(
+            body["events"],
+            json!([{"audience": {"Account": 10}, "event": {"Withdrawn": {"account": 10, "amount": 1}}}])
+        );
+        assert_eq!(
+            body["balances"],
+            json!([{"account": 10, "balance": {"free": 99, "reserved": 0, "escrowed": 0}}])
+        );
+        // Its short-lived hub connection is gone.
+        rig.turn_until("the hub connection closed", |r| r.hub.outboxes.is_empty());
+        assert_eq!(rig.hub.hub.view(ConnId(1)), None);
+    }
+
+    /// The command the hub offers is the one the body says, through each of the three routes.
+    #[test]
+    fn each_route_offers_its_command() {
+        let mut rig = Rig::new();
+        rig.engine_up();
+        let addr = rig.http(LONG_WAIT);
+        let request = json!({"actor": 10, "nonce": 5, "legs": [{"contract": 7, "side": "BuyYes",
+            "qty": 1_000, "limit_price": 7_000}], "response_deadline": 1_500});
+        let routes = [
+            ("/v1/requests", request, 5),
+            ("/v1/quotes", quote_body(ALICE, 6), 6),
+            ("/v1/commands", withdraw_body(ALICE, 7, 1), 7),
+        ];
+        for (n, (path, body, nonce)) in routes.into_iter().enumerate() {
+            let client = post(addr, path, &body);
+            rig.turn_until("the command on ingress", |r| r.offered() == n + 1);
+            rig.hub
+                .venue
+                .egress
+                .push_back(withdrew(10 + nonce, ALICE, nonce, 1));
+            rig.turn_until("the answer", |_| client.is_finished());
+            assert_eq!(client.join().unwrap().0, 200, "{path}");
+        }
+        let actions: Vec<(u64, &str)> = rig
+            .hub
+            .venue
+            .offered
+            .iter()
+            .map(|(c, _)| {
+                let name = match c.action {
+                    Action::SubmitRequest { .. } => "SubmitRequest",
+                    Action::SubmitQuote { .. } => "SubmitQuote",
+                    Action::Withdraw { .. } => "Withdraw",
+                    _ => "?",
+                };
+                (c.nonce, name)
+            })
+            .collect();
+        assert_eq!(
+            actions,
+            [(5, "SubmitRequest"), (6, "SubmitQuote"), (7, "Withdraw")]
+        );
+    }
+
+    #[test]
+    fn post_when_the_engine_is_down_is_503() {
+        let mut rig = Rig::new(); // the hub starts down, and nothing has connected
+        let addr = rig.http(LONG_WAIT);
+        let client = post(addr, "/v1/commands", &withdraw_body(ALICE, 5, 1));
+        rig.turn_until("the answer", |_| client.is_finished());
+        let (status, body) = client.join().unwrap();
+        assert_eq!((status, body), (503, json!({"error": "engine unavailable"})));
+        assert_eq!(rig.offered(), 0, "never offered");
+        rig.turn_until("the hub connection closed", |r| r.hub.outboxes.is_empty());
+    }
+
+    /// A command the engine refuses (its nonce is consumed) is a 422 with the reason.
+    #[test]
+    fn a_refused_command_is_422_with_its_reason() {
+        let mut rig = Rig::new();
+        rig.engine_up();
+        let addr = rig.http(LONG_WAIT);
+        let client = post(addr, "/v1/quotes", &quote_body(ALICE, 5));
+        rig.turn_until("the command on ingress", |r| r.offered() == 1);
+        rig.hub.venue.egress.push_back(EventBatch {
+            events: vec![Emitted::to(
+                ALICE,
+                Event::CommandRejected {
+                    reason: RejectReason::UnknownObject,
+                },
+            )],
+            ..answer(7, ALICE, 5)
+        });
+        rig.turn_until("the answer", |_| client.is_finished());
+        let (status, body) = client.join().unwrap();
+        assert_eq!(status, 422, "{body}");
+        assert_eq!(
+            (&body["rejected"], &body["seq"], &body["nonce"]),
+            (&json!("UnknownObject"), &json!(7), &json!(5))
+        );
+    }
+
+    /// Review Focus 3: two writers for one account. The hub queues them; each answer takes only
+    /// the batch of its own `(actor, nonce)`, though the other's batch goes to its connection too.
+    #[test]
+    fn two_posts_for_one_account_each_get_their_own_seq() {
+        let mut rig = Rig::new();
+        rig.engine_up();
+        let addr = rig.http(LONG_WAIT);
+        let first = post(addr, "/v1/commands", &withdraw_body(ALICE, 5, 1));
+        rig.turn_until("the first command on ingress", |r| r.offered() == 1);
+        let second = post(addr, "/v1/quotes", &quote_body(ALICE, 6));
+        rig.turn_until_alices_post(2);
+        assert_eq!(rig.offered(), 1, "one command per account on ingress at a time");
+
+        rig.hub.venue.egress.push_back(withdrew(7, ALICE, 5, 1));
+        rig.turn_until("the first answer", |_| first.is_finished());
+        let (status, body) = first.join().unwrap();
+        assert_eq!(
+            (status, &body["seq"], &body["nonce"]),
+            (200, &json!(7), &json!(5))
+        );
+        assert_eq!(amount_of(&body), 1);
+
+        rig.turn_until("the second command on ingress", |r| r.offered() == 2);
+        let (command, _) = &rig.hub.venue.offered[1];
+        assert_eq!((command.actor, command.nonce), (ALICE, 6));
+        assert!(matches!(command.action, Action::SubmitQuote { .. }));
+        rig.hub.venue.egress.push_back(withdrew(8, ALICE, 6, 2));
+        rig.turn_until("the second answer", |_| second.is_finished());
+        let (status, body) = second.join().unwrap();
+        assert_eq!(
+            (status, &body["seq"], &body["nonce"]),
+            (200, &json!(8), &json!(6))
+        );
+        assert_eq!(amount_of(&body), 2, "its own batch, not the first's");
+        assert_eq!(body["balances"][0]["balance"]["free"], 98);
+    }
+
+    /// The same, with a WebSocket-style connection for the account: first behind it, then ahead of
+    /// it. The WebSocket's connection gets its own `result` only.
+    #[test]
+    fn a_post_and_a_websocket_command_for_one_account_each_get_their_own_seq() {
+        let mut rig = Rig::new();
+        rig.engine_up();
+        let addr = rig.http(LONG_WAIT);
+        let (ws, frames) = rig.ws(json!({"account": 10}));
+
+        // The WebSocket's command is ahead, the POST's behind it.
+        rig.text(ws, withdraw("w1", ALICE, 5));
+        rig.turn_until("the WebSocket command on ingress", |r| r.offered() == 1);
+        let post1 = post(addr, "/v1/commands", &withdraw_body(ALICE, 6, 2));
+        rig.turn_until_alices_post(ws + 1);
+        rig.hub.venue.egress.push_back(withdrew(7, ALICE, 5, 1));
+        rig.turn_until("the POST's command on ingress", |r| r.offered() == 2);
+        rig.hub.venue.egress.push_back(withdrew(8, ALICE, 6, 2));
+        rig.turn_until("the POST's answer", |_| post1.is_finished());
+        let (status, body) = post1.join().unwrap();
+        assert_eq!(
+            (status, &body["seq"], &body["nonce"]),
+            (200, &json!(8), &json!(6))
+        );
+        assert_eq!(amount_of(&body), 2);
+
+        // The POST's command is ahead, the WebSocket's behind it.
+        let post2 = post(addr, "/v1/commands", &withdraw_body(ALICE, 7, 3));
+        rig.turn_until("the second POST's command on ingress", |r| r.offered() == 3);
+        rig.text(ws, withdraw("w2", ALICE, 8));
+        rig.turn();
+        rig.hub.venue.egress.push_back(withdrew(9, ALICE, 7, 3));
+        rig.turn_until("the second POST's answer", |_| post2.is_finished());
+        let (status, body) = post2.join().unwrap();
+        assert_eq!(
+            (status, &body["seq"], &body["nonce"]),
+            (200, &json!(9), &json!(7))
+        );
+        assert_eq!(amount_of(&body), 3);
+        rig.turn_until("the WebSocket's second command on ingress", |r| r.offered() == 4);
+        rig.hub.venue.egress.push_back(withdrew(10, ALICE, 8, 1));
+        rig.turn();
+
+        let got = drain(&frames);
+        let results: Vec<(&str, u64)> = got
+            .iter()
+            .filter(|f| f["type"] == "result")
+            .map(|f| (f["id"].as_str().unwrap(), f["seq"].as_u64().unwrap()))
+            .collect();
+        assert_eq!(results, [("w1", 7), ("w2", 10)], "no result for a POST's command");
+        let batches: Vec<u64> = got
+            .iter()
+            .filter(|f| f["type"] == "batch")
+            .map(|f| f["seq"].as_u64().unwrap())
+            .collect();
+        assert_eq!(batches, [7, 8, 9, 10], "it sees every batch of its account");
+    }
+
+    /// Review Focus 5: the client goes away while its command waits. The handler cannot know, so
+    /// the command still runs, and the answer goes nowhere; but its hub connection is closed all
+    /// the same, and the actor's queue does not hold on to it.
+    #[test]
+    fn a_client_that_goes_away_still_closes_its_hub_connection() {
+        let mut rig = Rig::new();
+        rig.engine_up();
+        let addr = rig.http(LONG_WAIT);
+        let first = post(addr, "/v1/commands", &withdraw_body(ALICE, 5, 1));
+        rig.turn_until("the first command on ingress", |r| r.offered() == 1);
+
+        // The second client sends its command (queued behind the first's), then closes its socket.
+        let mut gone = TcpStream::connect(addr).unwrap();
+        gone.write_all(post_text("/v1/commands", &withdraw_body(ALICE, 6, 2).to_string()).as_bytes())
+            .unwrap();
+        rig.turn_until_alices_post(2);
+        drop(gone);
+        assert!(
+            rig.hub.outboxes.contains_key(&ConnId(2)),
+            "the hub cannot know yet"
+        );
+
+        rig.hub.venue.egress.push_back(withdrew(7, ALICE, 5, 1));
+        rig.turn_until("the first answer", |_| first.is_finished());
+        assert_eq!(first.join().unwrap().0, 200);
+        rig.turn_until("the second command on ingress", |r| r.offered() == 2);
+        rig.hub.venue.egress.push_back(withdrew(8, ALICE, 6, 2));
+        rig.turn_until("both hub connections closed", |r| r.hub.outboxes.is_empty());
+        assert_eq!(
+            (rig.hub.hub.view(ConnId(1)), rig.hub.hub.view(ConnId(2))),
+            (None, None)
+        );
+
+        // Nothing of Alice's is left on the hub: a new command for her goes straight to ingress.
+        let third = post(addr, "/v1/commands", &withdraw_body(ALICE, 7, 3));
+        rig.turn_until("the third command on ingress", |r| r.offered() == 3);
+        rig.hub.venue.egress.push_back(withdrew(9, ALICE, 7, 3));
+        rig.turn_until("the third answer", |_| third.is_finished());
+        let (status, body) = third.join().unwrap();
+        assert_eq!(
+            (status, &body["seq"], &body["nonce"]),
+            (200, &json!(9), &json!(7))
+        );
+    }
+
+    /// No batch within the wait: 504, and the hub connection is closed all the same.
+    #[test]
+    fn the_wait_times_out_with_504() {
+        let mut rig = Rig::new();
+        rig.engine_up();
+        let wait = Duration::from_millis(300);
+        let addr = rig.http(wait);
+        let started = Instant::now();
+        let client = post(addr, "/v1/commands", &withdraw_body(ALICE, 5, 1));
+        rig.turn_until("the command on ingress", |r| r.offered() == 1);
+        rig.turn_until("the answer", |_| client.is_finished());
+        assert!(started.elapsed() >= wait, "it waited the whole {wait:?}");
+        let (status, body) = client.join().unwrap();
+        assert_eq!(
+            (status, body),
+            (504, json!({"error": "no answer from the gateway"}))
+        );
+        rig.turn_until("the hub connection closed", |r| r.hub.outboxes.is_empty());
+        assert_eq!(rig.hub.hub.view(ConnId(1)), None);
+    }
+
+    /// The hub gives up on a command the engine never answered: 504 with the nonce to resend with.
+    #[test]
+    fn an_unknown_outcome_is_504_with_the_nonce() {
+        let mut rig = Rig::new();
+        rig.engine_up();
+        let addr = rig.http(LONG_WAIT);
+        let client = post(addr, "/v1/commands", &withdraw_body(ALICE, 5, 1));
+        rig.turn_until("the command on ingress", |r| r.offered() == 1);
+        // 4 s pass with no batch.
+        rig.hub.epoch = rig.hub.epoch.checked_sub(Duration::from_secs(4)).unwrap();
+        rig.hub.last_tick = rig.hub.last_tick.checked_sub(TICK).unwrap();
+        rig.turn_until("the answer", |_| client.is_finished());
+        let (status, body) = client.join().unwrap();
+        assert_eq!(status, 504, "{body}");
+        assert_eq!(body["nonce"], 5);
+        assert!(
+            body["error"].as_str().unwrap().starts_with("outcome unknown"),
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn a_bad_body_is_400_and_never_reaches_the_hub() {
+        let mut rig = Rig::new();
+        rig.engine_up();
+        let addr = rig.http(LONG_WAIT);
+        let client = post(addr, "/v1/requests", &json!({"legs": []}));
+        rig.turn_until("the answer", |_| client.is_finished());
+        let (status, body) = client.join().unwrap();
+        assert_eq!(status, 400);
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .starts_with("bad request: missing field"),
+            "{body}"
+        );
+        rig.turn();
+        assert!(rig.hub.outboxes.is_empty() && rig.offered() == 0);
+    }
+
+    /// A body within the 64 KiB limit becomes a longer frame (its type and id are added), which
+    /// the hub refuses without naming a command: the handler must not wait for that.
+    #[test]
+    fn a_body_that_only_just_fits_is_refused_at_once() {
+        let mut rig = Rig::new();
+        rig.engine_up();
+        let addr = rig.http(LONG_WAIT);
+        let listing = |description: String| {
+            json!({"actor": 1, "action": {"ListContract": {"id": 1, "description": description,
+                "oracle": 4, "trading_close": 1, "resolution_deadline": 2, "dispute_window": 1}}})
+        };
+        let bare = listing(String::new()).to_string().len();
+        let body = listing("x".repeat(MAX_TEXT - bare));
+        assert_eq!(
+            body.to_string().len(),
+            MAX_TEXT,
+            "the body is just within the server's limit"
+        );
+        let client = post(addr, "/v1/commands", &body);
+        rig.turn_until("the answer", |_| client.is_finished());
+        let (status, body) = client.join().unwrap();
+        assert_eq!(status, 400, "{body}");
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .starts_with("bad request: message too large"),
+            "{body}"
+        );
+        rig.turn_until("no hub connection left", |r| r.hub.outboxes.is_empty());
+        assert_eq!(rig.offered(), 0);
     }
 
     #[test]
