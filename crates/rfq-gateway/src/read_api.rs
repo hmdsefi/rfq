@@ -23,6 +23,7 @@ use rfq_read::{Replica, ReplicaError, TraceEntry, views};
 use serde::Serialize;
 use serde_json::{Map, Value};
 
+use crate::hub::{is_probe, without_probe};
 use crate::protocol::OutBatch;
 use crate::status::EngineStatus;
 use crate::view::{View, filter};
@@ -464,12 +465,29 @@ struct Entry<'a> {
     command: Option<&'a ClientCommand>,
 }
 
-/// The command shown with an entry: the admin sees every one, an account only its own.
-fn command_for(view: View, entry: &TraceEntry) -> Option<&ClientCommand> {
-    match view {
-        View::Admin => entry.command.as_ref(),
-        View::Account(a) => entry.command.as_ref().filter(|c| c.actor == a),
-    }
+/// The entry as `view` sees it, or `None` when nothing of it is for `view`.
+///
+/// The gateway's own probes (`hub::is_probe`) are not what the WebSocket shows, so they are not
+/// shown here: the batch goes through the hub's `without_probe` first (no origin, no rejection
+/// of the prober; what timers did in the same apply stays), and its command is `null`. That is
+/// the same for every view, and before the view's `filter`. Then the batch is the view's, and
+/// the command is the admin's always, an account's only when it is the account's own.
+fn seen(view: View, entry: &TraceEntry) -> Option<Entry<'_>> {
+    let probe_free;
+    let (batch, command) = match &entry.command {
+        Some(command) if is_probe(command) => {
+            probe_free = without_probe(&entry.batch)?;
+            (&probe_free, None)
+        }
+        command => (&entry.batch, command.as_ref()),
+    };
+    Some(Entry {
+        batch: filter(view, batch)?,
+        command: match view {
+            View::Admin => command,
+            View::Account(a) => command.filter(|c| c.actor == a),
+        },
+    })
 }
 
 /// Entries with `seq > after_seq`, ascending, at most `limit` that `view` sees (spec §6).
@@ -484,14 +502,9 @@ fn trace(replica: &Replica, view: View, after_seq: u64, limit: usize) -> Reply {
         let Some(entry) = rest.next() else {
             break;
         };
-        if let Some(batch) = filter(view, &entry.batch) {
-            entries.push(Entry {
-                batch,
-                command: command_for(view, entry),
-            });
-        }
+        entries.extend(seen(view, entry));
     }
-    let next = if entries.len() == limit && rest.any(|e| filter(view, &e.batch).is_some()) {
+    let next = if entries.len() == limit && rest.any(|e| seen(view, e).is_some()) {
         entries.last().map(|e| e.batch.seq)
     } else {
         None
@@ -512,6 +525,7 @@ fn trace(replica: &Replica, view: View, after_seq: u64, limit: usize) -> Reply {
 mod tests {
     use std::collections::BTreeSet;
 
+    use rfq_app::client::nonce::probe_action;
     use rfq_domain::{AccountId, Action, Command, ContractId, LegSpec, RequestId, Side, Timestamp};
     use rfq_testkit::accounts::*;
     use rfq_testkit::scenarios::{all, demo_config, run_in_memory};
@@ -1273,6 +1287,282 @@ mod tests {
         for path in ["/", "/v1/nope", "/v1/accounts", "/v1/status/"] {
             assert_eq!(other_method(path).status, 404, "{path}");
         }
+    }
+
+    // ---- the gateway's probes ----
+
+    /// The gateway's own probes among real traffic: a nonce-sync probe by MM1 (a `Withdraw` of 0,
+    /// refused `InvalidInput` after consuming its nonce), the liveness probe (actor 1, nonce 0,
+    /// `Duplicate`), a real `Withdraw`, and a probe in whose apply the timers fire (Alice's
+    /// request is presented when MM1's probe arrives after its deadline).
+    fn probe_log() -> Vec<SequencedCommand> {
+        let mut h = Harness::new(demo_config());
+        h.set_time(T0);
+        for to in [ALICE, MM1, MM2] {
+            h.fund(to, 1_000);
+        }
+        h.user(
+            OPERATOR,
+            Action::ListContract {
+                id: ContractId(T0),
+                description: "Will it rain in Paris on 2026-11-01?".into(),
+                oracle: ORACLE,
+                trading_close: T0 + 5_000,
+                resolution_deadline: T0 + 15_000,
+                dispute_window: 2_000,
+            },
+        );
+        h.user(MM1, probe_action()); // a nonce-sync probe
+        h.submit(Command::User {
+            actor: OPERATOR,
+            nonce: 0,
+            action: probe_action(),
+        }); // the liveness probe
+        h.user(ALICE, Action::Withdraw { amount: 1_000_000 }); // a real withdrawal
+        let request = RequestId(h.next_seq());
+        h.user(
+            ALICE,
+            Action::SubmitRequest {
+                legs: vec![LegSpec {
+                    contract: ContractId(T0),
+                    side: Side::BuyYes,
+                    qty: 1_000,
+                    limit_price: price(7_000),
+                }],
+                response_deadline: T0 + 1_500,
+            },
+        );
+        for (mm, bps) in [(MM2, 6_000), (MM1, 6_200)] {
+            h.user(
+                mm,
+                Action::SubmitQuote {
+                    request,
+                    leg: 0,
+                    price: price(bps),
+                    size: 1_000,
+                    expires_at: T0 + 10_000,
+                },
+            );
+        }
+        h.set_time(T0 + 1_600);
+        h.user(MM1, probe_action()); // the deadline has passed: the timers fire in this apply
+        h.log
+    }
+
+    /// The seqs of the probes in `log`, in order.
+    fn probe_seqs(log: &[SequencedCommand]) -> Vec<u64> {
+        log.iter()
+            .filter(|sc| matches!(&sc.cmd, Command::User { action, .. } if *action == probe_action()))
+            .map(|sc| sc.seq)
+            .collect()
+    }
+
+    fn is_probe_command(command: &Value) -> bool {
+        command["action"] == json!({"Withdraw": {"amount": 0}})
+    }
+
+    fn rejections(entry: &Value) -> Vec<&Value> {
+        entry["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["event"].get("CommandRejected").is_some())
+            .collect()
+    }
+
+    #[test]
+    fn the_admin_trace_hides_the_gateways_probes() {
+        let log = probe_log();
+        let read = read_side(&log, log.len());
+        let probes = probe_seqs(&log);
+        assert_eq!(
+            probes.len(),
+            3,
+            "nonce-sync, liveness, and the one with timers: {probes:?}"
+        );
+        let (nonce_sync, liveness) = (probes[0], probes[1]);
+
+        // The replica has them as the journal does: an origin, a command, a rejection.
+        read.read(|r, _| {
+            let raw = |seq: u64| {
+                r.trace_after(seq - 1)
+                    .next()
+                    .filter(|e| e.batch.seq == seq)
+                    .unwrap()
+            };
+            for (seq, reason) in [
+                (nonce_sync, rfq_domain::RejectReason::InvalidInput),
+                (liveness, rfq_domain::RejectReason::Duplicate),
+            ] {
+                let entry = raw(seq);
+                assert!(
+                    entry.batch.origin.is_some() && entry.command.is_some(),
+                    "seq {seq}"
+                );
+                assert!(
+                    entry.batch.events.iter().any(|e| matches!(
+                        e.event,
+                        rfq_domain::Event::CommandRejected { reason: got } if got == reason
+                    )),
+                    "seq {seq} is rejected {reason:?}"
+                );
+            }
+        });
+
+        let body = ok(&read, "/v1/trace?view=admin&limit=1000");
+        let seqs = entry_seqs(&body);
+        for quiet in [nonce_sync, liveness] {
+            assert!(
+                !seqs.contains(&quiet),
+                "the probe at seq {quiet} is not in the trace: {seqs:?}"
+            );
+        }
+        // Nothing in the trace has the probe's command, and a probe's rejection is nowhere.
+        for entry in body["entries"].as_array().unwrap() {
+            assert!(!is_probe_command(&entry["command"]), "seq {}", entry["seq"]);
+            for rejected in rejections(entry) {
+                assert_ne!(
+                    entry["origin"],
+                    Value::Null,
+                    "a rejection with no origin: {rejected}"
+                );
+            }
+        }
+        // Everything else is there, real commands included.
+        let expected: Vec<u64> = (1..=log.len() as u64)
+            .filter(|s| ![nonce_sync, liveness].contains(s))
+            .collect();
+        assert_eq!(seqs, expected);
+        let withdraw = body["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["command"]["action"].get("Withdraw").is_some())
+            .expect("the real withdrawal");
+        assert_eq!(
+            withdraw["command"]["action"],
+            json!({"Withdraw": {"amount": 1_000_000}})
+        );
+        assert_eq!(withdraw["origin"]["actor"], ALICE.0);
+
+        // Paging crosses the hidden entries as it crosses the ones a view cannot see.
+        let paged: Vec<u64> = pages(&read, "/v1/trace?view=admin", 3)
+            .iter()
+            .flat_map(entry_seqs)
+            .collect();
+        assert_eq!(paged, expected);
+    }
+
+    #[test]
+    fn a_probe_in_whose_apply_a_timer_fired_keeps_the_timers_events_without_origin_or_command() {
+        let log = probe_log();
+        let read = read_side(&log, log.len());
+        let with_timers = *probe_seqs(&log).last().unwrap();
+
+        let raw_balances = read.read(|r, _| {
+            let entry = r.trace_after(with_timers - 1).next().unwrap();
+            assert_eq!(entry.batch.seq, with_timers);
+            assert!(entry.batch.origin.is_some(), "the journal has the probe's origin");
+            let balances: Vec<Value> = entry
+                .batch
+                .balances
+                .iter()
+                .map(|(account, balance)| json!({"account": account.0, "balance": balance}))
+                .collect();
+            Value::Array(balances)
+        });
+        let body = ok(
+            &read,
+            &format!("/v1/trace?view=admin&after_seq={}", with_timers - 1),
+        );
+        let entry = &body["entries"][0];
+        assert_eq!(entry["seq"], with_timers);
+        assert_eq!(entry["origin"], Value::Null);
+        assert_eq!(entry["command"], Value::Null);
+        assert!(
+            rejections(entry).is_empty(),
+            "the prober's rejection is removed: {entry}"
+        );
+        let names: Vec<String> = entry["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| {
+                e["event"]
+                    .as_object()
+                    .map_or_else(|| e["event"].to_string(), |o| o.keys().next().unwrap().clone())
+            })
+            .collect();
+        assert!(
+            names.contains(&"RequestPresented".to_owned()),
+            "what the timer did stays: {names:?}"
+        );
+        assert_eq!(entry["balances"], raw_balances, "balances are kept");
+    }
+
+    #[test]
+    fn the_probers_own_view_does_not_see_the_probe() {
+        let log = probe_log();
+        let read = read_side(&log, log.len());
+        let probes = probe_seqs(&log);
+        let (nonce_sync, with_timers) = (probes[0], probes[2]);
+
+        // MM1 sent the nonce-sync probe and the one with timers; neither is MM1's command now.
+        let body = ok(&read, &format!("/v1/trace?view={}", MM1.0));
+        let seqs = entry_seqs(&body);
+        assert!(
+            !seqs.contains(&nonce_sync),
+            "MM1 does not see its own probe: {seqs:?}"
+        );
+        for entry in body["entries"].as_array().unwrap() {
+            assert!(!is_probe_command(&entry["command"]), "seq {}", entry["seq"]);
+            assert!(
+                rejections(entry).is_empty(),
+                "no rejection for MM1: seq {}",
+                entry["seq"]
+            );
+        }
+        // What the timers did to MM1 in the probe's apply is still its to see, with no origin.
+        let timers = body["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["seq"] == with_timers)
+            .expect("MM1's quote was lost or selected when the timers fired");
+        assert_eq!(timers["origin"], Value::Null);
+        assert_eq!(timers["command"], Value::Null);
+
+        // MM1's real commands (its funding is the operator's; its quote is its own) are still its.
+        let own: Vec<&Value> = body["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| !e["command"].is_null())
+            .collect();
+        assert_eq!(own.len(), 1, "its quote");
+        assert!(own[0]["command"]["action"].get("SubmitQuote").is_some());
+
+        // Nor does another account, or the operator who sent the liveness probe, see one.
+        for who in [ALICE.0, OPERATOR.0] {
+            let body = ok(&read, &format!("/v1/trace?view={who}"));
+            for entry in body["entries"].as_array().unwrap() {
+                assert!(
+                    !is_probe_command(&entry["command"]),
+                    "view {who}, seq {}",
+                    entry["seq"]
+                );
+                assert!(
+                    rejections(entry)
+                        .iter()
+                        .all(|r| r["audience"] != json!({"Account": 21}))
+                );
+            }
+        }
+        let operator = ok(&read, &format!("/v1/trace?view={}", OPERATOR.0));
+        assert!(
+            !entry_seqs(&operator).contains(&probes[1]),
+            "the liveness probe is not the operator's either"
+        );
     }
 
     #[test]

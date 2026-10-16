@@ -885,9 +885,18 @@ fn rejection_to(actor: AccountId, events: &[Emitted]) -> Option<RejectReason> {
     })
 }
 
+/// Whether `command` is one of the gateway's own probes (a nonce-sync probe, or the liveness
+/// probe): the probe action, which no client sends for itself (the engine refuses it, after
+/// consuming its nonce, so a client's own `Withdraw` of 0 looks the same in the journal).
+pub fn is_probe(command: &ClientCommand) -> bool {
+    command.action == probe_action()
+}
+
 /// A probe's batch without the probe: no origin, no rejection. What is left is what timers did
-/// in the same apply, which their viewers must still get; `None` if nothing is left.
-fn without_probe(b: &EventBatch) -> Option<EventBatch> {
+/// in the same apply, which their viewers must still get; `None` if nothing is left. The hub
+/// forwards this for every probe it sees, and the trace (`read_api`) shows it for every probe in
+/// the journal, so the trace is what the WebSocket showed.
+pub fn without_probe(b: &EventBatch) -> Option<EventBatch> {
     let prober = b.origin.map(|(actor, _)| Audience::Account(actor));
     let events: Vec<Emitted> = b
         .events
