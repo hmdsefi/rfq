@@ -8,7 +8,7 @@
 // RFQ_GATEWAY_URL (as gateway-smoke.mjs takes its own).
 //
 // One whole trade over HTTP, with only a WebSocket listening (as admin, recording every batch):
-// the operator funds three fresh accounts and lists a contract (`POST /v1/commands`), Alice asks
+// the operator funds three fresh accounts and lists a market (`POST /v1/commands`), Alice asks
 // for 1000 YES at a limit of 0.70 (`POST /v1/requests`), MM1 quotes 0.62 and MM2 0.60
 // (`POST /v1/quotes`), and after the response deadline Alice accepts what `GET
 // /v1/accounts/{alice}/requests` says was presented (`POST /v1/commands`). It then reads back,
@@ -22,7 +22,7 @@
 //   - MM1's trace never shows MM2's quote or Alice's balances;
 //   - a command the engine refuses is 422 with its reason (and consumes its nonce), a bad body is
 //     400, a foreign Origin is 403, a page's Origin gets its CORS headers.
-// The accounts are fresh each run (t0 * 100 + id, like rfq-demo), and so is the contract (id t0),
+// The accounts are fresh each run (t0 * 100 + id, like rfq-demo), and so is the market (id t0),
 // so it runs against a long-lived engine. Prints `HTTP SMOKE OK` and exits 0, or the first
 // failure and exits 1. Needs Node 22 or later (the global fetch and WebSocket).
 
@@ -238,7 +238,7 @@ async function main() {
   const MM1 = t0 * 100 + 20;
   const MM2 = t0 * 100 + 21;
   check(Number.isSafeInteger(MM2), 'account ids overflow a JS number');
-  console.log(`run t0=${t0}: contract ${t0}, alice ${ALICE}, mm1 ${MM1}, mm2 ${MM2}`);
+  console.log(`run t0=${t0}: market ${t0}, alice ${ALICE}, mm1 ${MM1}, mm2 ${MM2}`);
 
   // ---- the trade, over HTTP only ----
   let firstSeq = null;
@@ -253,7 +253,7 @@ async function main() {
   await write('list', '/v1/commands', {
     actor: OPERATOR,
     action: {
-      ListContract: {
+      ListMarket: {
         id: t0,
         description: 'Will it rain in Paris on 2026-11-01?',
         oracle: ORACLE,
@@ -268,7 +268,7 @@ async function main() {
   await sleep(t0 + 100 - engineNow());
   const req = await write('req', '/v1/requests', {
     actor: ALICE,
-    legs: [{ contract: t0, side: 'BuyYes', qty: 1_000, limit_price: 7_000 }],
+    legs: [{ market: t0, side: 'BuyYes', qty: 1_000, limit_price: 7_000 }],
     response_deadline: t0 + 1_500,
   });
   const request = req.seq; // a request's id is the seq of the command that opened it
@@ -304,7 +304,7 @@ async function main() {
   check(positions.length === 1, `Alice has ${positions.length} positions, expected 1: ${JSON.stringify(positions)}`);
   const [position] = positions;
   check(position.side === 'Yes' && position.stake === 600 * ONE_DOLLAR, `Alice's position: ${JSON.stringify(position)}, expected YES with a $600 stake`);
-  check(position.contract === t0 && position.request === request && position.qty === 1_000 && position.settled === false, `Alice's position: ${JSON.stringify(position)}`);
+  check(position.market === t0 && position.request === request && position.qty === 1_000 && position.settled === false, `Alice's position: ${JSON.stringify(position)}`);
 
   const account = await read(`/v1/accounts/${ALICE}`, accept.seq);
   check(account.balance.escrowed === 600 * ONE_DOLLAR, `Alice's account: ${JSON.stringify(account.balance)}, expected $600 escrowed`);

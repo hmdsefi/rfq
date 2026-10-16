@@ -252,8 +252,8 @@ enum Route {
     Requests(AccountId),
     Quotes(AccountId),
     OpenRequests,
-    Contracts,
-    Contract(MarketId),
+    Markets,
+    Market(MarketId),
     Trace,
 }
 
@@ -279,10 +279,10 @@ fn route(path: &str) -> Result<Route, Miss> {
         ["accounts", id, "requests"] => Ok(Route::Requests(account(id)?)),
         ["accounts", id, "quotes"] => Ok(Route::Quotes(account(id)?)),
         ["requests"] => Ok(Route::OpenRequests),
-        ["contracts"] => Ok(Route::Contracts),
-        ["contracts", id] => number(id)
-            .map(|id| Route::Contract(MarketId(id)))
-            .ok_or(Miss::BadId("contract id")),
+        ["markets"] => Ok(Route::Markets),
+        ["markets", id] => number(id)
+            .map(|id| Route::Market(MarketId(id)))
+            .ok_or(Miss::BadId("market id")),
         ["trace"] => Ok(Route::Trace),
         ["quotes"] | ["commands"] => Err(Miss::WrongMethod),
         _ => Err(Miss::NotFound),
@@ -299,8 +299,8 @@ enum Read {
     Open {
         market: Option<MarketId>,
     },
-    Contracts,
-    Contract(MarketId),
+    Markets,
+    Market(MarketId),
     Trace {
         view: View,
         after_seq: u64,
@@ -332,11 +332,11 @@ fn parse(path: &str, query: &str) -> Result<(Read, Option<u64>), Reply> {
                 ));
             }
             Read::Open {
-                market: query.number("contract")?.map(MarketId),
+                market: query.number("market")?.map(MarketId),
             }
         }
-        Route::Contracts => Read::Contracts,
-        Route::Contract(id) => Read::Contract(id),
+        Route::Markets => Read::Markets,
+        Route::Market(id) => Read::Market(id),
         Route::Trace => {
             let view = match query.get("view") {
                 Some("admin") => View::Admin,
@@ -410,10 +410,10 @@ fn answer(replica: &Replica, state: ReplicaState, engine: &EngineStatus, read: &
         Read::Requests(a) => rows(as_of, "requests", &views::requests_of(e, *a)),
         Read::Quotes(a) => rows(as_of, "quotes", &views::quotes_of(e, *a)),
         Read::Open { market } => rows(as_of, "requests", &views::open_requests(e, *market)),
-        Read::Contracts => rows(as_of, "contracts", &views::markets(e)),
-        Read::Contract(id) => match views::market(e, *id) {
+        Read::Markets => rows(as_of, "markets", &views::markets(e)),
+        Read::Market(id) => match views::market(e, *id) {
             Some(c) => flat(as_of, &c),
-            None => Reply::error(404, "no such contract"),
+            None => Reply::error(404, "no such market"),
         },
         Read::Trace {
             view,
@@ -695,15 +695,15 @@ mod tests {
         let body = ok(&read, &format!("/v1/accounts/{}/quotes", MM1.0));
         assert_eq!(body["quotes"][0]["state"], "Lost");
 
-        let body = ok(&read, "/v1/contracts");
+        let body = ok(&read, "/v1/markets");
         assert_eq!(body["as_of_seq"], as_of);
-        let markets = body["contracts"].as_array().unwrap();
+        let markets = body["markets"].as_array().unwrap();
         assert_eq!(markets.len(), 1);
         assert_eq!(markets[0]["id"], T0);
         assert_eq!(markets[0]["oracle"], ORACLE.0);
         assert_eq!(markets[0]["state"], json!({"Final": "Yes"}));
 
-        let body = ok(&read, &format!("/v1/contracts/{T0}"));
+        let body = ok(&read, &format!("/v1/markets/{T0}"));
         assert_eq!(body["as_of_seq"], as_of);
         assert_eq!(body["id"], T0, "the MarketView fields sit at the top level");
         assert_eq!(body["description"], "Will it rain in Paris on 2026-11-01?");
@@ -718,7 +718,7 @@ mod tests {
     }
 
     #[test]
-    fn open_requests_show_public_fields_only_and_filter_by_contract() {
+    fn open_requests_show_public_fields_only_and_filter_by_market() {
         let log = happy_log();
         // Seq 9: Alice's request (seq 7) is open, with both quotes in.
         let read = read_side(&log, 9);
@@ -732,11 +732,11 @@ mod tests {
             "no requester, no limit price, no quotes"
         );
         assert_eq!(
-            ok(&read, &format!("/v1/requests?state=open&contract={T0}"))["requests"][0]["id"],
+            ok(&read, &format!("/v1/requests?state=open&market={T0}"))["requests"][0]["id"],
             7
         );
         assert_eq!(
-            ok(&read, "/v1/requests?contract=5&state=open")["requests"],
+            ok(&read, "/v1/requests?market=5&state=open")["requests"],
             json!([])
         );
 
@@ -1316,7 +1316,7 @@ mod tests {
         assert!(started.elapsed() < WAIT * 10);
         // Any read takes it.
         for target in [
-            "/v1/contracts?min_seq=99",
+            "/v1/markets?min_seq=99",
             "/v1/requests?state=open&min_seq=99",
             "/v1/trace?view=admin&min_seq=99",
             "/v1/status?min_seq=99",
@@ -1385,10 +1385,7 @@ mod tests {
             read.apply_or_reset(sc).unwrap();
         }
         assert_eq!(read.last_seq(), 7);
-        assert_eq!(
-            ok(&read, "/v1/contracts")["contracts"].as_array().unwrap().len(),
-            1
-        );
+        assert_eq!(ok(&read, "/v1/markets")["markets"].as_array().unwrap().len(), 1);
         assert_eq!(
             ok(&read, "/v1/requests?state=open")["requests"]
                 .as_array()
@@ -1410,7 +1407,7 @@ mod tests {
         assert_eq!(body["as_of_seq"], 1);
         assert_eq!(body["replica"]["last_seq"], 1);
         assert_eq!(
-            ok(&read, "/v1/contracts")["contracts"],
+            ok(&read, "/v1/markets")["markets"],
             json!([]),
             "no old row is served"
         );
@@ -1490,15 +1487,15 @@ mod tests {
             "/v1/accounts/abc/positions",
             "/v1/accounts/abc/requests",
             "/v1/accounts/abc/quotes",
-            "/v1/contracts/xyz",
+            "/v1/markets/xyz",
             "/v1/status?min_seq=soon",
             "/v1/status?min_seq=-1",
             "/v1/accounts/10?min_seq=",
             "/v1/requests",
             "/v1/requests?state=filled",
             "/v1/requests?state=",
-            "/v1/requests?contract=1",
-            "/v1/requests?state=open&contract=abc",
+            "/v1/requests?market=1",
+            "/v1/requests?state=open&market=abc",
             "/v1/trace",
             "/v1/trace?after_seq=1",
             "/v1/trace?view=bob",
@@ -1526,7 +1523,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_paths_and_contracts_are_404() {
+    fn unknown_paths_and_markets_are_404() {
         let log = happy_log();
         let read = read_side(&log, log.len());
         for target in [
@@ -1538,7 +1535,7 @@ mod tests {
             "/v1/accounts",
             "/v1/accounts/10/nope",
             "/v1/accounts/10/positions/extra",
-            "/v1/contracts/1/extra",
+            "/v1/markets/1/extra",
             "/v1/status/",
             "/status",
             "v1/status",
@@ -1548,8 +1545,8 @@ mod tests {
             assert_eq!(status, 404, "{target:?}");
         }
         assert_eq!(
-            call(&read, &EngineStatus::new(), "/v1/contracts/999", WAIT),
-            (404, json!({"error": "no such contract"}))
+            call(&read, &EngineStatus::new(), "/v1/markets/999", WAIT),
+            (404, json!({"error": "no such market"}))
         );
     }
 
@@ -1568,8 +1565,8 @@ mod tests {
             "/v1/requests",
             "/v1/quotes",
             "/v1/commands",
-            "/v1/contracts",
-            "/v1/contracts/1",
+            "/v1/markets",
+            "/v1/markets/1",
             "/v1/trace",
         ] {
             let reply = other_method(path);
@@ -1869,7 +1866,7 @@ mod tests {
             "/v1/status",
             "/v1/accounts/10",
             "/v1/trace?view=admin",
-            "/v1/contracts",
+            "/v1/markets",
         ] {
             assert!(ok(&read, target).is_object(), "{target}");
         }

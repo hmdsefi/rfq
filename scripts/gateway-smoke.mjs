@@ -5,7 +5,7 @@
 //   node scripts/gateway-smoke.mjs [ws://127.0.0.1:18080]
 //
 // One trade over the WebSocket, as the admin view: the operator funds three fresh accounts and
-// lists a contract, Alice asks for 1000 YES (limit 0.70), MM1 quotes 0.62 and MM2 0.60, and after
+// lists a market, Alice asks for 1000 YES (limit 0.70), MM1 quotes 0.62 and MM2 0.60, and after
 // the response deadline Alice accepts what the engine presented. It checks that:
 //   - every command gets `sent`, then its batch, then its `result` with a latency;
 //   - the events come in order: RequestOpened, QuoteSubmitted x2, RequestPresented, QuoteFilled,
@@ -14,7 +14,7 @@
 //     accept is $600 (in micro-USD);
 //   - a second connection with MM1's view gets only public events and MM1's own, only MM1's
 //     balances, and origins only for MM1's commands.
-// The accounts are fresh each run (t0 * 100 + id, like rfq-demo), and so is the contract (id t0),
+// The accounts are fresh each run (t0 * 100 + id, like rfq-demo), and so is the market (id t0),
 // so it runs against a long-lived engine. Prints `GATEWAY SMOKE OK` and exits 0, or the first
 // failure and exits 1. Needs Node 22 or later (the global WebSocket).
 
@@ -173,7 +173,7 @@ async function main() {
   const MM1 = t0 * 100 + 20;
   const MM2 = t0 * 100 + 21;
   check(Number.isSafeInteger(MM2), 'account ids overflow a JS number');
-  console.log(`run t0=${t0}: contract ${t0}, alice ${ALICE}, mm1 ${MM1}, mm2 ${MM2}`);
+  console.log(`run t0=${t0}: market ${t0}, alice ${ALICE}, mm1 ${MM1}, mm2 ${MM2}`);
 
   const mm1 = await Conn.open('mm1', URL);
   await hello(mm1, { account: MM1 });
@@ -184,7 +184,7 @@ async function main() {
     check(b && b.free === 1_000 * ONE_DOLLAR, `${id}: balance ${JSON.stringify(b)}, expected $1000 free`);
   }
   await command(admin, 'list', OPERATOR, {
-    ListContract: {
+    ListMarket: {
       id: t0,
       description: 'Will it rain in Paris on 2026-11-01?',
       oracle: ORACLE,
@@ -198,7 +198,7 @@ async function main() {
   await sleep(t0 + 100 - engineNow());
   const { seq: request, batch: reqBatch } = await command(admin, 'req', ALICE, {
     SubmitRequest: {
-      legs: [{ contract: t0, side: 'BuyYes', qty: 1_000, limit_price: 7_000 }],
+      legs: [{ market: t0, side: 'BuyYes', qty: 1_000, limit_price: 7_000 }],
       response_deadline: t0 + 1_500,
     },
   });

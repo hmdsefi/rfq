@@ -194,8 +194,8 @@ mod tests {
         assert_eq!(body["replica"]["last_seq"], 14);
         assert_eq!(body["engine"], "down", "no hub loop here");
 
-        let (status, body, _) = call(addr, "GET /v1/contracts/999 HTTP/1.1\r\n\r\n");
-        assert_eq!((status, body["error"].as_str()), (404, Some("no such contract")));
+        let (status, body, _) = call(addr, "GET /v1/markets/999 HTTP/1.1\r\n\r\n");
+        assert_eq!((status, body["error"].as_str()), (404, Some("no such market")));
         assert_eq!(call(addr, "GET /v1/nope HTTP/1.1\r\n\r\n").0, 404);
         assert_eq!(call(addr, "GET /v1/accounts/ten HTTP/1.1\r\n\r\n").0, 400);
     }
@@ -215,7 +215,7 @@ mod tests {
         assert_eq!(call(addr, &post("/v1/requests/")).0, 404, "not the write route");
         assert_eq!(call(addr, "GET /v1/quotes HTTP/1.1\r\n\r\n").0, 405);
         assert_eq!(call(addr, "GET /v1/commands HTTP/1.1\r\n\r\n").0, 405);
-        assert_eq!(call(addr, "DELETE /v1/contracts HTTP/1.1\r\n\r\n").0, 405);
+        assert_eq!(call(addr, "DELETE /v1/markets HTTP/1.1\r\n\r\n").0, 405);
         assert_eq!(call(addr, "DELETE /v1/requests HTTP/1.1\r\n\r\n").0, 405);
         assert_eq!(call(addr, "PUT /v1/commands HTTP/1.1\r\n\r\n").0, 405);
         assert_eq!(call(addr, "DELETE /v1/nope HTTP/1.1\r\n\r\n").0, 404);
