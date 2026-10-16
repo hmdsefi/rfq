@@ -663,9 +663,12 @@ async function loadHistory() {
     if (replica.state !== "following") addError(`History may be incomplete: the read replica is ${replica.state.replace(/_/g, " ")}.`);
     schedule();
     // Whole up to the page's load: the replica follows, and by the trace's last page it held everything the
-    // engine had published at the status, which came after the load. A replica behind the engine is not.
+    // engine had published at the status, which came after the load. A replica behind the engine is not. No
+    // engine seq at all: the gateway has heard nothing from the engine since it started, so the following
+    // replica holds the whole recorded journal.
     const engineLast = status.engine_last_seq;
-    const whole = replica.state === "following" && Number.isSafeInteger(engineLast) && asOf != null && asOf >= engineLast;
+    const caughtUp = Number.isSafeInteger(engineLast) ? asOf != null && asOf >= engineLast : engineLast == null;
+    const whole = replica.state === "following" && caughtUp;
     await loadHistoryRuns(entries, { whole, asOf, epoch });
     schedule();
   } catch (e) {

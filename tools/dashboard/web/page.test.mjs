@@ -1285,11 +1285,11 @@ await test("a stream that starts after the history's top seq may have missed bat
  * A page whose engine clock is `skewMs` off its own, whose welcome comes `welcomeDelayMs` late, and whose history
  * (`entries`, through a read API with `api` options) is there at once: before the clock is measured.
  */
-async function reloadedEarly(entries, { skewMs = 0, welcomeDelayMs = 0, api = {} } = {}) {
+async function reloadedEarly(entries, { skewMs = 0, welcomeDelayMs = 0, api = {}, streamSeq = entries.at(-1).seq } = {}) {
   const page = loadPage({ fetch: fakeReadApi(entries, api).fetch });
   page.server.skewMs = skewMs;
   page.server.welcomeDelayMs = welcomeDelayMs;
-  page.server.seq = entries.at(-1).seq;
+  page.server.seq = streamSeq;
   await page.run("historyLoaded");
   page.run("render()");
   return page;
@@ -1331,6 +1331,18 @@ await test("a following replica behind the engine (the trace's as_of_seq below t
   try {
     assert.deepEqual(page.val("[V.run.id, V.run.incomplete, V.run.pass]"), [`h${t0}`, true, null], `${page.val("V.run.name")}: ${page.val("V.run.detail")}`);
     // Not vacuous: caught up, the same history judges its runs by the page's load.
+    assert.match(optionOf(page.document, `h${RUN_B}`), /no_quotes_expire · PASS$/);
+  } finally {
+    teardown(page);
+  }
+});
+
+await test("a gateway just started on an idle engine (engine_last_seq null, on HTTP and on the stream): the replica holds the whole journal, and a finished run is judged at load", async () => {
+  // TWO_RUNS ends with no_quotes_expire's expiry, inside its window: by its last entry alone the run would stay open.
+  const page = await reloadedEarly(TWO_RUNS, { api: { engineLastSeq: null }, streamSeq: null });
+  try {
+    assert.equal(page.val("page.streamFrom"), null, "the stream's status carries no seq either");
+    assert.deepEqual(page.val("[V.run.id, V.run.open, V.run.incomplete, V.run.pass]"), [`h${RUN_B}`, false, false, true], page.val("V.run.detail"));
     assert.match(optionOf(page.document, `h${RUN_B}`), /no_quotes_expire · PASS$/);
   } finally {
     teardown(page);
