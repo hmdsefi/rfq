@@ -197,6 +197,8 @@ pub const MIN_SEQ_WAIT: Duration = Duration::from_secs(2);
 pub const TRACE_DEFAULT: usize = 500;
 /// The most trace entries one page holds; a larger `limit` is this.
 pub const TRACE_MAX: usize = 1_000;
+/// The most bytes of entries one trace page holds: its `entries` array, as JSON (spec §6).
+pub const TRACE_MAX_BYTES: usize = 4 * 1024 * 1024;
 
 /// Routes one `GET`: `path` without its query, and the raw query string. Waits at most
 /// `min_seq_wait` for `min_seq`; everything else is pure.
@@ -416,7 +418,7 @@ fn answer(replica: &Replica, state: ReplicaState, engine: &EngineStatus, read: &
             view,
             after_seq,
             limit,
-        } => trace(replica, *view, *after_seq, *limit),
+        } => trace(replica, *view, *after_seq, *limit, TRACE_MAX_BYTES),
     }
 }
 
@@ -503,33 +505,51 @@ fn seen(view: View, entry: &TraceEntry) -> Option<Entry<'_>> {
     })
 }
 
-/// Entries with `seq > after_seq`, ascending, at most `limit` that `view` sees (spec §6).
+/// Entries with `seq > after_seq`, ascending, that `view` sees (spec §6): at most `limit`, and at
+/// most `max_bytes` of `entries` array, except that the first entry is always taken.
 ///
-/// `next_after_seq` is the last returned `seq` if the page is full and the view sees something
-/// after it, else `null`. The look-ahead is what keeps an account's pages honest: a full page is
-/// never followed by an empty one, and a page is never empty while the view still has entries.
-fn trace(replica: &Replica, view: View, after_seq: u64, limit: usize) -> Reply {
-    let mut entries = Vec::new();
-    let mut rest = replica.trace_after(after_seq);
-    while entries.len() < limit {
-        let Some(entry) = rest.next() else {
-            break;
+/// `next_after_seq` is the last returned `seq` if the page stopped before an entry the view sees,
+/// for its count or its size, else `null`. Looking for that next entry is what keeps an account's
+/// pages honest: a page that stops is never followed by an empty one, and a page is never empty
+/// while the view still has entries.
+///
+/// Each entry is written straight into the body, and taken back out if it takes the array over
+/// `max_bytes`: no `Value` tree, and no page bigger than the budget held under the read lock.
+fn trace(replica: &Replica, view: View, after_seq: u64, limit: usize, max_bytes: usize) -> Reply {
+    let mut body = format!("{{\"as_of_seq\":{},\"entries\":[", replica.last_seq()).into_bytes();
+    let array = body.len() - 1; // where the `[` is
+    let (mut taken, mut last, mut next) = (0, None, None);
+    for entry in replica.trace_after(after_seq) {
+        let Some(entry) = seen(view, entry) else {
+            continue;
         };
-        entries.extend(seen(view, entry));
-    }
-    let next = if entries.len() == limit && rest.any(|e| seen(view, e).is_some()) {
-        entries.last().map(|e| e.batch.seq)
-    } else {
-        None
-    };
-    match serde_json::to_value(&entries) {
-        Ok(entries) => {
-            let mut o = Map::new();
-            o.insert("as_of_seq".into(), replica.last_seq().into());
-            o.insert("entries".into(), entries);
-            o.insert("next_after_seq".into(), next.into());
-            Reply::object(200, o)
+        if taken == limit {
+            next = last;
+            break;
         }
+        let before = body.len();
+        if taken > 0 {
+            body.push(b',');
+        }
+        if let Err(e) = serde_json::to_writer(&mut body, &entry) {
+            return internal(&e);
+        }
+        // The array as it would be if it closed here, `]` included.
+        if taken > 0 && body.len() + 1 - array > max_bytes {
+            body.truncate(before);
+            next = last;
+            break;
+        }
+        taken += 1;
+        last = Some(entry.batch.seq);
+    }
+    body.extend_from_slice(b"],\"next_after_seq\":");
+    if let Err(e) = serde_json::to_writer(&mut body, &next) {
+        return internal(&e);
+    }
+    body.push(b'}');
+    match String::from_utf8(body) {
+        Ok(body) => Reply { status: 200, body },
         Err(e) => internal(&e),
     }
 }
@@ -730,10 +750,15 @@ mod tests {
 
     /// Every page of `target` (which has no `after_seq`) at `limit`, until `next_after_seq` is null.
     fn pages(read: &ReadSide, target: &str, limit: usize) -> Vec<Value> {
+        pages_by(|after| ok(read, &format!("{target}&after_seq={after}&limit={limit}")))
+    }
+
+    /// Every page `fetch(after_seq)` gives from `after_seq` 0, until `next_after_seq` is null.
+    fn pages_by(mut fetch: impl FnMut(u64) -> Value) -> Vec<Value> {
         let mut pages: Vec<Value> = Vec::new();
         let mut after = 0u64;
         loop {
-            let body = ok(read, &format!("{target}&after_seq={after}&limit={limit}"));
+            let body = fetch(after);
             let next = body["next_after_seq"].as_u64();
             pages.push(body);
             match next {
@@ -982,6 +1007,140 @@ mod tests {
             .flat_map(entry_seqs)
             .collect();
         assert_eq!(admin.len(), log.len());
+    }
+
+    // ---- the trace's byte budget ----
+
+    /// What the byte budget counts: a page's `entries` array, as JSON.
+    fn entries_bytes(page: &Value) -> usize {
+        page["entries"].to_string().len()
+    }
+
+    /// Commands of about 60 KiB: listings by Alice, each with a long description (refused: only
+    /// the operator lists). The admin view shows each command whole, so each entry is that large.
+    fn large_log(listings: u64) -> Vec<SequencedCommand> {
+        let mut h = Harness::new(demo_config());
+        h.set_time(T0);
+        let description = "x".repeat(60 * 1024);
+        for id in 0..listings {
+            h.user(
+                ALICE,
+                Action::ListContract {
+                    id: ContractId(T0 + id),
+                    description: description.clone(),
+                    oracle: ORACLE,
+                    trading_close: T0 + 5_000,
+                    resolution_deadline: T0 + 15_000,
+                    dispute_window: 2_000,
+                },
+            );
+        }
+        h.log
+    }
+
+    #[test]
+    fn a_trace_page_stops_at_its_byte_budget_and_paging_goes_on() {
+        let log = large_log(150);
+        let read = read_side(&log, log.len());
+
+        // Far below the 1,000 entries asked for, the page stops at its budget.
+        let body = ok(&read, "/v1/trace?view=admin&limit=1000");
+        let seqs = entry_seqs(&body);
+        assert!(
+            seqs.len() > 1 && seqs.len() < log.len(),
+            "{} of {} entries",
+            seqs.len(),
+            log.len()
+        );
+        assert_eq!(seqs, (1..=seqs.len() as u64).collect::<Vec<_>>());
+        assert!(
+            entries_bytes(&body) <= TRACE_MAX_BYTES,
+            "{}",
+            entries_bytes(&body)
+        );
+        let last = *seqs.last().unwrap();
+        assert_eq!(body["next_after_seq"], last, "stopped early: more remain");
+        // It stopped only because the next entry would not have fit.
+        let next = ok(&read, &format!("/v1/trace?view=admin&after_seq={last}&limit=1"));
+        let next_bytes = entries_bytes(&next) - 2; // without the brackets
+        assert!(entries_bytes(&body) + 1 + next_bytes > TRACE_MAX_BYTES);
+
+        // Paging reaches every entry, each page within the budget.
+        let pages = pages(&read, "/v1/trace?view=admin", 1_000);
+        assert!(pages.len() >= 2, "{} pages", pages.len());
+        let all: Vec<u64> = pages.iter().flat_map(entry_seqs).collect();
+        assert_eq!(all, (1..=log.len() as u64).collect::<Vec<_>>());
+        for page in &pages {
+            assert!(entries_bytes(page) <= TRACE_MAX_BYTES);
+        }
+    }
+
+    /// Every page of `view`'s trace at `limit` and a byte budget of `max_bytes`.
+    fn pages_within(read: &ReadSide, view: View, limit: usize, max_bytes: usize) -> Vec<Value> {
+        pages_by(|after| {
+            let reply = read.read(|r, _| trace(r, view, after, limit, max_bytes));
+            assert_eq!(reply.status, 200, "{}", reply.body);
+            serde_json::from_str(&reply.body).unwrap()
+        })
+    }
+
+    /// The paging guarantees hold whatever stops a page, its size or its count: an account's
+    /// pages are never empty while it has more to see, `next_after_seq` advances (`pages_by`),
+    /// the last page says null, and a page stops only when it is full or the next entry would
+    /// take it over its budget. A lone entry over the budget is still a page.
+    #[test]
+    fn a_trace_page_stopped_by_size_keeps_the_paging_guarantees() {
+        let log = noisy_log();
+        let read = read_side(&log, log.len());
+        let mut stopped_by_size = 0;
+        for view in [View::Account(MM1), View::Admin] {
+            // What the view holds, and each entry's own JSON.
+            let (visible, sizes): (Vec<u64>, Vec<usize>) = read.read(|r, _| {
+                r.trace_after(0)
+                    .filter_map(|e| seen(view, e))
+                    .map(|e| (e.batch.seq, serde_json::to_string(&e).unwrap().len()))
+                    .unzip()
+            });
+            assert!(visible.len() >= 5, "{view:?}: {visible:?}");
+            let bytes_of = |seq: u64| sizes[visible.iter().position(|s| *s == seq).unwrap()];
+            // `[first,second]` exactly: a budget that two entries fill to the byte.
+            let two = sizes[0] + sizes[1] + 3;
+            let budgets = [1, sizes[0] + 2, two - 1, two, two + sizes[2], 3 * two, usize::MAX];
+
+            for max_bytes in budgets {
+                for limit in [1, 2, 3, 1_000] {
+                    let what = format!("{view:?}, limit {limit}, budget {max_bytes}");
+                    let pages = pages_within(&read, view, limit, max_bytes);
+                    let seqs: Vec<u64> = pages.iter().flat_map(entry_seqs).collect();
+                    assert_eq!(seqs, visible, "{what}: exactly what the view holds, in order");
+                    for (i, page) in pages.iter().enumerate() {
+                        let page_seqs = entry_seqs(page);
+                        let (n, bytes) = (page_seqs.len(), entries_bytes(page));
+                        assert!(n >= 1, "{what}: page {i} is empty while more is visible");
+                        assert!(n <= limit, "{what}: page {i}");
+                        assert!(n == 1 || bytes <= max_bytes, "{what}: page {i} is {bytes} bytes");
+                        if i + 1 == pages.len() {
+                            assert_eq!(page["next_after_seq"], Value::Null, "{what}");
+                            continue;
+                        }
+                        assert_eq!(page["next_after_seq"], *page_seqs.last().unwrap(), "{what}");
+                        let next = entry_seqs(&pages[i + 1])[0];
+                        let full = n == limit;
+                        let over = bytes.saturating_add(1 + bytes_of(next)) > max_bytes;
+                        assert!(full || over, "{what}: page {i} stopped with room left");
+                        if !full && n > 1 {
+                            stopped_by_size += 1;
+                        }
+                    }
+                }
+            }
+
+            // A budget of exactly `[first,second]` holds both; a byte less, only the first.
+            let first = |max_bytes| entry_seqs(&pages_within(&read, view, 1_000, max_bytes)[0]);
+            assert_eq!(first(two), visible[..2], "{view:?}");
+            assert_eq!(first(two - 1), visible[..1], "{view:?}");
+        }
+        assert!(stopped_by_size > 0, "no page of several entries stopped by size");
     }
 
     #[test]
